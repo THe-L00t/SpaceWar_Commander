@@ -1,3 +1,45 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="소스코드">
+      <UniqueIdentifier>{a62690b0-bb26-47a1-9f49-f2dd1e9400cf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더파일">
+      <UniqueIdentifier>{d8009638-f05c-4206-a058-a0086e47535d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록">
+      <UniqueIdentifier>{1ea7ce7b-6200-4f3c-a99e-22ea722957b4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Scene">
+      <UniqueIdentifier>{8f2bf4f9-ad69-445a-816c-2aab383ab149}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Renderer">
+      <UniqueIdentifier>{f9212da7-ba3a-4c30-ba35-7a9ac218e0fa}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>소스코드</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene.cpp">
+      <Filter>클래스 목록\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="GRenderer.cpp">
+      <Filter>클래스 목록\Renderer</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Handles.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderItem.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene.h">
+      <Filter>클래스 목록\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="GRenderer.h">
+      <Filter>클래스 목록\Renderer</Filter>
+    </ClInclude>
+  </ItemGroup>
 </Project>

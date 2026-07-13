@@ -1,0 +1,9 @@
+<Project>
+  <!-- Applies to every project under this folder: Client / Server / Shared -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- Read source files as UTF-8 (fixes C4819 and Korean-comment parse errors) -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
