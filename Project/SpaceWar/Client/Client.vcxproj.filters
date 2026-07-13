@@ -16,6 +16,9 @@
     <Filter Include="클래스 목록\Renderer">
       <UniqueIdentifier>{f9212da7-ba3a-4c30-ba35-7a9ac218e0fa}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Camera">
+      <UniqueIdentifier>{d4c841e7-d4f3-419e-b33c-99b8fee545a3}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -40,6 +43,15 @@
     </ClInclude>
     <ClInclude Include="GRenderer.h">
       <Filter>클래스 목록\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="Vertex.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="DummyMesh.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera.h">
+      <Filter>클래스 목록\Camera</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -90,6 +90,9 @@
     <ClInclude Include="RenderItem.h" />
     <ClInclude Include="Scene.h" />
     <ClInclude Include="GRenderer.h" />
+    <ClInclude Include="Vertex.h" />
+    <ClInclude Include="DummyMesh.h" />
+    <ClInclude Include="Camera.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
