@@ -7,19 +7,29 @@
 
 ## 1. 브랜치 구조
 
-| 팀원 | 담당 | 전용 브랜치 | 역할 |
-|------|------|-------------|------|
-| **서버** | 서버 | `server` | 서버 파트 개발 |
-| **클라1 (나)** | 클라 + **통합** | `client1` | 클라 개발 + 전체 통합·충돌 해결 |
-| **클라2** | 클라 | `client2` | 클라 파트 개발 |
+### 작업 브랜치 (각자 전용 · 팀원은 여기서만)
+| 팀원 | 담당 | 전용 브랜치 |
+|------|------|-------------|
+| **서버** · 한현우 | 서버 · 네트워크 | `server` |
+| **클라1 · 이태형 (나)** | 클라 렌더링 + **통합 담당** | `client1` |
+| **클라2** · 안병규 | 클라 게임플레이 | `client2` |
 
-- **`main`** : 통합 완료본. 항상 빌드·시연 가능한 안정 상태. **클라1만 여기에 반영합니다.**
-- 각 팀원은 **자기 브랜치에서만** 작업하고, **절대 브랜치를 바꾸거나 직접 머지하지 않습니다.**
+### 통합 브랜치 (클라1만 관리)
+| 브랜치 | 역할 |
+|--------|------|
+| **`dev`** | **개발 통합** — 작업 브랜치들을 합쳐 개발 중 동작 확인 (불안정 허용) |
+| **`test`** | **최종 검증 게이트** — dev가 안정되면 올려서 확인. **여기서 문제없어야 `main`** |
+| **`main`** | **최종 안정본** — 시연·제출용. `test` 통과 시에만 반영 |
+| **`resource`** | 외부 완성 리소스(모델·텍스처·사운드) 추가 전용 · **Git LFS 관리** |
+
+- 팀원은 **자기 작업 브랜치에서만** 작업하고, **절대 브랜치를 바꾸거나 직접 머지하지 않습니다.**
 
 ```
-main ────●─────────●──────────●   (통합본, 클라1만 관리)
-         ↑         ↑          ↑
-     server    client1    client2  (각자 여기서만 작업)
+ server ──┐
+ client1 ─┼──►  dev  ──►  test  ──►  main
+ client2 ─┤   (개발통합)  (최종검증)  (안정본)
+ resource ┘
+          └──── 클라1이 통합·충돌 해결 ────┘
 ```
 
 ---
@@ -28,9 +38,9 @@ main ────●─────────●──────────
 
 1. **작업 시작 전 `git pull`, 작업 종료 시 `git push`** — 작게 자주.
 2. **팀원은 충돌을 직접 해결하지 않는다.** 충돌이 보이면 **클라1에게 알린다.**
-3. **모든 통합과 충돌 해결은 클라1이 한 곳(`main`)에서** 처리한다.
+3. **모든 통합과 충돌 해결은 클라1이** 처리한다. 통합은 `dev`에서 하고, 안정되면 `test` → `main` 순으로 승격한다.
 4. **같은 파일을 둘이 동시에 작업할 것 같으면 미리 공유**한다. (겹칠수록 클라1이 풀 충돌이 많아짐)
-5. **리소스(모델·텍스처·사운드)는 외부 완성본만 추가**한다. 바이너리는 머지가 안 되므로 동시 편집 금지.
+5. **리소스(모델·텍스처·사운드)는 외부 완성본만** `resource` 브랜치에 추가한다. **Git LFS**로 관리되며, 바이너리는 머지가 안 되므로 동시 편집 금지.
 6. **빌드 산출물은 커밋하지 않는다.** (`.gitignore`로 제외 — VS의 `.vs/`, `x64/`, `*.obj` 등)
 
 ---
@@ -84,7 +94,7 @@ git push                    # ④ 내 브랜치에 올리기
 ### 🎮 클라1 (나) — 브랜치 `client1` · **통합 담당**
 
 - **담당 폴더:** `Project/Client/` 일부 + `Project/Shared/` 관리 + **전체 통합**
-- 클라2와 `Client/` 안에서 담당 영역을 나누면(예: 나=렌더링, 클라2=게임플레이/UI) 같은 파일을 동시에 안 만져서 충돌이 줄어듭니다. (선택)
+- 클라2와 `Client/` 안에서 담당 영역을 나누면(나=렌더링, 클라2=게임플레이/UI) 같은 파일을 동시에 안 만져서 충돌이 줄어듭니다.
 
 **[시작 프롬프트 — 붙여넣기용]**
 ```
@@ -107,23 +117,32 @@ git push                    # ④ 내 브랜치에 올리기
 ```
 
 **🔗 통합 절차 (클라1만, 주기적으로 실행)**
-> 팀원들이 자기 브랜치에 push한 걸 `main`으로 모으고, 다시 각 브랜치에 최신 상태를 내려주는 과정입니다.
+> 팀원 작업을 `dev`에 모아 테스트하고, 문제없으면 `test` → `main` 순으로 승격합니다.
 > 통합하는 동안엔 팀원들에게 "잠깐 push 멈춰"라고 하고, 끝나면 "pull하고 다시 시작"이라고 알려주세요.
 
 ```bash
-# 1) 팀원 작업을 main으로 통합
-git switch main
+# 1) 팀원 작업을 dev로 통합
+git switch dev
 git fetch
-git merge origin/server  --no-edit    # 서버 작업 통합
-git merge origin/client1 --no-edit    # 내 작업 통합
-git merge origin/client2 --no-edit    # 클라2 작업 통합
-#  ↑ 충돌 나면 여기서 Visual Studio 병합 도구로 해결 후 커밋
-git push
+git merge origin/server   --no-edit
+git merge origin/client1  --no-edit
+git merge origin/client2  --no-edit
+git merge origin/resource --no-edit   # 새 리소스가 있으면
+#  ↑ 충돌 나면 Visual Studio 병합 도구로 해결 후 커밋
+git push origin dev
+#  → 여기서 빌드·실행 테스트
 
-# 2) 각 브랜치를 main 기준으로 최신화 (팀원 다음 pull이 깔끔해짐)
-git switch server  && git merge main --no-edit && git push
-git switch client1 && git merge main --no-edit && git push
-git switch client2 && git merge main --no-edit && git push
+# 2) dev가 안정되면 test로 승격해 최종 검증
+git switch test && git merge dev --no-edit && git push origin test
+#  → test에서 최종 확인 (여기서 문제없어야 main)
+
+# 3) test 통과 → main 반영
+git switch main && git merge test --no-edit && git push origin main
+
+# 4) 각 작업 브랜치를 dev 기준으로 최신화 (팀원 다음 pull이 깔끔)
+git switch server  && git merge dev --no-edit && git push origin server
+git switch client1 && git merge dev --no-edit && git push origin client1
+git switch client2 && git merge dev --no-edit && git push origin client2
 
 git switch client1                    # 내 작업 브랜치로 복귀
 ```
@@ -156,15 +175,24 @@ git switch client1                    # 내 작업 브랜치로 복귀
 
 ---
 
-## 5. 충돌 & 도구
+## 5. 리소스 & Git LFS
+
+- 리소스(모델·텍스처·사운드 등 바이너리)는 **`resource` 브랜치**에 **외부 완성본만** 추가한다.
+- 저장소에는 이미 **Git LFS**가 설정돼 있다(`.gitattributes`). `.fbx / .png / .dds / .wav / .bank` 등은 자동으로 LFS가 처리한다.
+- **각 팀원은 자기 PC에서 `git lfs install`을 한 번** 실행해야 실제 리소스 파일이 받아진다. (안 하면 포인터만 받아짐)
+- 큰 작업 원본(고해상 psd 등)은 저장소에 넣지 말고 별도 보관, **게임에 실제 들어가는 최적화본만** 넣는다.
+
+---
+
+## 6. 충돌 & 도구
 
 - **팀원(서버·클라2):** 충돌을 **직접 해결하지 말 것.** 클라1에게 알리기. **GitHub Desktop** 사용 권장(브랜치 실수 방지).
 - **클라1:** 충돌은 **Visual Studio 내장 병합 도구**로 처리(양쪽 코드 나란히 보고 선택).
 - **자주 통합할수록** 충돌이 작아집니다. 팀원 브랜치를 오래 방치하지 마세요.
 
-## 6. 하지 말 것 (금지 사항)
+## 7. 하지 말 것 (금지 사항)
 
-- ❌ `main`에 직접 push (**클라1만** 통합 절차로 반영)
+- ❌ 통합 브랜치(`main`·`test`·`dev`)에 팀원이 직접 push (**클라1만** 통합 절차로 반영)
 - ❌ 남의 브랜치 건드리기 / 브랜치 갈아타기
 - ❌ 같은 파일을 사전 공유 없이 동시 작업
 - ❌ 빌드 산출물(`.vs/`, `x64/`, `*.obj` 등) 커밋
@@ -172,4 +200,4 @@ git switch client1                    # 내 작업 브랜치로 복귀
 
 ---
 
-> 한 줄 요약: **팀원은 "자기 브랜치에서 pull → 작업 → commit → push"만. 통합·충돌은 전부 클라1이.**
+> 한 줄 요약: **팀원은 "자기 브랜치에서 pull → 작업 → commit → push"만. 통합은 클라1이 `dev` → `test` → `main` 순으로.**
