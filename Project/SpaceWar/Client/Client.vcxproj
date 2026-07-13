@@ -77,11 +77,22 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Scene.cpp" />
+    <ClCompile Include="GRenderer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
       <Project>{8e906f9e-e567-48d7-b78e-de2f56716dcc}</Project>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Handles.h" />
+    <ClInclude Include="RenderItem.h" />
+    <ClInclude Include="Scene.h" />
+    <ClInclude Include="GRenderer.h" />
+    <ClInclude Include="Vertex.h" />
+    <ClInclude Include="DummyMesh.h" />
+    <ClInclude Include="Camera.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

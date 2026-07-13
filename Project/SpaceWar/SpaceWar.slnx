@@ -2,7 +2,7 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="Client/Client.vcxproj" />
-  <Project Path="Server/Server.vcxproj" />
-  <Project Path="Shared/Shared.vcxproj" />
+  <Project Path="Client/Client.vcxproj" Id="d4deada1-89ff-47a7-959a-798e824c4abf" />
+  <Project Path="Server/Server.vcxproj" Id="d8675d28-59e9-4dd1-ba3f-cd4852251cbd" />
+  <Project Path="Shared/Shared.vcxproj" Id="8e906f9e-e567-48d7-b78e-de2f56716dcc" />
 </Solution>
