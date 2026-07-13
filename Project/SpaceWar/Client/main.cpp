@@ -1,16 +1,36 @@
-// ============================================================
-//  SpaceWar Client — DirectX 12 / DXR 렌더 + 게임플레이 진입점
-//  - DirectX 코드는 렌더러(GRenderer) 안에만 둔다. (렌더러 경계 명세 참고)
-//  - 게임플레이는 핸들·Scene 만 다루고 DX 는 모른다.
-//  - Shared 의 프로토콜을 그대로 사용한다.
-// ============================================================
 #include <windows.h>
-#include "Shared/Protocol.h"   // AdditionalIncludeDirectories = $(ProjectDir)..\ 덕분에 이렇게 참조
+#include <vector>
+#include <DirectXMath.h>
+#include "GRenderer.h"
+#include "Scene.h"
 
-int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR, int /*nCmdShow*/) {
-    // TODO: 윈도우 생성 → GRenderer 초기화(DX12/DXR) → Scene 구성 → 메인 루프
-    Shared::PacketHeader hello{};
-    hello.type = Shared::PacketType::PlayerFire;
-    OutputDebugStringW(L"SpaceWar Client 시작 (프로토콜 링크 확인 OK)\n");
-    return 0;
+using namespace DirectX;
+
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
+{
+	HWND hwnd = nullptr;
+
+	swc::GRenderer renderer;
+	renderer.Initialize(hwnd, 1280, 720);
+
+	swc::Scene scene;
+	swc::MeshHandle shipMesh = 0;
+	swc::NodeHandle ship = scene.AddNode(swc::kInvalidNode, shipMesh, 0);
+
+	std::vector<swc::RenderItem> items;
+
+	bool running = true;
+	while (running)
+	{
+		scene.SetLocalTransform(ship, XMMatrixTranslation(0.0f, 0.0f, 5.0f));
+
+		scene.UpdateWorldTransforms();
+		scene.Extract(items);
+
+		renderer.BeginFrame();
+		swc::RenderView view{ };
+		renderer.Render(view, items, scene.WorldData());
+		renderer.EndFrame();
+	}
+	return 0;
 }
