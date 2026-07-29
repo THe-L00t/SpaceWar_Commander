@@ -10,15 +10,17 @@ namespace swc {
 		std::vector<uint32_t> indices;
 	};
 
-	inline MeshData MakeCube(float size, DirectX::XMFLOAT3 color)
+	inline MeshData MakeBox(float sx, float sy, float sz, DirectX::XMFLOAT3 color)
 	{
-		const float h = size * 0.5f;
+		const float hx = sx * 0.5f;
+		const float hy = sy * 0.5f;
+		const float hz = sz * 0.5f;
 		MeshData m;
 		m.vertices = {
-			{ { -h, -h, -h }, color }, { { -h,  h, -h }, color },
-			{ {  h,  h, -h }, color }, { {  h, -h, -h }, color },
-			{ { -h, -h,  h }, color }, { { -h,  h,  h }, color },
-			{ {  h,  h,  h }, color }, { {  h, -h,  h }, color },
+			{ { -hx, -hy, -hz }, color }, { { -hx,  hy, -hz }, color },
+			{ {  hx,  hy, -hz }, color }, { {  hx, -hy, -hz }, color },
+			{ { -hx, -hy,  hz }, color }, { { -hx,  hy,  hz }, color },
+			{ {  hx,  hy,  hz }, color }, { {  hx, -hy,  hz }, color },
 		};
 		m.indices = {
 			0, 1, 2, 0, 2, 3,
@@ -29,6 +31,11 @@ namespace swc {
 			4, 0, 3, 4, 3, 7,
 		};
 		return m;
+	}
+
+	inline MeshData MakeCube(float size, DirectX::XMFLOAT3 color)
+	{
+		return MakeBox(size, size, size, color);
 	}
 
 	inline MeshData MakeGround(float size, DirectX::XMFLOAT3 color)

@@ -1,17 +1,28 @@
 #include <windows.h>
 #include <vector>
+#include <cstdio>
 #include <DirectXMath.h>
 #include "GRenderer.h"
 #include "Scene.h"
 #include "Camera.h"
 #include "DummyMesh.h"
+#include "GameTimer.h"
+#include "Input.h"
+#include "PlayerController.h"
 
 using namespace DirectX;
 
 namespace
 {
+	swc::Input* g_input = nullptr;
+
+	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
+
 	LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
+		if (g_input && g_input->HandleMessage(msg, wParam, lParam))
+			return 0;
+
 		if (msg == WM_DESTROY)
 		{
 			PostQuitMessage(0);
@@ -49,6 +60,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	// 더미 메쉬 (파일 없이 코드로 생성) — 테스트용
 	swc::MeshData groundData = swc::MakeGround(100.0f, { 0.15f, 0.30f, 0.18f });
 	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
+	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
 
 	swc::MeshHandle groundMesh = renderer.CreateMesh(
 		groundData.vertices.data(), groundData.vertices.size(),
@@ -56,57 +68,100 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::MeshHandle cubeMesh = renderer.CreateMesh(
 		cubeData.vertices.data(), cubeData.vertices.size(),
 		cubeData.indices.data(), cubeData.indices.size());
+	swc::MeshHandle noseMesh = renderer.CreateMesh(
+		noseData.vertices.data(), noseData.vertices.size(),
+		noseData.indices.data(), noseData.indices.size());
 
 	swc::Scene scene;
 	swc::NodeHandle ground = scene.AddNode(swc::kInvalidNode, groundMesh, 0);
 	swc::NodeHandle player = scene.AddNode(swc::kInvalidNode, cubeMesh, 0);
 	(void)ground;
 
-	swc::Camera camera;
-	camera.SetAspect(float(width) / float(height));
+	// 몸통이 어디를 보는지 눈으로 확인하려고 앞쪽에 자식 노드로 붙인다.
+	swc::NodeHandle nose = scene.AddNode(player, noseMesh, 0);
+	scene.SetLocalTransform(nose, XMMatrixTranslation(0.0f, 0.0f, 1.3f));
 
-	XMFLOAT3 playerPos = { 0.0f, 1.0f, 0.0f };
-	const float moveSpeed = 0.25f;
-	const float mapLimit = 49.0f;   // 100x100 땅(±50) 안, 큐브 반지름 1 고려
+	swc::GameTimer timer;
+	swc::Input input;
+	swc::Camera camera;
+	swc::PlayerController controller;
+
+	g_input = &input;
+	input.Initialize(hwnd);
+
+	camera.SetAspect(float(width) / float(height));
+	controller.SetPosition({ 0.0f, 1.0f, 0.0f });
+	controller.SetMapLimit(49.0f);   // 100x100 땅(±50) 안, 큐브 반지름 1 고려
+	camera.SnapTo(controller.Position());
 
 	std::vector<swc::RenderItem> items;
 
 	ShowWindow(hwnd, nCmdShow);
+	input.SetCaptured(true);
+	timer.Reset();
 
+	float titleTimer = 0.0f;
+	bool running = true;
 	MSG msg = {};
-	while (msg.message != WM_QUIT)
+
+	while (running)
 	{
-		if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+		input.BeginFrame();
+
+		while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
 		{
+			if (msg.message == WM_QUIT)
+			{
+				running = false;
+				break;
+			}
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
 		}
-		else
+		if (!running) break;
+
+		timer.Tick();
+		const float dt = timer.DeltaTime();
+
+		// ESC 로 마우스 놓기 / 다시 클릭하면 잡기
+		if (input.WasPressed(VK_ESCAPE)) input.SetCaptured(false);
+		else if (!input.Captured() && input.MouseDown(0)) input.SetCaptured(true);
+
+		camera.SetAiming(input.Captured() && input.MouseDown(1));
+		if (input.Captured())
 		{
-			// WASD 로 XZ 평면 이동 (지금은 프레임 단위 고정 속도)
-			if (GetAsyncKeyState('W') & 0x8000) playerPos.z += moveSpeed;
-			if (GetAsyncKeyState('S') & 0x8000) playerPos.z -= moveSpeed;
-			if (GetAsyncKeyState('A') & 0x8000) playerPos.x -= moveSpeed;
-			if (GetAsyncKeyState('D') & 0x8000) playerPos.x += moveSpeed;
+			const float scale = kMouseSensitivity * camera.LookScale();
+			camera.AddLook(input.MouseDeltaX() * scale, input.MouseDeltaY() * scale);
+		}
 
-			// 땅(100x100) 밖으로 못 나가게 좌표 제한
-			if (playerPos.x >  mapLimit) playerPos.x =  mapLimit;
-			if (playerPos.x < -mapLimit) playerPos.x = -mapLimit;
-			if (playerPos.z >  mapLimit) playerPos.z =  mapLimit;
-			if (playerPos.z < -mapLimit) playerPos.z = -mapLimit;
+		controller.Update(dt, input, camera);
+		camera.SetSprinting(controller.IsSprinting());
+		camera.Update(dt, controller.Position());
 
-			scene.SetLocalTransform(player, XMMatrixTranslation(playerPos.x, playerPos.y, playerPos.z));
-			scene.UpdateWorldTransforms();
-			scene.Extract(items);
+		scene.SetLocalTransform(player, controller.WorldMatrix());
+		scene.UpdateWorldTransforms();
+		scene.Extract(items);
 
-			camera.FollowTarget(playerPos);
+		renderer.BeginFrame();
+		swc::RenderView view{ };
+		view.viewProj = camera.ViewProj();
+		renderer.Render(view, items, scene.WorldData());
+		renderer.EndFrame();
 
-			renderer.BeginFrame();
-			swc::RenderView view{ };
-			view.viewProj = camera.ViewProj();
-			renderer.Render(view, items, scene.WorldData());
-			renderer.EndFrame();
+		// 델타타임이 실제로 도는지 창 제목으로 확인
+		titleTimer += dt;
+		if (titleTimer >= 0.5f)
+		{
+			titleTimer = 0.0f;
+			const XMFLOAT3& p = controller.Position();
+			wchar_t title[160];
+			swprintf_s(title, L"SpaceWar   FPS %.0f   dt %.2fms   pos (%.1f, %.1f)   speed %.1f",
+				timer.Fps(), dt * 1000.0f, p.x, p.z, controller.Speed());
+			SetWindowText(hwnd, title);
 		}
 	}
+
+	g_input = nullptr;
+	input.SetCaptured(false);
 	return 0;
 }
