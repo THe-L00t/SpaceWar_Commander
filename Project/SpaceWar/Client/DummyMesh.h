@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <cmath>
 #include "Vertex.h"
 
 // 테스트용 더미 메쉬 생성 (Assimp 등 파일 로딩 없이 코드로 만든다)
@@ -55,6 +56,61 @@ namespace swc {
 	inline MeshData MakeCube(float size, DirectX::XMFLOAT3 color)
 	{
 		return MakeBox(size, size, size, color);
+	}
+
+	// 구면 위 지형 패치. 접평면 격자를 반지름 radius 구에 투영한다.
+	// 월드 원점이 스폰 지점(구 표면)이고 구 중심이 (0,-radius,0) 인 규약을 따른다.
+	//
+	// ★ 정점 생성은 double 로 한다. float 로 (R+고도) 를 다루면
+	//   R=120,000 근처에서 7.8mm 단위로 양자화되어 지형이 떨린다.
+	inline MeshData MakeSpherePatch(double radius, double extent, int grid,
+		DirectX::XMFLOAT3 color)
+	{
+		if (grid < 2) grid = 2;
+
+		MeshData m;
+		m.vertices.reserve(size_t(grid) * grid);
+		m.indices.reserve(size_t(grid - 1) * (grid - 1) * 6);
+
+		const double half = extent * 0.5;
+		const double stepSize = extent / double(grid - 1);
+
+		for (int j = 0; j < grid; ++j)
+		{
+			const double z = -half + stepSize * j;
+			for (int i = 0; i < grid; ++i)
+			{
+				const double x = -half + stepSize * i;
+
+				// 스폰 지점 기준 접평면 좌표 -> 구 중심 기준 방향
+				const double len = std::sqrt(x * x + radius * radius + z * z);
+				const double dx = x / len;
+				const double dy = radius / len;
+				const double dz = z / len;
+
+				// 월드 위치 = 중심 + 방향 * R,  중심 = (0, -R, 0)
+				Vertex v;
+				v.position = { float(dx * radius),
+							   float(dy * radius - radius),
+							   float(dz * radius) };
+				v.normal = { float(dx), float(dy), float(dz) };
+				v.color = color;
+				m.vertices.push_back(v);
+			}
+		}
+
+		for (int j = 0; j < grid - 1; ++j)
+		{
+			for (int i = 0; i < grid - 1; ++i)
+			{
+				const uint32_t a = uint32_t(j * grid + i);
+				const uint32_t b = uint32_t((j + 1) * grid + i);
+				const uint32_t c = uint32_t((j + 1) * grid + i + 1);
+				const uint32_t d = uint32_t(j * grid + i + 1);
+				m.indices.insert(m.indices.end(), { a, b, c, a, c, d });
+			}
+		}
+		return m;
 	}
 
 	inline MeshData MakeGround(float size, DirectX::XMFLOAT3 color)

@@ -1,8 +1,17 @@
 #pragma once
 #include <DirectXMath.h>
+#include "Planet.h"
 
-// 헬다이버즈식 3인칭 이동. 카메라 상대 입력 → 가속/감속 → 몸통 회전 지연.
-// 나중에 서버 권위로 바뀌면 이 클래스만 갈아끼우면 된다(입력 전송 지점).
+// 구면 위 3인칭 이동. 헬다이버즈식 관성·회전 지연은 그대로 유지하고
+// 축만 월드 XZ 평면에서 접평면으로 바꾼다.
+//
+// ★ 각도(yaw) 대신 방향 벡터를 들고 다닌다.
+//   구면에서 각도로 방향을 표현하려면 기준 방향이 필요한데
+//   어떤 기준을 잡아도 극점에서 무너진다.
+//
+// ★ 상태는 "지형 위 고도"가 아니라 "기준구 위 고도"다.
+//   지형 위 고도로 잡으면 점프 중에도 지형을 따라가서
+//   포물선이 아니라 언덕에 들러붙는 점프가 된다.
 namespace swc {
 	class Input;
 	class Camera;
@@ -10,25 +19,35 @@ namespace swc {
 	class PlayerController
 	{
 	public:
-		void SetPosition(const DirectX::XMFLOAT3& p) { position = p; }
-		void SetMapLimit(float l) { mapLimit = l; }
+		void SetPlanet(const Planet* p) { planet = p; }
+		void Spawn(const Vec3d& worldPosition, const Vec3d& facingDirection);
 
 		void Update(float, const Input&, const Camera&);
 
-		const DirectX::XMFLOAT3& Position() const { return position; }
-		float BodyYaw() const { return bodyYaw; }
-		float Speed() const { return speed; }
-		bool  IsSprinting() const { return sprinting; }
+		const Vec3d& Position() const { return position; }
+		const Vec3d& Facing() const { return facing; }
+		const Vec3d& Up() const { return up; }
+
+		float  Speed() const { return speed; }
+		double Altitude() const { return altitude; }
+		bool   IsGrounded() const { return grounded; }
+		bool   IsSprinting() const { return sprinting; }
 
 		DirectX::XMMATRIX WorldMatrix() const;
 
 	private:
-		DirectX::XMFLOAT3 position{ 0.0f, 1.0f, 0.0f };
-		DirectX::XMFLOAT3 velocity{ 0.0f, 0.0f, 0.0f };
+		const Planet* planet = nullptr;
 
-		float bodyYaw = 0.0f;
-		float speed = 0.0f;
+		Vec3d position{ 0.0, 0.0, 0.0 };
+		Vec3d velocity{ 0.0, 0.0, 0.0 };   // 접평면 속도 (항상 up 과 수직)
+		Vec3d facing{ 0.0, 0.0, 1.0 };     // 몸이 향한 방향 (접평면 단위벡터)
+		Vec3d up{ 0.0, 1.0, 0.0 };
+
+		double altitude = 0.0;             // 기준구 위 고도
+		double verticalSpeed = 0.0;
+
+		bool  grounded = true;
 		bool  sprinting = false;
-		float mapLimit = 49.0f;
+		float speed = 0.0f;
 	};
 }

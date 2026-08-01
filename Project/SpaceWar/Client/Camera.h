@@ -1,8 +1,12 @@
 #pragma once
 #include <DirectXMath.h>
+#include "Planet.h"
 
-// 3인칭 궤도 카메라. 마우스로 yaw/pitch, 타겟은 감쇠 추종(스프링).
-// 조준(우클릭) 시 어깨 너머로 당겨지고 FOV 가 좁아진다.
+// 구면 위 3인칭 궤도 카메라.
+//
+// ★ 월드 Y축 기준 yaw 를 버리고 접평면 전방 벡터를 들고 다닌다.
+//   플레이어의 facing 과는 독립이다 (몸이 돌아도 시점은 그대로).
+//   pitch 만 스칼라로 남는다 — 로컬 지평선 기준 각도.
 namespace swc {
 	class Camera
 	{
@@ -12,23 +16,21 @@ namespace swc {
 		void SetSprinting(bool s) { sprinting = s; }
 
 		void AddLook(float yawDelta, float pitchDelta);
-		void SnapTo(const DirectX::XMFLOAT3&);
-		void Update(float, const DirectX::XMFLOAT3&);
+		void SnapTo(const Vec3d& target, const Vec3d& up, const Vec3d& forwardHint);
+		void Update(float, const Vec3d& target, const Vec3d& up, const Planet&);
 
 		bool  Aiming() const { return aiming; }
 		float LookScale() const { return aiming ? 0.55f : 1.0f; }   // 조준 중 감도 저하
-		float Yaw() const { return yaw; }
 
-		DirectX::XMFLOAT3 ForwardXZ() const;   // 카메라 상대 이동용 (XZ 평면)
-		DirectX::XMFLOAT3 RightXZ() const;
+		const Vec3d& Forward() const { return forward; }   // 접평면 전방 (이동 기준축)
+		Vec3d Right() const { return Cross(up, forward); }
 
 		const DirectX::XMFLOAT4X4& ViewProj() const { return viewProj; }
-		const DirectX::XMFLOAT3& EyePosition() const { return eyePosition; }   // 프레넬의 V 벡터용
+		const DirectX::XMFLOAT3& EyePosition() const { return eyePosition; }
 
 	private:
 		float aspect = 16.0f / 9.0f;
-		float yaw = 0.0f;
-		float pitch = 0.35f;
+		float pitch = 0.35f;      // 로컬 지평선 기준. + 면 내려다봄
 
 		bool aiming = false;
 		bool sprinting = false;
@@ -37,7 +39,10 @@ namespace swc {
 		float shoulder = 1.5f;
 		float fov = 1.05f;
 
-		DirectX::XMFLOAT3   smoothTarget{ 0.0f, 0.0f, 0.0f };
+		Vec3d forward{ 0.0, 0.0, 1.0 };   // 접평면 단위벡터
+		Vec3d up{ 0.0, 1.0, 0.0 };
+		Vec3d smoothTarget{ 0.0, 0.0, 0.0 };
+
 		DirectX::XMFLOAT3   eyePosition{ 0.0f, 0.0f, 0.0f };
 		DirectX::XMFLOAT4X4 viewProj{};
 	};

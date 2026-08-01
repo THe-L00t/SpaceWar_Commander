@@ -61,8 +61,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		return 1;
 	}
 
+	swc::Planet planet;   // 반지름 120km, 중심 (0,-R,0), 월드 원점 = 스폰 지점
+
 	// 더미 메쉬 (파일 없이 코드로 생성) — 테스트용
-	swc::MeshData groundData = swc::MakeGround(100.0f, { 0.15f, 0.30f, 0.18f });
+	// 4km 패치. 지평선(약 1.08km)이 한참 안쪽이라 가장자리는 지평선 아래로 숨는다.
+	swc::MeshData groundData = swc::MakeSpherePatch(planet.radius, 4000.0, 257,
+		{ 0.15f, 0.30f, 0.18f });
 	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
 	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
 
@@ -94,9 +98,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	input.Initialize(hwnd);
 
 	camera.SetAspect(float(width) / float(height));
-	controller.SetPosition({ 0.0f, 1.0f, 0.0f });
-	controller.SetMapLimit(49.0f);   // 100x100 땅(±50) 안, 큐브 반지름 1 고려
-	camera.SnapTo(controller.Position());
+
+	// 스폰 = 월드 원점(구 표면). 큐브 반지름 1 만큼 띄워 발이 땅에 닿게 한다.
+	controller.SetPlanet(&planet);
+	controller.Spawn(planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0), { 0.0, 0.0, 1.0 });
+	camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 
 	std::vector<swc::RenderItem> items;
 
@@ -158,7 +164,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 		controller.Update(dt, input, camera);
 		camera.SetSprinting(controller.IsSprinting());
-		camera.Update(dt, controller.Position());
+		camera.Update(dt, controller.Position(), controller.Up(), planet);
 
 		scene.SetLocalTransform(player, controller.WorldMatrix());
 		scene.UpdateWorldTransforms();
@@ -180,11 +186,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
 				: (rt.enabled ? L"ON" : L"OFF");
 
-			wchar_t title[256];
+			// 구면 이동 검증용: 고도 / 접지 / 스폰에서의 거리
+			const swc::Vec3d& p = controller.Position();
+			const double distFromSpawn = swc::Length(p);
+
+			wchar_t title[320];
 			swprintf_s(title,
-				L"SpaceWar   FPS %.0f   dt %.2fms   RT %s  knee %.2f  view %u   |  %s",
-				timer.Fps(), dt * 1000.0f, rtState, rt.rouletteKnee,
-				renderer.DebugMode(), renderer.StatusText().c_str());
+				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
+				L"|  RT %s knee %.2f view %u",
+				timer.Fps(), dt * 1000.0f,
+				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
+				distFromSpawn, controller.Speed(),
+				rtState, rt.rouletteKnee, renderer.DebugMode());
 			SetWindowText(hwnd, title);
 		}
 	}

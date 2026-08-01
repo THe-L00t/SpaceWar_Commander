@@ -121,6 +121,8 @@ xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"</Command>
     <ClInclude Include="ShaderCompiler.h" />
     <ClInclude Include="AccelStructure.h" />
     <ClInclude Include="RayTracingParams.h" />
+    <ClInclude Include="Planet.h" />
+    <ClInclude Include="..\Shared\Units.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

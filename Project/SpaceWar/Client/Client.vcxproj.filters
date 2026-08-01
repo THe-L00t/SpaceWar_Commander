@@ -112,5 +112,11 @@
     <ClInclude Include="RayTracingParams.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="Planet.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Units.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
