@@ -27,8 +27,9 @@ foreach ($f in $files) {
     if ($Resolution -gt 0) { $a += " --resolution $Resolution" }
     if ($Seed -ge 0) { $a += " --seed $Seed" }
 
+    # 콘솔은 필요하지만 창이 계속 튀어나오면 방해되므로 최소화해서 띄운다
     $p = Start-Process -FilePath "$GaeaDir\Gaea.Swarm.exe" -ArgumentList $a `
-            -WorkingDirectory $GaeaDir -Wait -PassThru
+            -WorkingDirectory $GaeaDir -Wait -PassThru -WindowStyle Minimized
     $produced = @(Get-ChildItem $od -Recurse -File -Filter *.png -ErrorAction SilentlyContinue)
 
     if ($produced.Count -gt 0) {

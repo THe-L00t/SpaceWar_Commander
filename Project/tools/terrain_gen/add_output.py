@@ -112,11 +112,31 @@ def next_id(doc):
     return mx[0] + 1
 
 
-def process(src, dst, out_name, tile_m, relief_m, resolution):
+def reseed(nodes, variant):
+    """
+    노드의 Seed 값을 변형별로 다시 매긴다.
+
+    Swarm 의 --seed(mutation seed)는 변수로 노출된 노드에만 먹혀서
+    그대로 쓰면 결과가 하나도 안 바뀐다. JSON 에서 직접 고쳐야 한다.
+    """
+    n = 0
+    for k, node in nodes.items():
+        if k == "$id" or not isinstance(node, dict) or "Seed" not in node:
+            continue
+        base = node["Seed"] if isinstance(node["Seed"], int) else 0
+        node["Seed"] = (base + variant * 7919) % 65536
+        n += 1
+    return n
+
+
+def process(src, dst, out_name, tile_m, relief_m, resolution, variant=0):
     doc = load(src)
     asset = doc["Assets"]["$values"][0]
     terrain = asset["Terrain"]
     nodes = terrain["Nodes"]
+
+    if variant:
+        reseed(nodes, variant)
 
     picked = pick_output_node(nodes)
     if picked is None:
@@ -158,28 +178,40 @@ def main():
     ap.add_argument("--tile-m", type=float, default=0, help="0이면 원본 유지")
     ap.add_argument("--relief-m", type=float, default=0)
     ap.add_argument("--resolution", type=int, default=0)
+    ap.add_argument("--variants", type=int, default=1,
+                    help="원본당 시드 변형 개수 (1이면 원본만)")
+    ap.add_argument("--only", default="",
+                    help="쉼표 구분 이름 목록. 지정하면 그것만 처리")
     args = ap.parse_args()
 
     srcs = [args.src] if os.path.isfile(args.src) else sorted(glob.glob(os.path.join(args.src, "*.terrain")))
+    keep = {s.strip() for s in args.only.split(",") if s.strip()}
     os.makedirs(args.out, exist_ok=True)
 
     ok = fail = 0
     for s in srcs:
         base = os.path.splitext(os.path.basename(s))[0]
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base)
-        dst = os.path.join(args.out, safe + ".terrain")
-        try:
-            picked, err = process(s, dst, safe, args.tile_m, args.relief_m, args.resolution)
-        except Exception as e:
-            picked, err = None, f"{type(e).__name__}: {e}"
-        if err:
-            print(f"  SKIP {base}  ({err})")
-            fail += 1
-        else:
-            print(f"  OK   {safe:<44} 출력노드 [{picked[0]}] {picked[1]}")
-            ok += 1
+        if keep and safe not in keep and base not in keep:
+            continue
 
-    print(f"\n성공 {ok} / 실패 {fail}  ->  {args.out}")
+        for v in range(args.variants):
+            name = safe if args.variants == 1 else f"{safe}_v{v:02d}"
+            dst = os.path.join(args.out, name + ".terrain")
+            try:
+                picked, err = process(s, dst, name, args.tile_m, args.relief_m,
+                                      args.resolution, variant=v)
+            except Exception as e:
+                picked, err = None, f"{type(e).__name__}: {e}"
+            if err:
+                print(f"  SKIP {name}  ({err})")
+                fail += 1
+            else:
+                if v == 0:
+                    print(f"  OK   {name:<46} 출력노드 [{picked[0]}] {picked[1]}")
+                ok += 1
+
+    print(f"\n생성 {ok} / 실패 {fail}  ->  {args.out}")
 
 
 if __name__ == "__main__":
