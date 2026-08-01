@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <vector>
+#include <string>
 #include <cstdio>
 #include <DirectXMath.h>
 #include "GRenderer.h"
@@ -10,6 +11,9 @@
 #include "Input.h"
 #include "PlayerController.h"
 #include "RayTracingParams.h"
+#include "Resource/ResourceManager.h"
+#include "Terrain/TerrainSampler.h"
+#include <objbase.h>
 
 using namespace DirectX;
 
@@ -18,6 +22,20 @@ namespace
 	swc::Input* g_input = nullptr;
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
+
+	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
+	// ★ 반드시 와이드로 다룬다. GetModuleFileNameA 는 ANSI(CP949)를 주므로
+	//   경로에 한글이 있으면 UTF-8 로 오인해 깨진다.
+	std::wstring AssetPath(const wchar_t* relative)
+	{
+		wchar_t exePath[MAX_PATH] = {};
+		GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+
+		std::wstring p(exePath);
+		const size_t slash = p.find_last_of(L"\\/");
+		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
+		return p + L"assets\\" + relative;
+	}
 
 	LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
@@ -35,6 +53,10 @@ namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+	// WIC(하이트맵 로더)가 COM 객체다. 이게 없으면 CO_E_NOTINITIALIZED 로 조용히 실패한다.
+	if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
+		return 1;
+
 	const uint32_t width = 1280;
 	const uint32_t height = 720;
 
@@ -63,9 +85,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 	swc::Planet planet;   // 반지름 120km, 중심 (0,-R,0), 월드 원점 = 스폰 지점
 
+	// ── 하이트맵 1장을 스폰 위치에 적용 ──
+	swc::ResourceManager resources;
+	swc::TerrainSampler terrain;
+
+	std::wstring terrainStatus;
+	const swc::HeightmapHandle tile = resources.LoadHeightmap(
+		AssetPath(L"terrain\\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png").c_str());
+	if (const Shared::HeightmapData* hm = resources.Get(tile))
+	{
+		terrain.Configure(hm, planet.radius, {});   // 1km / 150m / 25% 감쇠
+		planet.terrain = &terrain;
+
+		wchar_t buf[96];
+		swprintf_s(buf, L"지형 %ux%u mean %.3f", hm->size, hm->size, hm->mean);
+		terrainStatus = buf;
+	}
+	else
+	{
+		terrainStatus = L"지형 실패: " + resources.LastError();
+	}
+
 	// 더미 메쉬 (파일 없이 코드로 생성) — 테스트용
-	// 4km 패치. 지평선(약 1.08km)이 한참 안쪽이라 가장자리는 지평선 아래로 숨는다.
-	swc::MeshData groundData = swc::MakeSpherePatch(planet.radius, 4000.0, 257,
+	// 2.4km 패치 / 513격자 = 정점 간격 4.7m.
+	// 변 중앙까지 1,200m 라 지평선(1,084m)을 넘어 패치 끝이 안 보인다.
+	swc::MeshData groundData = swc::MakeSpherePatch(planet, 2400.0, 513,
 		{ 0.15f, 0.30f, 0.18f });
 	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
 	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
@@ -190,13 +234,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			const swc::Vec3d& p = controller.Position();
 			const double distFromSpawn = swc::Length(p);
 
-			wchar_t title[320];
+			wchar_t title[400];
 			swprintf_s(title,
 				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-				L"|  RT %s knee %.2f view %u",
+				L"|  %s  |  RT %s knee %.2f view %u",
 				timer.Fps(), dt * 1000.0f,
 				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 				distFromSpawn, controller.Speed(),
+				terrainStatus.c_str(),
 				rtState, rt.rouletteKnee, renderer.DebugMode());
 			SetWindowText(hwnd, title);
 		}
@@ -204,5 +249,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 	g_input = nullptr;
 	input.SetCaptured(false);
+	CoUninitialize();
 	return 0;
 }

@@ -1,6 +1,7 @@
 #include "PlayerController.h"
 #include "Input.h"
 #include "Camera.h"
+#include "Shared/Units.h"
 #include <cmath>
 
 using namespace DirectX;
@@ -34,12 +35,17 @@ namespace swc {
 
 	void PlayerController::Spawn(const Vec3d& worldPosition, const Vec3d& facingDirection)
 	{
-		position = worldPosition;
-		up = planet ? planet->Up(position) : Vec3d{ 0.0, 1.0, 0.0 };
+		up = planet ? planet->Up(worldPosition) : Vec3d{ 0.0, 1.0, 0.0 };
+
+		// ★ 지형 높이 위에 놓는다.
+		//   0 중심화 때문에 타일 중앙의 지형 높이가 0이라는 보장이 없다.
+		//   고도를 고정값으로 두면 스폰하자마자 솟거나 떨어진다.
+		altitude = (planet ? planet->SurfaceHeight(up) : 0.0) + kGroundOffset;
+		position = planet ? planet->PositionAt(up, altitude) : worldPosition;
+
 		facing = ProjectOntoPlane(facingDirection, up);
 		velocity = { 0.0, 0.0, 0.0 };
 		verticalSpeed = 0.0;
-		altitude = planet ? planet->Altitude(position) : 0.0;
 		grounded = true;
 		speed = 0.0f;
 	}
