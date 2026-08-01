@@ -60,6 +60,10 @@ def main():
                     help="정규화 높이 표준편차 하한. 이보다 평평하면 제외 (0.04 권장)")
     ap.add_argument("--copy-to", default="", help="통과한 조각을 복사할 폴더")
     ap.add_argument("--only-out", action="store_true", help="_Out.png 만 검사 (마스크 제외)")
+    ap.add_argument("--max-clip", type=float, default=100.0,
+                    help="최대/최소값에 붙어버린 픽셀 비율 상한 %% (2.0 권장). 넘으면 잘린 조각")
+    ap.add_argument("--dedup", type=float, default=0.0,
+                    help="이미 통과한 조각과 평균차가 이 값 미만이면 중복으로 버림 (0.02 권장)")
     args = ap.parse_args()
 
     paths = sorted(glob.glob(os.path.join(args.src, "**", "*.png"), recursive=True))
@@ -71,11 +75,12 @@ def main():
         print("PNG 없음")
         return
 
-    print(f"{'이름':<46}{'비트':<6}{'표준편차':>9}{'평균경사':>9}{'최대':>8}{'초과%':>8}  판정")
-    print("-" * 100)
+    print(f"{'이름':<46}{'비트':<6}{'표준편차':>9}{'평균경사':>9}{'최대':>8}{'초과%':>8}{'포화%':>7}  판정")
+    print("-" * 108)
 
     thumbs = []
     kept = []
+    signatures = []      # 중복 판정용 축소 이미지
     for p in paths:
         name = os.path.splitext(os.path.basename(p))[0]
         parent = os.path.basename(os.path.dirname(p))
@@ -88,18 +93,31 @@ def main():
 
         std = float(h.std())
         mean_d, max_d, over = slope_stats(h, args.tile_m, args.relief_m, args.slope_limit)
+        # 최대/최소값에 딱 붙은 픽셀 = 높이가 잘려나간 부분
+        clip = float(((h <= 1e-6) | (h >= 1.0 - 1e-6)).mean() * 100.0)
+
+        # 64x64 로 줄여 중복 비교 (전체 픽셀 비교는 느리다)
+        sig = np.array(Image.fromarray((h * 255).astype(np.uint8)).resize((64, 64))) / 255.0
 
         verdict = "OK"
         if bits != 16:
             verdict = "제외(8비트)"
         elif std < args.min_std:
             verdict = "제외(평평)"
+        elif clip > args.max_clip:
+            verdict = "제외(잘림)"
+        elif args.dedup > 0.0:
+            for prev in signatures:
+                if float(np.abs(sig - prev).mean()) < args.dedup:
+                    verdict = "제외(중복)"
+                    break
 
-        print(f"{label[:45]:<46}{bits:<6}{std:>9.4f}{mean_d:>8.1f}°{max_d:>7.1f}°{over:>7.2f}%  {verdict}")
+        print(f"{label[:45]:<46}{bits:<6}{std:>9.4f}{mean_d:>8.1f}°{max_d:>7.1f}°{over:>7.2f}%{clip:>6.1f}%  {verdict}")
 
         if verdict != "OK":
             continue
         kept.append((label, p))
+        signatures.append(sig)
 
         img = Image.fromarray(hillshade(h, args.tile_m, args.relief_m))
         img.thumbnail((args.thumb, args.thumb))
