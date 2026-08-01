@@ -9,6 +9,7 @@
 #include "GameTimer.h"
 #include "Input.h"
 #include "PlayerController.h"
+#include "RayTracingParams.h"
 
 using namespace DirectX;
 
@@ -55,7 +56,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 	swc::GRenderer renderer;
 	if (!renderer.Initialize(hwnd, width, height))
+	{
+		MessageBox(hwnd, renderer.StatusText().c_str(), L"렌더러 초기화 실패", MB_OK | MB_ICONERROR);
 		return 1;
+	}
 
 	// 더미 메쉬 (파일 없이 코드로 생성) — 테스트용
 	swc::MeshData groundData = swc::MakeGround(100.0f, { 0.15f, 0.30f, 0.18f });
@@ -127,6 +131,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		if (input.WasPressed(VK_ESCAPE)) input.SetCaptured(false);
 		else if (!input.Captured() && input.MouseDown(0)) input.SetCaptured(true);
 
+		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
+		if (input.WasPressed('V'))
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 8);
+		if (input.WasPressed('R'))
+		{
+			swc::RayTracingParams p = renderer.GetRayTracingParams();
+			p.enabled = !p.enabled;
+			renderer.SetRayTracingParams(p);
+		}
+		if (input.WasPressed(VK_OEM_4) || input.WasPressed(VK_OEM_6))
+		{
+			swc::RayTracingParams p = renderer.GetRayTracingParams();
+			p.rouletteKnee += input.WasPressed(VK_OEM_6) ? 0.05f : -0.05f;
+			if (p.rouletteKnee < 0.01f) p.rouletteKnee = 0.01f;
+			if (p.rouletteKnee > 2.0f) p.rouletteKnee = 2.0f;
+			renderer.SetRayTracingParams(p);
+		}
+
 		camera.SetAiming(input.Captured() && input.MouseDown(1));
 		if (input.Captured())
 		{
@@ -145,18 +167,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		renderer.BeginFrame();
 		swc::RenderView view{ };
 		view.viewProj = camera.ViewProj();
+		view.eyePosition = camera.EyePosition();
 		renderer.Render(view, items, scene.WorldData());
 		renderer.EndFrame();
 
-		// 델타타임이 실제로 도는지 창 제목으로 확인
+		// 델타타임 / 하이브리드 상태를 창 제목으로 확인
 		titleTimer += dt;
 		if (titleTimer >= 0.5f)
 		{
 			titleTimer = 0.0f;
-			const XMFLOAT3& p = controller.Position();
-			wchar_t title[160];
-			swprintf_s(title, L"SpaceWar   FPS %.0f   dt %.2fms   pos (%.1f, %.1f)   speed %.1f",
-				timer.Fps(), dt * 1000.0f, p.x, p.z, controller.Speed());
+			const swc::RayTracingParams& rt = renderer.GetRayTracingParams();
+			const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
+				: (rt.enabled ? L"ON" : L"OFF");
+
+			wchar_t title[256];
+			swprintf_s(title,
+				L"SpaceWar   FPS %.0f   dt %.2fms   RT %s  knee %.2f  view %u   |  %s",
+				timer.Fps(), dt * 1000.0f, rtState, rt.rouletteKnee,
+				renderer.DebugMode(), renderer.StatusText().c_str());
 			SetWindowText(hwnd, title);
 		}
 	}

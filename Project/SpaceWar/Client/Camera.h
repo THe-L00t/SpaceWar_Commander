@@ -23,6 +23,7 @@ namespace swc {
 		DirectX::XMFLOAT3 RightXZ() const;
 
 		const DirectX::XMFLOAT4X4& ViewProj() const { return viewProj; }
+		const DirectX::XMFLOAT3& EyePosition() const { return eyePosition; }   // 프레넬의 V 벡터용
 
 	private:
 		float aspect = 16.0f / 9.0f;
@@ -37,6 +38,7 @@ namespace swc {
 		float fov = 1.05f;
 
 		DirectX::XMFLOAT3   smoothTarget{ 0.0f, 0.0f, 0.0f };
+		DirectX::XMFLOAT3   eyePosition{ 0.0f, 0.0f, 0.0f };
 		DirectX::XMFLOAT4X4 viewProj{};
 	};
 }

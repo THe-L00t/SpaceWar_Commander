@@ -28,6 +28,17 @@
     <Filter Include="클래스 목록\PlayerController">
       <UniqueIdentifier>{9f74c1e2-2d48-4b6c-83af-51e9c7a2d0b6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Renderer\RayTracing">
+      <UniqueIdentifier>{2c8d5f31-9b64-42a7-b0e5-8d3f7c1a46e9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="셰이더">
+      <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Forward.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -50,6 +61,12 @@
     </ClCompile>
     <ClCompile Include="PlayerController.cpp">
       <Filter>클래스 목록\PlayerController</Filter>
+    </ClCompile>
+    <ClCompile Include="ShaderCompiler.cpp">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
+    </ClCompile>
+    <ClCompile Include="AccelStructure.cpp">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -82,6 +99,18 @@
     </ClInclude>
     <ClInclude Include="PlayerController.h">
       <Filter>클래스 목록\PlayerController</Filter>
+    </ClInclude>
+    <ClInclude Include="DXCommon.h">
+      <Filter>클래스 목록\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="ShaderCompiler.h">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
+    </ClInclude>
+    <ClInclude Include="AccelStructure.h">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
+    </ClInclude>
+    <ClInclude Include="RayTracingParams.h">
+      <Filter>헤더파일</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

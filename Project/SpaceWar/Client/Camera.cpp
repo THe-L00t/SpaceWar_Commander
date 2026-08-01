@@ -95,6 +95,7 @@ namespace swc {
 			focus.y - dir.y * distance,
 			focus.z - dir.z * distance };
 		if (eye.y < kMinEyeHeight) eye.y = kMinEyeHeight;
+		eyePosition = eye;
 
 		const XMMATRIX view = XMMatrixLookAtLH(
 			XMLoadFloat3(&eye), XMLoadFloat3(&focus), XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
