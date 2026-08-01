@@ -169,7 +169,8 @@ namespace swc {
 
 		bool rtSupported = false;
 		RayTracingParams rtParams;
-		XMFLOAT3 sunDir{ 0.35f, -0.80f, 0.45f };
+		// 정규화 필수 — GGX 의 H = normalize(L+V) 계산에 들어간다
+		XMFLOAT3 sunDir{ 0.3563f, -0.8144f, 0.4581f };
 		uint32_t debugMode = 0;
 		uint32_t frameCounter = 0;
 		std::wstring status;

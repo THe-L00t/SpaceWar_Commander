@@ -183,7 +183,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
 		if (input.WasPressed('V'))
-			renderer.SetDebugMode((renderer.DebugMode() + 1) % 8);
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 10);
 		if (input.WasPressed('R'))
 		{
 			swc::RayTracingParams p = renderer.GetRayTracingParams();
