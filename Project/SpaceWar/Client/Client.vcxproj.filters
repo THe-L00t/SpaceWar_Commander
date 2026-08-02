@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="소스코드">
@@ -19,6 +19,26 @@
     <Filter Include="클래스 목록\Camera">
       <UniqueIdentifier>{d4c841e7-d4f3-419e-b33c-99b8fee545a3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\GameTimer">
+      <UniqueIdentifier>{3b1c58a4-5e77-4a02-9d16-7c40e2b9a511}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Input">
+      <UniqueIdentifier>{6e2a91d7-0c33-4f5b-8a91-b4d7e0663c28}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\PlayerController">
+      <UniqueIdentifier>{9f74c1e2-2d48-4b6c-83af-51e9c7a2d0b6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Renderer\RayTracing">
+      <UniqueIdentifier>{2c8d5f31-9b64-42a7-b0e5-8d3f7c1a46e9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="셰이더">
+      <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Forward.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -29,6 +49,24 @@
     </ClCompile>
     <ClCompile Include="GRenderer.cpp">
       <Filter>클래스 목록\Renderer</Filter>
+    </ClCompile>
+    <ClCompile Include="Camera.cpp">
+      <Filter>클래스 목록\Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="GameTimer.cpp">
+      <Filter>클래스 목록\GameTimer</Filter>
+    </ClCompile>
+    <ClCompile Include="Input.cpp">
+      <Filter>클래스 목록\Input</Filter>
+    </ClCompile>
+    <ClCompile Include="PlayerController.cpp">
+      <Filter>클래스 목록\PlayerController</Filter>
+    </ClCompile>
+    <ClCompile Include="ShaderCompiler.cpp">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
+    </ClCompile>
+    <ClCompile Include="AccelStructure.cpp">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -52,6 +90,33 @@
     </ClInclude>
     <ClInclude Include="Camera.h">
       <Filter>클래스 목록\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="GameTimer.h">
+      <Filter>클래스 목록\GameTimer</Filter>
+    </ClInclude>
+    <ClInclude Include="Input.h">
+      <Filter>클래스 목록\Input</Filter>
+    </ClInclude>
+    <ClInclude Include="PlayerController.h">
+      <Filter>클래스 목록\PlayerController</Filter>
+    </ClInclude>
+    <ClInclude Include="DXCommon.h">
+      <Filter>클래스 목록\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="ShaderCompiler.h">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
+    </ClInclude>
+    <ClInclude Include="AccelStructure.h">
+      <Filter>클래스 목록\Renderer\RayTracing</Filter>
+    </ClInclude>
+    <ClInclude Include="RayTracingParams.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Planet.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Units.h">
+      <Filter>헤더파일</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

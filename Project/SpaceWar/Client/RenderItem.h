@@ -12,5 +12,6 @@ namespace swc {
 
 	struct RenderView {
 		DirectX::XMFLOAT4X4 viewProj{ };
+		DirectX::XMFLOAT3   eyePosition{ };   // 프레넬의 시선 벡터(V) 계산용
 	};
 }
