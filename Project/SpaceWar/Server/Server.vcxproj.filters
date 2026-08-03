@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    솔루션 탐색기 표시 구조 (가상 폴더). 실제 파일 위치는 바뀌지 않는다.
+
+      Net/     전송 계층. 게임 규칙을 모른다.
+      Game/    게임 계층. 소켓을 모른다.
+      Shared/  Shared 프로젝트 원본 참조 (편집하면 클라에도 반영)
+      Test/    부하 확인용. 배포에는 안 들어간다.
+      main.cpp 두 계층을 잇는 배선판이라 필터 없이 최상단
+  -->
+  <ItemGroup>
+    <Filter Include="Net">
+      <UniqueIdentifier>{b7c41a08-3e5d-4f92-8a16-2d90fe73c451}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game">
+      <UniqueIdentifier>{e2905d6b-84f7-41c3-9b58-6fa03d128e97}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shared">
+      <UniqueIdentifier>{4a68f13c-9d20-4e57-b3ae-c15807d2d9f4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Test">
+      <UniqueIdentifier>{9c3e7b25-1a46-48df-85c0-7e2b904f6a13}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="Net\IocpServer.cpp">
+      <Filter>Net</Filter>
+    </ClCompile>
+    <ClCompile Include="Net\Session.cpp">
+      <Filter>Net</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Match.cpp">
+      <Filter>Game</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\MatchManager.cpp">
+      <Filter>Game</Filter>
+    </ClCompile>
+    <ClCompile Include="TestClient.cpp">
+      <Filter>Test</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Net\IocpServer.h">
+      <Filter>Net</Filter>
+    </ClInclude>
+    <ClInclude Include="Net\Session.h">
+      <Filter>Net</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Match.h">
+      <Filter>Game</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\MatchManager.h">
+      <Filter>Game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Protocol.h">
+      <Filter>Shared</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Units.h">
+      <Filter>Shared</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

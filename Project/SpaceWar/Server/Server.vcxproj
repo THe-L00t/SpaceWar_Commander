@@ -77,6 +77,19 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="TestClient.cpp" />
+    <ClCompile Include="Net\IocpServer.cpp" />
+    <ClCompile Include="Net\Session.cpp" />
+    <ClCompile Include="Game\Match.cpp" />
+    <ClCompile Include="Game\MatchManager.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Net\IocpServer.h" />
+    <ClInclude Include="Net\Session.h" />
+    <ClInclude Include="Game\Match.h" />
+    <ClInclude Include="Game\MatchManager.h" />
+    <ClInclude Include="..\Shared\Protocol.h" />
+    <ClInclude Include="..\Shared\Units.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
