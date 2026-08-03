@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Shared = 클라와 서버가 "똑같이" 알아야 하는 것의 단일 원본.
+    여기 있는 파일은 Client.exe 와 Server.exe 양쪽에 그대로 들어간다.
+    고치면 양쪽이 동시에 바뀐다 -> 고칠 때 반드시 상대 담당자에게 알린다.
+
+      Protocol/   주고받는 패킷 모양
+      Rules/      양쪽이 같은 값을 써야 하는 규칙 (단위·중력·속도, 지형 높이)
+  -->
+  <ItemGroup>
+    <Filter Include="Protocol">
+      <UniqueIdentifier>{c31b9a54-7e08-4c62-9a1d-5b0f7e2c4a83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rules">
+      <UniqueIdentifier>{f8d4620e-1c37-45ba-8e96-3a7d15c8b2f1}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Protocol.h">
+      <Filter>Protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="Units.h">
+      <Filter>Rules</Filter>
+    </ClInclude>
+    <ClInclude Include="HeightmapData.h">
+      <Filter>Rules</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Shared.cpp" />
+  </ItemGroup>
+</Project>
