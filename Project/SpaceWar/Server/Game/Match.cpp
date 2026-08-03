@@ -2,8 +2,31 @@
 #include "Shared/Units.h"
 #include <cmath>
 #include <cstring>
+#include <chrono>
 
 namespace swc {
+
+	namespace {
+		int64_t NowMs()
+		{
+			using namespace std::chrono;
+			return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+		}
+	}
+
+	// 비어 있기 시작한 시각을 갱신한다. (rosterMutex 를 잡은 상태에서 호출)
+	void Match::UpdateEmptyMark()
+	{
+		if (players.empty())
+		{
+			if (emptySinceMs.load(std::memory_order_relaxed) == 0)
+				emptySinceMs.store(NowMs(), std::memory_order_relaxed);
+		}
+		else
+		{
+			emptySinceMs.store(0, std::memory_order_relaxed);
+		}
+	}
 
 	// ── 입장 ────────────────────────────────────────────────
 	bool Match::AddPlayer(const std::shared_ptr<Session>& s, uint32_t& outPlayerId, uint8_t& outTeam)
@@ -20,17 +43,21 @@ namespace swc {
 		p->team = team;
 		p->session = s;
 
-		// 스폰 위치 — 팀별로 갈라서 늘어놓는다 (지금은 단순 격자)
+		// 스폰 위치 — 50 대 50 전장 규모로 퍼뜨린다.
+		//   가로 10명 x 60m = 540m, 세로 5줄 x 40m, 양 팀 간격 800m.
+		//   뭉쳐서 스폰하면 전원이 서로의 AOI 안에 들어와 시야 필터가 무의미해진다.
 		const uint32_t n = teamCount[team].fetch_add(1);
-		p->pos[0] = float(n % 10) * 3.0f - 15.0f;
+		p->pos[0] = (float(n % 10) - 4.5f) * 60.0f;
 		p->pos[1] = 0.0f;
-		p->pos[2] = (team == 0 ? -40.0f : 40.0f) + float(n / 10) * 3.0f;
+		p->pos[2] = (team == 0 ? -400.0f : 400.0f)
+			+ (team == 0 ? -1.0f : 1.0f) * float(n / 10) * 40.0f;
 		p->facing[2] = (team == 0 ? 1.0f : -1.0f);
 
 		outPlayerId = p->playerId;
 		outTeam = team;
 
 		players.emplace(s->Id(), std::move(p));
+		UpdateEmptyMark();
 		return true;
 	}
 
@@ -44,6 +71,7 @@ namespace swc {
 		const uint32_t leavingId = it->second->playerId;
 		if (teamCount[team].load() > 0) teamCount[team].fetch_sub(1);
 		players.erase(it);
+		UpdateEmptyMark();
 
 		// 남은 사람들에게 알린다
 		Shared::PlayerLeavePacket pkt{};
@@ -207,28 +235,19 @@ namespace swc {
 		std::shared_lock lock(rosterMutex);
 		if (players.empty()) return;
 
-		const uint16_t count = static_cast<uint16_t>(players.size());
-		const size_t total = sizeof(Shared::WorldSnapshotHeader)
-			+ size_t(count) * sizeof(Shared::PlayerStateEntry);
-		if (total > Shared::kMaxPacketSize) return;   // AOI 가 들어오기 전까지의 안전장치
+		const uint32_t nowTick = tick.load(std::memory_order_relaxed);
 
-		snapshotBuffer.resize(total);
+		// ── ① 전원 상태를 한 번만 만든다 ──
+		//   수신자가 100명이어도 이 변환은 100번이 아니라 1번이다.
+		entryCache.clear();
+		receiverCache.clear();
+		entryCache.reserve(players.size());
+		receiverCache.reserve(players.size());
 
-		auto* head = reinterpret_cast<Shared::WorldSnapshotHeader*>(snapshotBuffer.data());
-		head->header.size = static_cast<uint16_t>(total);
-		head->header.type = Shared::PacketType::PlayerState;
-		head->tick = tick.load(std::memory_order_relaxed);
-		head->count = count;
-		head->reserved = 0;
-
-		auto* entry = reinterpret_cast<Shared::PlayerStateEntry*>(
-			snapshotBuffer.data() + sizeof(Shared::WorldSnapshotHeader));
-
-		size_t i = 0;
 		for (auto& [sid, up] : players)
 		{
 			const MatchPlayer& p = *up;
-			auto& e = entry[i++];
+			Shared::PlayerStateEntry e{};
 			e.playerId = p.playerId;
 			std::memcpy(e.pos, p.pos, sizeof(e.pos));
 			std::memcpy(e.vel, p.vel, sizeof(e.vel));
@@ -236,17 +255,59 @@ namespace swc {
 			e.altitude = p.altitude;
 			e.verticalSpeed = p.verticalSpeed;
 			e.grounded = p.grounded ? 1 : 0;
-			e.reserved[0] = e.reserved[1] = e.reserved[2] = 0;
+			entryCache.push_back(e);
+			receiverCache.push_back(&p);
 		}
 
-		// ackTick 만 사람마다 다르다. 그 4바이트만 고쳐서 같은 버퍼를 재사용한다.
-		for (auto& [sid, up] : players)
+		// 한 패킷에 담을 수 있는 최대 인원
+		constexpr size_t kMaxEntries =
+			(Shared::kMaxPacketSize - sizeof(Shared::WorldSnapshotHeader))
+			/ sizeof(Shared::PlayerStateEntry);
+
+		const float r2 = aoiRadiusM * aoiRadiusM;
+		const size_t n = entryCache.size();
+
+		snapshotBuffer.resize(sizeof(Shared::WorldSnapshotHeader)
+			+ (n < kMaxEntries ? n : kMaxEntries) * sizeof(Shared::PlayerStateEntry));
+
+		// ── ② 수신자마다 시야 안의 것만 담아 보낸다 ──
+		for (size_t r = 0; r < n; ++r)
 		{
-			if (auto sess = up->session.lock())
+			const MatchPlayer& me = *receiverCache[r];
+			auto sess = me.session.lock();
+			if (!sess) continue;
+
+			auto* head = reinterpret_cast<Shared::WorldSnapshotHeader*>(snapshotBuffer.data());
+			auto* out = reinterpret_cast<Shared::PlayerStateEntry*>(
+				snapshotBuffer.data() + sizeof(Shared::WorldSnapshotHeader));
+
+			uint16_t count = 0;
+			for (size_t i = 0; i < n && count < kMaxEntries; ++i)
 			{
-				head->ackTick = up->ackTick;
-				sess->Send(snapshotBuffer.data(), head->header.size);
+				if (aoiEnabled && i != r)
+				{
+					// 시야 밖이면 건너뛴다. 자기 자신은 언제나 포함한다
+					// (자기 위치가 빠지면 클라가 보정할 기준을 잃는다)
+					const float dx = entryCache[i].pos[0] - me.pos[0];
+					const float dy = entryCache[i].pos[1] - me.pos[1];
+					const float dz = entryCache[i].pos[2] - me.pos[2];
+					if (dx * dx + dy * dy + dz * dz > r2) continue;
+				}
+				out[count++] = entryCache[i];
 			}
+
+			const size_t total = sizeof(Shared::WorldSnapshotHeader)
+				+ size_t(count) * sizeof(Shared::PlayerStateEntry);
+
+			head->header.size = static_cast<uint16_t>(total);
+			head->header.type = Shared::PacketType::PlayerState;
+			head->tick = nowTick;
+			head->ackTick = me.ackTick;     // ★ 이 값만 사람마다 다르다
+			head->count = count;
+			head->reserved = 0;
+
+			sess->Send(snapshotBuffer.data(), head->header.size);
+			snapshotBytes.fetch_add(total, std::memory_order_relaxed);
 		}
 	}
 

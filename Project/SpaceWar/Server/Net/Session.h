@@ -58,6 +58,13 @@ namespace swc {
 		WSABUF            wsabuf{};
 	};
 
+	// ── 한계값 ───────────────────────────────────────────────
+	//  클라가 데이터를 안 읽어가면 커널 송신 버퍼가 차고, 우리 큐가 무한히 자란다.
+	//  느린 클라 하나가 서버 메모리를 다 먹는 것을 막는다. (= slow-reader 공격 방어)
+	inline constexpr size_t kMaxSendQueueBytes = 1024 * 1024;   // 1MB 넘으면 강제 종료
+	inline constexpr size_t kSendChunkBytes = 64 * 1024;        // 한 번에 보낼 상한
+	inline constexpr int64_t kIdleTimeoutMs = 15000;            // 이 시간 무응답이면 끊는다
+
 	class Session : public std::enable_shared_from_this<Session>
 	{
 	public:
@@ -90,17 +97,30 @@ namespace swc {
 		bool     Closed() const { return closed.load(std::memory_order_acquire); }
 
 		// 게임 계층이 붙여두는 꼬리표 (어느 경기의 몇 번 플레이어인가)
-		void SetMatchId(uint32_t m) { matchId = m; }
+		void     SetMatchId(uint32_t m) { matchId = m; }
 		uint32_t MatchId() const { return matchId; }
 
+		// ── 죽은 연결 감지 ──
+		//  TCP 는 케이블을 뽑아도 바로 알려주지 않는다. OS 기본 keepalive 는 2시간이라
+		//  그때까지 자리를 차지한다. 그래서 "마지막으로 뭔가 받은 시각" 을 직접 재고
+		//  IocpServer 의 청소 스레드가 오래된 세션을 끊는다.
+		int64_t  LastActivityMs() const { return lastActivityMs.load(std::memory_order_relaxed); }
+
+		uint64_t BytesRecv() const { return bytesRecv.load(std::memory_order_relaxed); }
+		uint64_t BytesSent() const { return bytesSent.load(std::memory_order_relaxed); }
+
 	private:
-		void FlushSendQueue();   // sendMutex 를 이미 잡은 상태에서 호출
+		void BuildAndPostSend();   // sendMutex 를 이미 잡은 상태에서 호출
+		bool PostSendCurrent();    // sendMutex 를 이미 잡은 상태에서 호출
 
 		SOCKET   socket;
 		uint32_t sessionId;
 		uint32_t matchId = 0;
 
-		std::atomic<bool> closed{ false };
+		std::atomic<bool>    closed{ false };
+		std::atomic<int64_t> lastActivityMs{ 0 };
+		std::atomic<uint64_t> bytesRecv{ 0 };
+		std::atomic<uint64_t> bytesSent{ 0 };
 
 		// ── 수신 ──
 		// recvCtx 는 세션당 하나. 수신은 항상 한 번에 하나만 걸어둔다.
@@ -112,7 +132,9 @@ namespace swc {
 		// ── 송신 ──
 		std::mutex sendMutex;
 		std::deque<std::vector<char>> sendQueue;
+		size_t     queuedBytes = 0;          // 큐에 쌓인 총 바이트 (한계 검사용)
 		IoContext  sendCtx;
+		size_t     sentOffset = 0;           // ★ 부분 송신 처리용. 지금 버퍼에서 보낸 양
 		bool       sending = false;          // WSASend 가 진행 중인가
 	};
 }

@@ -21,6 +21,7 @@
 #include <ws2tcpip.h>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <vector>
 #include <thread>
 #include <atomic>
@@ -142,6 +143,82 @@ namespace {
 		::closesocket(sock);
 		g_connected.fetch_sub(1);
 	}
+}
+
+// ── 좀비 클라이언트 ──────────────────────────────────────
+//
+//  접속만 하고 아무것도 보내지 않는다. 랜선이 뽑혔거나 클라가 얼어붙은 상황이다.
+//  TCP 는 이걸 알려주지 않으므로(OS 기본 keepalive 는 2시간),
+//  서버의 청소 스레드가 kIdleTimeoutMs 안에 끊어내는지 확인하는 용도다.
+//
+//  ★ 이게 왜 중요한가
+//    50 대 50 경기에서 유령 한 명이 자리를 계속 차지하면 매칭이 막힌다.
+int RunZombieClients(const char* host, uint16_t port, int count, int seconds)
+{
+	WSADATA wsa{};
+	::WSAStartup(MAKEWORD(2, 2), &wsa);
+
+	std::printf("[zombie] %s:%u 로 침묵 접속 %d개 (%d초 관찰)\n", host, port, count, seconds);
+
+	std::vector<SOCKET> socks;
+	socks.reserve(count);
+
+	for (int i = 0; i < count; ++i)
+	{
+		SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (s == INVALID_SOCKET) continue;
+
+		sockaddr_in addr{};
+		addr.sin_family = AF_INET;
+		addr.sin_port = ::htons(port);
+		::inet_pton(AF_INET, host, &addr.sin_addr);
+
+		if (::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR)
+		{
+			::closesocket(s);
+			continue;
+		}
+		// ★ 살아있는지 확인하려면 논블로킹이어야 한다.
+		//   블로킹 소켓에 recv 를 걸면 데이터가 올 때까지 그 자리에서 멈춘다.
+		//   침묵하는 연결을 지켜보는 게 목적이므로 절대 막히면 안 된다.
+		u_long nonblock = 1;
+		::ioctlsocket(s, FIONBIO, &nonblock);
+
+		socks.push_back(s);      // 접속만 해두고 아무것도 보내지 않는다
+	}
+	std::printf("[zombie] %zu개 접속 완료. 이제 침묵한다.\n", socks.size());
+
+	// 서버가 끊어줄 때까지 지켜본다.
+	//
+	//  ※ 서버가 접속 직후 ServerHello 를 보내므로 수신 버퍼에 데이터가 남아 있다.
+	//    MSG_PEEK 은 그걸 소비하지 않아서 언제까지나 "데이터 있음"으로 보인다.
+	//    그래서 매번 실제로 읽어서 버퍼를 비운다.
+	for (int i = 0; i < seconds; ++i)
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+
+		int alive = 0;
+		for (SOCKET s : socks)
+		{
+			char drain[512];
+			bool closed = false;
+			for (;;)
+			{
+				const int n = ::recv(s, drain, sizeof(drain), 0);
+				if (n > 0) continue;                       // 남은 데이터를 계속 비운다
+				if (n == 0) { closed = true; break; }      // 서버가 정상 종료시켰다
+				closed = (::WSAGetLastError() != WSAEWOULDBLOCK);
+				break;
+			}
+			if (!closed) ++alive;
+		}
+		std::printf("[zombie] %2d초 : 살아있는 연결 %d개\n", i + 1, alive);
+		if (alive == 0) { std::printf("[zombie] 서버가 전부 끊었다. (유휴 타임아웃 동작 확인)\n"); break; }
+	}
+
+	for (SOCKET s : socks) ::closesocket(s);
+	::WSACleanup();
+	return 0;
 }
 
 // 봇 count 마리를 seconds 초 동안 돌린다.

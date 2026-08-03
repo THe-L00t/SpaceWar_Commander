@@ -102,7 +102,10 @@ namespace swc {
 		for (int i = 0; i < workerCount; ++i)
 			workers.emplace_back([this] { WorkerLoop(); });
 
-		// ⑥ Accept 를 미리 여러 개 깔아둔다
+		// ⑦ 죽은 연결 청소 스레드
+		janitor = std::thread([this] { JanitorLoop(); });
+
+		// ⑧ Accept 를 미리 여러 개 깔아둔다
 		for (int i = 0; i < kBacklogPosts; ++i)
 			PostAccept();
 
@@ -110,14 +113,60 @@ namespace swc {
 		return true;
 	}
 
+	// ── 죽은 연결 청소 ──────────────────────────────────────
+	//
+	//  ★ 왜 필요한가
+	//    랜선을 뽑거나 클라가 강제 종료되면 TCP 는 그것을 바로 알려주지 않는다.
+	//    OS 기본 keepalive 는 2시간이라 그때까지 세션이 자리를 차지한다.
+	//    50 대 50 경기에서 유령 한 명이 2시간 남아 있으면 매칭이 막힌다.
+	//
+	//    그래서 "마지막으로 뭔가 받은 시각" 을 직접 재고 오래된 것을 끊는다.
+	//    클라는 30Hz 로 입력을 보내므로, 15초 무응답이면 확실히 죽은 것이다.
+	void IocpServer::JanitorLoop()
+	{
+		using namespace std::chrono;
+
+		while (running.load(std::memory_order_relaxed))
+		{
+			std::this_thread::sleep_for(seconds(1));
+			if (!running.load(std::memory_order_relaxed)) break;
+
+			const int64_t now =
+				duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+
+			// 끊을 대상을 먼저 모은다.
+			// 락을 잡은 채 Close() 를 부르면 그 안에서 다시 락을 잡으려 해 교착할 수 있다.
+			std::vector<std::shared_ptr<Session>> dead;
+			{
+				std::shared_lock lock(sessionMutex);
+				for (auto& [id, s] : sessions)
+					if (now - s->LastActivityMs() > kIdleTimeoutMs)
+						dead.push_back(s);
+			}
+
+			for (auto& s : dead)
+			{
+				timedOut.fetch_add(1, std::memory_order_relaxed);
+				s->Close();      // 걸린 IO 가 실패로 완료되며 WorkerLoop 이 정리한다
+			}
+		}
+	}
+
 	void IocpServer::Stop()
 	{
 		if (!running.exchange(false)) return;
 
+		if (janitor.joinable()) janitor.join();
+
 		// 접속 중인 세션 전부 종료
 		{
 			std::unique_lock lock(sessionMutex);
-			for (auto& [id, s] : sessions) s->Close();
+			for (auto& [id, s] : sessions)
+			{
+				closedBytesRecv.fetch_add(s->BytesRecv(), std::memory_order_relaxed);
+				closedBytesSent.fetch_add(s->BytesSent(), std::memory_order_relaxed);
+				s->Close();
+			}
 			sessions.clear();
 		}
 
@@ -290,7 +339,13 @@ namespace swc {
 			std::unique_lock lock(sessionMutex);
 			existed = sessions.erase(s->Id()) > 0;
 		}
-		if (existed && onDisconnect) onDisconnect(s);
+		if (!existed) return;   // 다른 스레드가 이미 지웠다 (콜백 중복 호출 방지)
+
+		// 사라질 세션의 누적 전송량을 총계에 합친다
+		closedBytesRecv.fetch_add(s->BytesRecv(), std::memory_order_relaxed);
+		closedBytesSent.fetch_add(s->BytesSent(), std::memory_order_relaxed);
+
+		if (onDisconnect) onDisconnect(s);
 	}
 
 	std::shared_ptr<Session> IocpServer::Find(uint32_t sessionId) const
@@ -304,5 +359,21 @@ namespace swc {
 	{
 		std::shared_lock lock(sessionMutex);
 		return sessions.size();
+	}
+
+	uint64_t IocpServer::TotalBytesRecv() const
+	{
+		uint64_t n = closedBytesRecv.load(std::memory_order_relaxed);
+		std::shared_lock lock(sessionMutex);
+		for (auto& [id, s] : sessions) n += s->BytesRecv();
+		return n;
+	}
+
+	uint64_t IocpServer::TotalBytesSent() const
+	{
+		uint64_t n = closedBytesSent.load(std::memory_order_relaxed);
+		std::shared_lock lock(sessionMutex);
+		for (auto& [id, s] : sessions) n += s->BytesSent();
+		return n;
 	}
 }

@@ -53,8 +53,14 @@ namespace swc {
 		std::shared_ptr<Session> Find(uint32_t sessionId) const;
 		size_t SessionCount() const;
 
+		// 통계 (초당 대역폭 계산용. 누적값이므로 호출자가 차분을 낸다)
+		uint64_t TotalBytesRecv() const;
+		uint64_t TotalBytesSent() const;
+		uint32_t TimedOutCount() const { return timedOut.load(std::memory_order_relaxed); }
+
 	private:
 		void WorkerLoop();                 // IOCP 워커 스레드 본체
+		void JanitorLoop();                // 죽은 연결 청소 스레드
 		bool PostAccept();                 // 다음 접속을 미리 예약
 		void OnAcceptComplete(IoContext* ctx);
 		void RemoveSession(const std::shared_ptr<Session>& s);
@@ -67,8 +73,14 @@ namespace swc {
 		LPFN_ACCEPTEX acceptExPtr = nullptr;
 
 		std::vector<std::thread> workers;
+		std::thread janitor;
 		std::atomic<bool> running{ false };
 		std::atomic<uint32_t> nextSessionId{ 1 };   // 0 은 "없음" 으로 예약
+		std::atomic<uint32_t> timedOut{ 0 };
+
+		// 끊긴 세션이 남기고 간 누적 전송량 (살아있는 세션 것과 합쳐서 총계를 낸다)
+		std::atomic<uint64_t> closedBytesRecv{ 0 };
+		std::atomic<uint64_t> closedBytesSent{ 0 };
 
 		// 세션 목록. 읽기(찾기)가 쓰기(접속/종료)보다 훨씬 잦으므로
 		// shared_mutex 로 읽기는 여럿이 동시에 통과시킨다.

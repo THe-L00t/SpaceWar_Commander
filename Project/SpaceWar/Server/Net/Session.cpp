@@ -1,15 +1,25 @@
 #include "Session.h"
 #include <ws2tcpip.h>
 #include <cstring>
+#include <chrono>
 
 #pragma comment(lib, "ws2_32.lib")
 
 namespace swc {
 
+	namespace {
+		int64_t NowMs()
+		{
+			using namespace std::chrono;
+			return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+		}
+	}
+
 	Session::Session(SOCKET s, uint32_t id)
 		: socket(s), sessionId(id)
 	{
 		assembly.reserve(32 * 1024);
+		lastActivityMs.store(NowMs());
 	}
 
 	Session::~Session()
@@ -70,7 +80,17 @@ namespace swc {
 			return;
 		}
 
+		lastActivityMs.store(NowMs(), std::memory_order_relaxed);
+		bytesRecv.fetch_add(bytes, std::memory_order_relaxed);
+
 		assembly.insert(assembly.end(), recvBuf, recvBuf + bytes);
+
+		// 조립 버퍼가 비정상적으로 크면 상대가 헤더를 안 채우고 계속 흘려보내는 것이다
+		if (assembly.size() > size_t(Shared::kMaxPacketSize) * 8)
+		{
+			Close();
+			return;
+		}
 
 		size_t offset = 0;
 		while (assembly.size() - offset >= sizeof(Shared::PacketHeader))
@@ -78,7 +98,7 @@ namespace swc {
 			const auto* head =
 				reinterpret_cast<const Shared::PacketHeader*>(assembly.data() + offset);
 
-			// 방어 : 조작된 헤더로 거대한 메모리를 잡게 만들 수 있다
+			// 방어 : 조작된 헤더로 거대한 메모리를 잡게 만들거나 무한 루프를 돌 수 있다
 			if (head->size < sizeof(Shared::PacketHeader) ||
 				head->size > Shared::kMaxPacketSize)
 			{
@@ -116,60 +136,109 @@ namespace swc {
 		std::vector<char> packet(static_cast<const char*>(data),
 			static_cast<const char*>(data) + size);
 
-		std::lock_guard<std::mutex> lock(sendMutex);
-		sendQueue.push_back(std::move(packet));
+		{
+			std::lock_guard<std::mutex> lock(sendMutex);
 
-		if (!sending)
-			FlushSendQueue();
+			// ★ 느린 클라 방어
+			//   상대가 데이터를 안 읽어가면 커널 송신 버퍼가 차고, 이 큐가 무한히 자란다.
+			//   한 명 때문에 서버 메모리가 바닥나는 것을 막는다.
+			if (queuedBytes + packet.size() > kMaxSendQueueBytes)
+			{
+				sendQueue.clear();
+				queuedBytes = 0;
+				Close();
+				return;
+			}
+
+			queuedBytes += packet.size();
+			sendQueue.push_back(std::move(packet));
+
+			if (!sending)
+				BuildAndPostSend();
+		}
 	}
 
-	void Session::FlushSendQueue()
+	// 대기 중인 패킷들을 하나로 합쳐서 발사한다.
+	// send 호출 횟수가 곧 커널 진입 횟수라, 묶을수록 싸다.
+	void Session::BuildAndPostSend()
 	{
 		if (sendQueue.empty() || Closed()) return;
 
-		// 대기 중인 패킷을 하나로 합쳐서 한 번에 보낸다.
-		// send 호출 횟수가 곧 커널 진입 횟수라, 묶을수록 싸다.
 		sendCtx.sendData.clear();
+		sentOffset = 0;
+
 		while (!sendQueue.empty())
 		{
 			const auto& front = sendQueue.front();
 			if (!sendCtx.sendData.empty() &&
-				sendCtx.sendData.size() + front.size() > 64 * 1024)
+				sendCtx.sendData.size() + front.size() > kSendChunkBytes)
 				break;                        // 한 번에 64KB 까지만
 
 			sendCtx.sendData.insert(sendCtx.sendData.end(), front.begin(), front.end());
+			queuedBytes -= front.size();
 			sendQueue.pop_front();
 		}
 		if (sendCtx.sendData.empty()) return;
 
+		sending = true;
+		if (!PostSendCurrent())
+		{
+			sending = false;
+			Close();
+		}
+	}
+
+	// sendCtx.sendData 의 sentOffset 이후를 발사한다.
+	// (처음 발사와 "부분 송신 후 이어보내기" 둘 다 여기를 쓴다)
+	bool Session::PostSendCurrent()
+	{
 		std::memset(&sendCtx.ov, 0, sizeof(sendCtx.ov));
 		sendCtx.type = IoType::Send;
 		sendCtx.owner = shared_from_this();
 
-		sendCtx.wsabuf.buf = sendCtx.sendData.data();
-		sendCtx.wsabuf.len = static_cast<ULONG>(sendCtx.sendData.size());
+		sendCtx.wsabuf.buf = sendCtx.sendData.data() + sentOffset;
+		sendCtx.wsabuf.len = static_cast<ULONG>(sendCtx.sendData.size() - sentOffset);
 
 		DWORD sent = 0;
-		sending = true;
-
 		const int r = ::WSASend(socket, &sendCtx.wsabuf, 1, &sent, 0, &sendCtx.ov, nullptr);
-		if (r == SOCKET_ERROR)
+		if (r == SOCKET_ERROR && ::WSAGetLastError() != WSA_IO_PENDING)
 		{
-			const int err = ::WSAGetLastError();
-			if (err != WSA_IO_PENDING)
-			{
-				sending = false;
-				sendCtx.owner.reset();
-				Close();
-			}
+			sendCtx.owner.reset();
+			return false;
 		}
+		return true;
 	}
 
-	void Session::OnSendComplete(DWORD /*bytes*/)
+	// ── 송신 완료 ───────────────────────────────────────────
+	//
+	//  ★ 부분 송신(partial send) 을 반드시 처리해야 한다
+	//    WSASend 는 "요청한 만큼 다 보냈다"를 보장하지 않는다.
+	//    커널 송신 버퍼가 모자라면 일부만 보내고 완료된다.
+	//    bytes 를 버리고 다음 패킷으로 넘어가면 남은 부분이 통째로 사라져
+	//    그 뒤 스트림이 전부 밀린다 = 받는 쪽이 쓰레기를 읽는다.
+	void Session::OnSendComplete(DWORD bytes)
 	{
 		std::lock_guard<std::mutex> lock(sendMutex);
+
+		bytesSent.fetch_add(bytes, std::memory_order_relaxed);
+		sentOffset += bytes;
+
+		if (sentOffset < sendCtx.sendData.size())
+		{
+			// 덜 보냈다 -> 남은 부분을 이어서 발사한다
+			if (!PostSendCurrent())
+			{
+				sending = false;
+				Close();
+			}
+			return;
+		}
+
+		// 이 덩어리는 다 나갔다. 그사이 쌓인 게 있으면 이어서 보낸다.
+		sendCtx.sendData.clear();
+		sentOffset = 0;
 		sending = false;
-		FlushSendQueue();                     // 그사이 쌓인 게 있으면 이어서 발사
+		BuildAndPostSend();
 	}
 
 	// ── 종료 ────────────────────────────────────────────────

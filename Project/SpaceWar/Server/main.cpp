@@ -43,6 +43,7 @@
 
 // TestClient.cpp — 부하 확인용 봇
 extern int RunBotClients(const char* host, uint16_t port, int count, int seconds);
+extern int RunZombieClients(const char* host, uint16_t port, int count, int seconds);
 
 namespace {
 
@@ -130,27 +131,67 @@ namespace {
 	//  틱시간이 33ms(=1/30초)에 근접하면 그 코어가 포화된 것이다.
 	void PrintStats()
 	{
-		static uint64_t prevInputs = 0;
+		static uint64_t prevInputs = 0, prevRx = 0, prevTx = 0;
+
 		const uint64_t inputs = g_matches.TotalInputs();
-		const uint64_t perSec = inputs - prevInputs;
-		prevInputs = inputs;
+		const uint64_t rx = g_server.TotalBytesRecv();
+		const uint64_t tx = g_server.TotalBytesSent();
 
-		std::printf("[stat] 접속 %zu  경기 %zu  인원 %zu  입력 %llu/s  틱시간",
+		const uint64_t inputsPerSec = inputs - prevInputs;
+		const double rxMbps = double(rx - prevRx) * 8.0 / 1'000'000.0;
+		const double txMbps = double(tx - prevTx) * 8.0 / 1'000'000.0;
+		prevInputs = inputs; prevRx = rx; prevTx = tx;
+
+		// 워커별 틱시간 중 최댓값만 본다 (32코어면 다 찍으면 안 읽힌다)
+		double worstMs = 0.0;
+		size_t worstIdx = 0;
+		for (size_t i = 0; i < g_matches.WorkerCount(); ++i)
+			if (g_matches.LastTickMs(i) > worstMs) { worstMs = g_matches.LastTickMs(i); worstIdx = i; }
+
+		std::printf("[stat] 접속 %zu  경기 %zu  인원 %zu | 입력 %llu/s | "
+			"수신 %.2f Mbps  송신 %.2f Mbps | 최대틱 %.2fms(w%zu, 예산 %.1fms) | 타임아웃 %u\n",
 			g_server.SessionCount(), g_matches.MatchCount(), g_matches.TotalPlayers(),
-			static_cast<unsigned long long>(perSec));
+			static_cast<unsigned long long>(inputsPerSec),
+			rxMbps, txMbps, worstMs, worstIdx, Shared::kTickSeconds * 1000.0f,
+			g_server.TimedOutCount());
+	}
 
-		for (size_t i = 0; i < g_matches.WorkerCount() && i < 8; ++i)
-			std::printf(" %.2fms", g_matches.LastTickMs(i));
-		std::printf("\n");
+	// ── Ctrl+C 처리 ─────────────────────────────────────────
+	//  그냥 죽이면 소켓과 스레드가 정리되지 않는다. 특히 리슨 포트가
+	//  TIME_WAIT 로 남아 바로 다시 못 켜는 경우가 생긴다.
+	std::atomic<bool> g_quit{ false };
+
+	BOOL WINAPI ConsoleHandler(DWORD type)
+	{
+		if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT || type == CTRL_BREAK_EVENT)
+		{
+			std::printf("\n[main] 종료 신호 수신\n");
+			g_quit.store(true);
+			return TRUE;
+		}
+		return FALSE;
 	}
 }
 
 int main(int argc, char** argv)
 {
+	// ★ 로그를 버퍼링 없이 즉시 내보낸다.
+	//   로그 파일로 리다이렉트하면 블록 버퍼링(4KB)이 걸린다. 그 상태로
+	//   프로세스가 강제 종료되면 마지막 수십 줄이 통째로 사라져서
+	//   "언제 무슨 일이 있었는지" 를 못 본다. 서버 진단에서 치명적이다.
+	//
+	//   ※ _IOLBF(줄 버퍼링)를 쓰면 안 된다.
+	//     MSVC 의 CRT 는 _IOLBF 를 지원하지 않고 조용히 _IOFBF(전체 버퍼링)로
+	//     처리한다. 지정해도 아무 효과가 없다. 반드시 _IONBF 를 써야 한다.
+	std::setvbuf(stdout, nullptr, _IONBF, 0);
+
 	uint16_t port = 27015;
 	int bots = 0;
 	int clientOnly = 0;
+	int zombies = 0;
 	const char* host = "127.0.0.1";
+	bool  aoi = true;
+	float aoiRadius = 150.0f;
 
 	for (int i = 1; i < argc; ++i)
 	{
@@ -158,17 +199,27 @@ int main(int argc, char** argv)
 		else if (!std::strcmp(argv[i], "--bots") && i + 1 < argc)   bots = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--client") && i + 1 < argc) clientOnly = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--host") && i + 1 < argc)   host = argv[++i];
+		else if (!std::strcmp(argv[i], "--aoi") && i + 1 < argc)    aoi = std::atoi(argv[++i]) != 0;
+		else if (!std::strcmp(argv[i], "--aoi-radius") && i + 1 < argc) aoiRadius = float(std::atof(argv[++i]));
+		else if (!std::strcmp(argv[i], "--zombie") && i + 1 < argc) zombies = std::atoi(argv[++i]);
 	}
 
 	// 봇 전용 모드 — 이미 떠 있는 서버에 부하만 준다
 	if (clientOnly > 0)
 		return RunBotClients(host, port, clientOnly, 15);
 
+	// 좀비 모드 — 접속만 하고 침묵. 서버가 끊어내는지 확인한다
+	if (zombies > 0)
+		return RunZombieClients(host, port, zombies, 30);
+
 	std::printf("=== SpaceWar Server (IOCP) ===\n");
 	std::printf("경기당 %u명 (%u 대 %u) / 틱 %u Hz / 이 PC 코어 %u개\n",
 		Shared::kPlayersPerMatch, Shared::kTeamSize, Shared::kTeamSize,
 		Shared::kTickRateHz, std::thread::hardware_concurrency());
+	if (aoi) std::printf("AOI 켜짐 (반경 %.0fm) — 시야 밖 플레이어는 스냅샷에서 뺀다\n", aoiRadius);
+	else     std::printf("AOI 꺼짐 — 전원을 담는다 (대역폭 비교용)\n");
 
+	g_matches.SetAoi(aoi, aoiRadius);
 	g_server.SetConnectHandler(OnConnect);
 	g_server.SetDisconnectHandler(OnDisconnect);
 	g_server.SetPacketHandler(OnPacket);
@@ -188,8 +239,11 @@ int main(int argc, char** argv)
 		RunBotClients("127.0.0.1", port, bots, 12);
 			});
 
-	const int seconds = bots > 0 ? 15 : 3600;
-	for (int i = 0; i < seconds; ++i)
+	::SetConsoleCtrlHandler(ConsoleHandler, TRUE);
+	if (bots == 0) std::printf("[main] Ctrl+C 로 종료\n");
+
+	const int seconds = bots > 0 ? 15 : 86400;
+	for (int i = 0; i < seconds && !g_quit.load(); ++i)
 	{
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 		PrintStats();

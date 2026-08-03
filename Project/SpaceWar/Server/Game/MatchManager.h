@@ -18,11 +18,15 @@
 //    문맥 전환 비용이 시뮬레이션 비용을 넘어선다.
 //    그래서 ★ 틱 워커를 코어 수만큼만 ★ 두고, 경기를 나눠 맡긴다.
 //
-//  ★ 어떻게 나누나 — 고정 배정(static sharding)
-//        경기 k  ->  워커 (k % 워커수)
+//  ★ 어떻게 나누나 — 고정 소유(static ownership)
+//    경기를 만들 때 담당 워커를 정해서 Match 안에 박아둔다. 절대 바뀌지 않는다.
 //    매번 큐에서 훔쳐가는 방식(work stealing)도 있지만,
-//    고정 배정이면 "한 경기는 늘 같은 스레드가 처리" 가 보장된다.
+//    고정이면 "한 경기는 늘 같은 스레드가 처리" 가 보장되고
 //    그러면 경기 내부 상태에 락이 아예 필요 없어진다. (Match.h 주석 참고)
+//
+//    ※ "matches[k] 를 워커 (k % N)" 처럼 인덱스로 나누면 안 된다.
+//      빈 경기를 목록에서 지우는 순간 인덱스가 밀려서
+//      같은 경기를 두 워커가 동시에 Tick 할 수 있다.
 //
 //  ★ 틱 주기 맞추기
 //    Sleep(33) 을 반복하면 오차가 누적돼 점점 느려진다.
@@ -40,6 +44,10 @@ namespace swc {
 		void Start(int tickWorkers = 0);
 		void Stop();
 
+		// AOI 설정. 이후 만들어지는 경기에 적용된다.
+		// (끄고 켜며 대역폭을 비교해 보라 — 이 구조에서 가장 큰 차이를 만드는 스위치다)
+		void SetAoi(bool enabled, float radiusM) { aoiEnabled = enabled; aoiRadiusM = radiusM; }
+
 		// 빈자리가 있는 경기를 찾고, 없으면 새로 연다.
 		std::shared_ptr<Match> FindOrCreateMatch();
 
@@ -53,11 +61,18 @@ namespace swc {
 		size_t  WorkerCount() const { return workers.size(); }
 
 	private:
-		void TickLoop(size_t workerIndex);
+		// workerCount 를 인자로 받는다. workers.size() 를 읽으면
+		// Start() 가 스레드를 만드는 도중이라 값이 아직 안 찼을 수 있다.
+		void TickLoop(size_t workerIndex, size_t workerCount);
+		void ReapEmptyMatches();
 
 		mutable std::shared_mutex matchMutex;
 		std::vector<std::shared_ptr<Match>> matches;
 		std::atomic<uint32_t> nextMatchId{ 1 };
+		size_t workerCountCache = 1;        // 경기 생성 시 소유 워커를 정하는 데 쓴다
+
+		bool  aoiEnabled = true;
+		float aoiRadiusM = 150.0f;
 
 		std::vector<std::thread> workers;
 		std::atomic<bool> running{ false };
