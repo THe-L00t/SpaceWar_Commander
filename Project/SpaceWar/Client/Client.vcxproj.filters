@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
     솔루션 탐색기 표시 구조 (가상 폴더). 실제 파일 위치는 바뀌지 않는다.
@@ -24,6 +24,9 @@
     </Filter>
     <Filter Include="Engine\Graphics\RayTracing">
       <UniqueIdentifier>{90f55430-b43f-4d75-a2f2-2d258ffcbc8c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Net">
+      <UniqueIdentifier>{6c8b2f19-05a4-4d3e-91f7-4a2e8db06c53}</UniqueIdentifier>
     </Filter>
     <Filter Include="Engine\Resource">
       <UniqueIdentifier>{6d2065af-97cf-4f37-85df-bd15b27b8111}</UniqueIdentifier>
@@ -68,8 +71,8 @@
     <ClCompile Include="Resource\ResourceManager.cpp">
       <Filter>Engine\Resource</Filter>
     </ClCompile>
-    <ClCompile Include="Resource\HeightmapLoader.cpp">
-      <Filter>Engine\Resource</Filter>
+    <ClCompile Include="Net\NetClient.cpp">
+      <Filter>Engine\Net</Filter>
     </ClCompile>
     <ClCompile Include="Scene.cpp">
       <Filter>Engine\Scene</Filter>
@@ -85,9 +88,6 @@
     </ClCompile>
     <ClCompile Include="Camera.cpp">
       <Filter>Game\Player</Filter>
-    </ClCompile>
-    <ClCompile Include="Terrain\TerrainSampler.cpp">
-      <Filter>Game\World</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -115,8 +115,11 @@
     <ClInclude Include="Resource\ResourceManager.h">
       <Filter>Engine\Resource</Filter>
     </ClInclude>
-    <ClInclude Include="Resource\HeightmapLoader.h">
-      <Filter>Engine\Resource</Filter>
+    <ClInclude Include="Net\NetClient.h">
+      <Filter>Engine\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="SimTypes.h">
+      <Filter>Shared</Filter>
     </ClInclude>
     <ClInclude Include="Scene.h">
       <Filter>Engine\Scene</Filter>
@@ -135,15 +138,6 @@
     </ClInclude>
     <ClInclude Include="Camera.h">
       <Filter>Game\Player</Filter>
-    </ClInclude>
-    <ClInclude Include="Planet.h">
-      <Filter>Game\World</Filter>
-    </ClInclude>
-    <ClInclude Include="Vec3d.h">
-      <Filter>Game\World</Filter>
-    </ClInclude>
-    <ClInclude Include="Terrain\TerrainSampler.h">
-      <Filter>Game\World</Filter>
     </ClInclude>
     <ClInclude Include="DummyMesh.h">
       <Filter>Temp</Filter>

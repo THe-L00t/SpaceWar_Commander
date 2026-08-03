@@ -1,12 +1,24 @@
 #pragma once
 #include <cmath>
-#include <DirectXMath.h>
 
-// 구면 계산 전용 double 벡터. DirectXMath 에는 double 타입이 없다.
+// ============================================================
+//  Shared/Math/Vec3d.h — 구면 계산 전용 double 벡터
 //
-// Planet 에서 분리한 이유: Planet 이 TerrainSampler 를 들고,
-// TerrainSampler 는 Vec3d 를 받으므로 한 헤더에 두면 순환 참조가 된다.
-namespace swc {
+//  ★ 왜 Shared 인가
+//    서버가 권위를 가지므로 클라와 서버가 "똑같은 계산"을 해야 한다.
+//    이동 계산이 Shared 로 오면 그 재료인 벡터도 따라와야 한다.
+//
+//  ★ 왜 DirectXMath 를 쓰지 않는가
+//    서버는 그래픽을 모른다. 그리고 DirectXMath 에는 double 타입이 아예 없다.
+//    XMFLOAT3 로 바꾸는 변환은 클라 전용이므로 Client/Vec3dInterop.h 에 둔다.
+//
+//  ★ 왜 double 인가
+//    행성 반지름이 120,000m 라 그 근처에서 float 정밀도가 1.4cm 까지 벌어진다.
+//    (R + 고도) 를 float 로 다루면 고도가 7.8mm 단위로 양자화되고
+//    카메라가 프레임마다 약 2픽셀 떨린다.
+// ============================================================
+
+namespace Shared {
 
 	struct Vec3d
 	{
@@ -14,12 +26,6 @@ namespace swc {
 
 		Vec3d() = default;
 		Vec3d(double px, double py, double pz) : x(px), y(py), z(pz) {}
-		explicit Vec3d(const DirectX::XMFLOAT3& v) : x(v.x), y(v.y), z(v.z) {}
-
-		DirectX::XMFLOAT3 ToFloat3() const
-		{
-			return { float(x), float(y), float(z) };
-		}
 	};
 
 	inline Vec3d operator+(const Vec3d& a, const Vec3d& b) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }

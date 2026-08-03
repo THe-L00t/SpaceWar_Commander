@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cmath>
 #include "Vertex.h"
-#include "Planet.h"
+#include "SimTypes.h"
 
 // 테스트용 더미 메쉬 생성 (Assimp 등 파일 로딩 없이 코드로 만든다)
 // 면마다 노멀이 달라야 하므로 박스는 정점을 공유하지 않고 24개로 만든다.
@@ -124,8 +124,8 @@ namespace swc {
 				const Vec3d n = Normalize(Cross(dv, du));
 
 				Vertex v;
-				v.position = p.ToFloat3();
-				v.normal = n.ToFloat3();
+				v.position = ToFloat3(p);
+				v.normal = ToFloat3(n);
 				v.color = color;
 				m.vertices.push_back(v);
 			}

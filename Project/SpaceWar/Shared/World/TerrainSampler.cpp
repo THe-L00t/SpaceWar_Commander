@@ -1,4 +1,4 @@
-#include "TerrainSampler.h"
+#include "Shared/World/TerrainSampler.h"
 #include <algorithm>
 
 namespace {
@@ -14,9 +14,9 @@ namespace {
 	}
 }
 
-namespace swc {
+namespace Shared {
 
-	void TerrainSampler::Configure(const Shared::HeightmapData* heightmap,
+	void TerrainSampler::Configure(const HeightmapData* heightmap,
 		double planetRadius, const TerrainConfig& cfg)
 	{
 		data = (heightmap && heightmap->Valid()) ? heightmap : nullptr;

@@ -1,5 +1,5 @@
-#include "ResourceManager.h"
-#include "HeightmapLoader.h"
+﻿#include "ResourceManager.h"
+#include "Shared/Resource/HeightmapLoader.h"
 
 namespace swc {
 
@@ -12,7 +12,7 @@ namespace swc {
 			return it->second;                       // ★ 중복 로드 방지
 
 		Shared::HeightmapData data;
-		if (!LoadHeightmapPng(path, data, lastError))
+		if (!Shared::LoadHeightmapPng(path, data, lastError))
 			return {};
 
 		heightmaps.push_back(std::move(data));

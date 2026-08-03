@@ -8,6 +8,7 @@
 #include <atomic>
 #include <unordered_map>
 #include "Shared/Protocol.h"
+#include "Shared/Sim/PlayerMotion.h"
 #include "../Net/Session.h"
 
 // ============================================================
@@ -49,12 +50,9 @@ namespace swc {
 		uint32_t ackTick = 0;                    // 마지막으로 처리한 입력의 tick
 
 		// ── 상태 (틱 워커 전용. 락 없이 만진다) ──
-		float pos[3]{ 0.0f, 0.0f, 0.0f };
-		float vel[3]{ 0.0f, 0.0f, 0.0f };
-		float facing[3]{ 0.0f, 0.0f, 1.0f };
-		float altitude = 0.0f;
-		float verticalSpeed = 0.0f;
-		bool  grounded = true;
+		//   ★ 클라의 PlayerController 와 완전히 같은 타입이다.
+		//     같은 타입 + 같은 함수(StepMotion) 라야 예측·보정이 성립한다.
+		Shared::MotionState motion;
 
 		// 통계
 		std::atomic<uint32_t> receivedInputs{ 0 };
@@ -111,8 +109,10 @@ namespace swc {
 		// MatchManager 가 오래 빈 경기를 정리하는 데 쓴다.
 		int64_t EmptySinceMs() const { return emptySinceMs.load(std::memory_order_relaxed); }
 
+		// 이 경기가 쓰는 행성. 클라와 반드시 같은 값이어야 한다.
+		Shared::Planet& World() { return planet; }
+
 	private:
-		void Simulate(MatchPlayer& p, const Shared::PlayerInputPacket& in, float dt);
 		void BroadcastSnapshot();
 		void UpdateEmptyMark();      // rosterMutex 를 잡은 상태에서 호출
 
@@ -130,6 +130,7 @@ namespace swc {
 		std::atomic<uint64_t> totalInputs{ 0 };
 		std::atomic<uint64_t> snapshotBytes{ 0 };   // AOI 효과 측정용
 
+		Shared::Planet planet;      // 기본값 = 반지름 120km, 중력 18. 지형은 아직 없음
 		bool  aoiEnabled = true;
 		float aoiRadiusM = 150.0f;
 

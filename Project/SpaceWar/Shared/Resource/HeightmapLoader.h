@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <string>
 #include "Shared/HeightmapData.h"
 
@@ -10,8 +10,8 @@
 // ★ 경로는 와이드 문자열로만 다룬다.
 //   윈도우 경로는 원래 UTF-16 이다. char* 로 받으면 ANSI(CP949) 인지 UTF-8 인지
 //   알 수 없어, 경로에 한글이 있을 때 조용히 깨진다. (실제로 한 번 걸렸다)
-namespace swc {
+namespace Shared {
 
 	// 실패 시 false, 사유는 error 에 담긴다.
-	bool LoadHeightmapPng(const wchar_t* path, Shared::HeightmapData& out, std::wstring& error);
+	bool LoadHeightmapPng(const wchar_t* path, HeightmapData& out, std::wstring& error);
 }

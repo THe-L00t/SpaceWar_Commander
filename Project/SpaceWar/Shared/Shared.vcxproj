@@ -50,6 +50,7 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -61,15 +62,25 @@
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Protocol.h" />
     <ClInclude Include="Units.h" />
     <ClInclude Include="HeightmapData.h" />
+    <ClInclude Include="Math\Vec3d.h" />
+    <ClInclude Include="World\Planet.h" />
+    <ClInclude Include="World\TerrainSampler.h" />
+    <ClInclude Include="Sim\MoveInput.h" />
+    <ClInclude Include="Sim\PlayerMotion.h" />
+    <ClInclude Include="Resource\HeightmapLoader.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
+    <ClCompile Include="World\TerrainSampler.cpp" />
+    <ClCompile Include="Sim\PlayerMotion.cpp" />
+    <ClCompile Include="Resource\HeightmapLoader.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -6,7 +6,11 @@
     고치면 양쪽이 동시에 바뀐다 -> 고칠 때 반드시 상대 담당자에게 알린다.
 
       Protocol/   주고받는 패킷 모양
-      Rules/      양쪽이 같은 값을 써야 하는 규칙 (단위·중력·속도, 지형 높이)
+      Rules/      양쪽이 같은 값을 써야 하는 규칙 (단위, 지형 데이터 형식)
+      Math/       구면 계산용 double 벡터
+      World/      행성 / 지형 높이
+      Sim/        ★ 이동 계산. 클라 예측과 서버 권위가 이 함수 하나를 공유한다
+      Resource/   하이트맵 로더 (서버도 같은 PNG 를 읽어야 착지 높이가 맞는다)
   -->
   <ItemGroup>
     <Filter Include="Protocol">
@@ -14,6 +18,18 @@
     </Filter>
     <Filter Include="Rules">
       <UniqueIdentifier>{f8d4620e-1c37-45ba-8e96-3a7d15c8b2f1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Math">
+      <UniqueIdentifier>{7b19d3a6-4c82-4e05-9f37-2a6c8d40b715}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="World">
+      <UniqueIdentifier>{2e60c8f4-9a17-43db-85b2-c47f9e031a68}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Sim">
+      <UniqueIdentifier>{d5a3814b-6f29-4c70-9e14-38b7052fd9c3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resource">
+      <UniqueIdentifier>{a09f4e27-51d6-48b3-bc85-7013f6a2e594}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -26,8 +42,35 @@
     <ClInclude Include="HeightmapData.h">
       <Filter>Rules</Filter>
     </ClInclude>
+    <ClInclude Include="Math\Vec3d.h">
+      <Filter>Math</Filter>
+    </ClInclude>
+    <ClInclude Include="World\Planet.h">
+      <Filter>World</Filter>
+    </ClInclude>
+    <ClInclude Include="World\TerrainSampler.h">
+      <Filter>World</Filter>
+    </ClInclude>
+    <ClInclude Include="Sim\MoveInput.h">
+      <Filter>Sim</Filter>
+    </ClInclude>
+    <ClInclude Include="Sim\PlayerMotion.h">
+      <Filter>Sim</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\HeightmapLoader.h">
+      <Filter>Resource</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
+    <ClCompile Include="World\TerrainSampler.cpp">
+      <Filter>World</Filter>
+    </ClCompile>
+    <ClCompile Include="Sim\PlayerMotion.cpp">
+      <Filter>Sim</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\HeightmapLoader.cpp">
+      <Filter>Resource</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

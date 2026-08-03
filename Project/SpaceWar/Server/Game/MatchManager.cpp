@@ -67,6 +67,7 @@ namespace swc {
 		auto m = std::make_shared<Match>(nextMatchId.fetch_add(1), owner);
 		m->SetAoiEnabled(aoiEnabled);
 		m->SetAoiRadius(aoiRadiusM);
+		m->World().terrain = terrain;   // ★ 스폰 전에 붙여야 착지 높이가 맞는다
 		matches.push_back(m);
 		std::printf("[game] 경기 %u 생성 (담당 워커 %zu, 현재 %zu개)\n",
 			m->Id(), owner, matches.size());

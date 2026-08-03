@@ -1,6 +1,6 @@
 #pragma once
 #include <DirectXMath.h>
-#include "Planet.h"
+#include "SimTypes.h"
 
 // 구면 위 3인칭 궤도 카메라.
 //

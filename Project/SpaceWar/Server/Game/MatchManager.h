@@ -48,6 +48,13 @@ namespace swc {
 		// (끄고 켜며 대역폭을 비교해 보라 — 이 구조에서 가장 큰 차이를 만드는 스위치다)
 		void SetAoi(bool enabled, float radiusM) { aoiEnabled = enabled; aoiRadiusM = radiusM; }
 
+		// ★ 지형. 클라와 반드시 같은 하이트맵이어야 한다.
+		//   서버가 지형을 모르면 SurfaceHeight() 가 0을 돌려줘 평지로 판단한다.
+		//   그러면 클라는 언덕 위, 서버는 평지로 계산해 고도가 계속 어긋나고
+		//   캐릭터가 땅에 파묻히거나 공중에 뜬 채로 떨린다.
+		//   (읽기 전용이라 모든 경기가 하나를 공유해도 안전하다)
+		void SetTerrain(const Shared::TerrainSampler* t) { terrain = t; }
+
 		// 빈자리가 있는 경기를 찾고, 없으면 새로 연다.
 		std::shared_ptr<Match> FindOrCreateMatch();
 
@@ -73,6 +80,7 @@ namespace swc {
 
 		bool  aoiEnabled = true;
 		float aoiRadiusM = 150.0f;
+		const Shared::TerrainSampler* terrain = nullptr;
 
 		std::vector<std::thread> workers;
 		std::atomic<bool> running{ false };

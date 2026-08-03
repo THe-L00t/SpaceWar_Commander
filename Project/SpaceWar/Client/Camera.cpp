@@ -96,10 +96,10 @@ namespace swc {
 		if (eyeAlt < minAlt)
 			eye = planet.PositionAt(eyeUp, minAlt);
 
-		eyePosition = eye.ToFloat3();
+		eyePosition = ToFloat3(eye);
 
-		const XMFLOAT3 focusF = focus.ToFloat3();
-		const XMFLOAT3 upF = up.ToFloat3();
+		const XMFLOAT3 focusF = ToFloat3(focus);
+		const XMFLOAT3 upF = ToFloat3(up);
 		const XMMATRIX view = XMMatrixLookAtLH(
 			XMLoadFloat3(&eyePosition), XMLoadFloat3(&focusF), XMLoadFloat3(&upF));
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH(fov, aspect, 0.1f, 20000.0f);

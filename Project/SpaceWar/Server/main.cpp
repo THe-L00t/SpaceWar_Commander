@@ -37,7 +37,10 @@
 #include <shared_mutex>
 #include <unordered_map>
 
+#include <objbase.h>
 #include "Shared/Protocol.h"   // AdditionalIncludeDirectories = $(ProjectDir)..\ 덕분에 이렇게 참조
+#include "Shared/Resource/HeightmapLoader.h"
+#include "Shared/World/TerrainSampler.h"
 #include "Net/IocpServer.h"
 #include "Game/MatchManager.h"
 
@@ -156,6 +159,57 @@ namespace {
 			g_server.TimedOutCount());
 	}
 
+	// ── 지형 로드 ───────────────────────────────────────────
+	//
+	//  ★ 서버가 왜 지형을 알아야 하는가
+	//    착지 높이를 계산해야 하기 때문이다. 서버가 지형을 모르면
+	//    SurfaceHeight() 가 0을 돌려줘 평지로 판단한다. 그러면
+	//    클라는 "언덕 위 고도 12m", 서버는 "평지 고도 1m" 로 갈려서
+	//    캐릭터가 매 스냅샷마다 땅에 파묻혔다 튀어나왔다 한다.
+	//
+	//  ★ 클라와 같은 파일을 읽어야 한다
+	//    같은 로더(Shared/Resource/HeightmapLoader)로 같은 PNG 를 읽으므로
+	//    바이트 단위로 동일한 높이가 나온다.
+	Shared::HeightmapData g_heightmap;
+	Shared::TerrainSampler g_terrain;
+
+	std::wstring AssetPath(const wchar_t* relative)
+	{
+		wchar_t exePath[MAX_PATH] = {};
+		::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+		std::wstring p(exePath);
+		const size_t slash = p.find_last_of(L"\\/");
+		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
+		return p + L"assets\\" + relative;
+	}
+
+	bool LoadTerrain()
+	{
+		// WIC 가 COM 이라 초기화가 먼저다. 안 하면 조용히 실패한다.
+		if (FAILED(::CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
+		{
+			std::printf("[game] COM 초기화 실패 — 지형 없이 진행 (평평한 구)\n");
+			return false;
+		}
+
+		std::wstring err;
+		const std::wstring path =
+			AssetPath(L"terrain\\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png");
+
+		if (!Shared::LoadHeightmapPng(path.c_str(), g_heightmap, err))
+		{
+			std::printf("[game] 지형 로드 실패 — 평평한 구로 진행\n");
+			std::wprintf(L"        사유: %s\n", err.c_str());
+			return false;
+		}
+
+		// ★ 클라와 완전히 같은 설정이어야 한다 (1km 조각 / 표고 150m / 25% 감쇠)
+		g_terrain.Configure(&g_heightmap, 120000.0, {});
+		std::printf("[game] 지형 %ux%u 로드 (mean %.3f)\n",
+			g_heightmap.size, g_heightmap.size, g_heightmap.mean);
+		return true;
+	}
+
 	// ── Ctrl+C 처리 ─────────────────────────────────────────
 	//  그냥 죽이면 소켓과 스레드가 정리되지 않는다. 특히 리슨 포트가
 	//  TIME_WAIT 로 남아 바로 다시 못 켜는 경우가 생긴다.
@@ -218,6 +272,9 @@ int main(int argc, char** argv)
 		Shared::kTickRateHz, std::thread::hardware_concurrency());
 	if (aoi) std::printf("AOI 켜짐 (반경 %.0fm) — 시야 밖 플레이어는 스냅샷에서 뺀다\n", aoiRadius);
 	else     std::printf("AOI 꺼짐 — 전원을 담는다 (대역폭 비교용)\n");
+
+	// ★ 지형을 먼저 붙인다. 경기가 만들어진 뒤에 붙이면 이미 스폰한 사람이 어긋난다.
+	if (LoadTerrain()) g_matches.SetTerrain(&g_terrain);
 
 	g_matches.SetAoi(aoi, aoiRadius);
 	g_server.SetConnectHandler(OnConnect);
