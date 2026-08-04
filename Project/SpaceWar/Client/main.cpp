@@ -1,4 +1,10 @@
+// ★ 이 include 순서를 바꾸지 말 것
+//   SimpleNet.h 가 <winsock2.h> 를 품고 있다. windows.h 보다 먼저 와야
+//   winsock 1.1 과 구조체가 충돌하지 않는다. (자세한 이유는 SimpleNet.h 주석)
+#include "Net/SimpleNet.h"
+
 #include <windows.h>
+#include <shellapi.h>
 #include <vector>
 #include <string>
 #include <cstdio>
@@ -22,6 +28,43 @@ namespace
 	swc::Input* g_input = nullptr;
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
+
+	// ── 서버 전송 주기 ──────────────────────────────────────
+	//  렌더는 144fps 로 돌아도 좌표는 1/30초에 한 번만 보낸다.
+	//  매 프레임 보내면 대역폭만 낭비되고 서버 처리량이 프레임률에 끌려간다.
+	constexpr float kSendInterval = 1.0f / 30.0f;
+
+	// 실행 인자:  Client.exe 127.0.0.1 25000
+	// 인자가 없으면 접속하지 않고 단독 실행한다.
+	struct NetOptions
+	{
+		bool           online = false;
+		char           host[64] = "127.0.0.1";
+		unsigned short port = 25000;
+	};
+
+	NetOptions ParseCommandLine()
+	{
+		NetOptions o{};
+		int argc = 0;
+		LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+		if (!argv) return o;
+
+		for (int i = 1; i < argc; ++i)
+		{
+			if (!o.online)
+			{
+				WideCharToMultiByte(CP_ACP, 0, argv[i], -1, o.host, sizeof(o.host), nullptr, nullptr);
+				o.online = true;
+			}
+			else
+			{
+				o.port = static_cast<unsigned short>(_wtoi(argv[i]));
+			}
+		}
+		LocalFree(argv);
+		return o;
+	}
 
 	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
 	// ★ 반드시 와이드로 다룬다. GetModuleFileNameA 는 ANSI(CP949)를 주므로
@@ -148,6 +191,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	controller.Spawn(planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0), { 0.0, 0.0, 1.0 });
 	camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 
+	// ── 서버 접속 ───────────────────────────────────────────
+	const NetOptions netOpt = ParseCommandLine();
+	std::wstring netStatus = L"오프라인";
+	if (netOpt.online)
+	{
+		std::wstring err;
+		if (swc::net_connect(netOpt.host, netOpt.port, err))
+			netStatus = L"접속됨";
+		else
+			netStatus = L"접속 실패: " + err;
+	}
+	float sendAccumulator = 0.0f;
+
 	std::vector<swc::RenderItem> items;
 
 	ShowWindow(hwnd, nCmdShow);
@@ -210,6 +266,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		camera.SetSprinting(controller.IsSprinting());
 		camera.Update(dt, controller.Position(), controller.Up(), planet);
 
+		// ── 네트워크 ────────────────────────────────────────
+		//  ★ 좌표 송신은 1/30초마다. 렌더 프레임률과 분리한다.
+		if (swc::net_connected())
+		{
+			sendAccumulator += dt;
+			if (sendAccumulator >= kSendInterval)
+			{
+				sendAccumulator -= kSendInterval;
+
+				const swc::Vec3d& pos = controller.Position();
+				swc::send_to_server(float(pos.x), float(pos.y), float(pos.z));
+			}
+
+			//서버가 되돌려준 에코를 받는다. 논블로킹이라 즉시 돌아온다.
+			swc::net_poll();
+		}
+
 		scene.SetLocalTransform(player, controller.WorldMatrix());
 		scene.UpdateWorldTransforms();
 		scene.Extract(items);
@@ -234,19 +307,37 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			const swc::Vec3d& p = controller.Position();
 			const double distFromSpawn = swc::Length(p);
 
-			wchar_t title[400];
+			// 네트워크 상태 — 보낸 수 / 에코 받은 수 / 마지막 에코 좌표
+			wchar_t netText[200];
+			if (swc::net_connected())
+			{
+				float echo[3] = { 0.0f, 0.0f, 0.0f };
+				swc::net_last_echo(echo);
+				swprintf_s(netText,
+					L"송신 %u  에코 %u  마지막에코(%.1f, %.1f, %.1f)",
+					swc::net_sent_count(), swc::net_echo_count(),
+					echo[0], echo[1], echo[2]);
+			}
+			else
+			{
+				swprintf_s(netText, L"%s", netStatus.c_str());
+			}
+
+			wchar_t title[600];
 			swprintf_s(title,
 				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-				L"|  %s  |  RT %s knee %.2f view %u",
+				L"|  %s  |  %s  |  RT %s knee %.2f view %u",
 				timer.Fps(), dt * 1000.0f,
 				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 				distFromSpawn, controller.Speed(),
+				netText,
 				terrainStatus.c_str(),
 				rtState, rt.rouletteKnee, renderer.DebugMode());
 			SetWindowText(hwnd, title);
 		}
 	}
 
+	swc::net_disconnect();
 	g_input = nullptr;
 	input.SetCaptured(false);
 	CoUninitialize();
