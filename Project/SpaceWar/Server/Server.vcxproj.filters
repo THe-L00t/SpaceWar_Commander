@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Client 와 같은 규칙을 쓴다.
+
+      소스코드      진입점 (main.cpp)
+      헤더파일      클래스가 아닌 것
+      클래스 목록   클래스 하나당 폴더 하나
+
+    지금은 Session / IO_CONTEXT 가 main.cpp 안에 들어 있다.
+    파일로 분리하면 클래스 목록\Session 폴더를 만들어 옮긴다.
+  -->
+  <ItemGroup>
+    <Filter Include="소스코드">
+      <UniqueIdentifier>{7e34a9d1-6b02-4c85-93af-1d5062e7ab48}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>소스코드</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
