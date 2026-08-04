@@ -34,11 +34,19 @@ namespace
 	//  매 프레임 보내면 대역폭만 낭비되고 서버 처리량이 프레임률에 끌려간다.
 	constexpr float kSendInterval = 1.0f / 30.0f;
 
-	// 실행 인자:  Client.exe 127.0.0.1 25000
-	// 인자가 없으면 접속하지 않고 단독 실행한다.
+	// ── 실행 인자 ───────────────────────────────────────────
+	//   Client.exe                     127.0.0.1:25000 에 접속 (기본값)
+	//   Client.exe 192.168.0.5         그 주소의 25000 포트로 접속
+	//   Client.exe 192.168.0.5 27000   주소와 포트 지정
+	//   Client.exe --offline           접속하지 않고 단독 실행
+	//
+	//  ★ 기본을 "접속" 으로 둔다
+	//    비주얼 스튜디오에서 F5 를 누르면 인자가 안 붙는다.
+	//    기본이 오프라인이면 서버를 켜놓고 F5 를 눌러도 아무 일이 안 일어나서
+	//    "왜 좌표가 안 뜨지" 로 헤매게 된다. (실제로 그랬다)
 	struct NetOptions
 	{
-		bool           online = false;
+		bool           online = true;              // 기본 = 접속
 		char           host[64] = "127.0.0.1";
 		unsigned short port = 25000;
 	};
@@ -50,17 +58,17 @@ namespace
 		LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
 		if (!argv) return o;
 
+		int nPositional = 0;
 		for (int i = 1; i < argc; ++i)
 		{
-			if (!o.online)
-			{
+			if (_wcsicmp(argv[i], L"--offline") == 0) { o.online = false; continue; }
+
+			if (nPositional == 0)
 				WideCharToMultiByte(CP_ACP, 0, argv[i], -1, o.host, sizeof(o.host), nullptr, nullptr);
-				o.online = true;
-			}
-			else
-			{
+			else if (nPositional == 1)
 				o.port = static_cast<unsigned short>(_wtoi(argv[i]));
-			}
+
+			++nPositional;
 		}
 		LocalFree(argv);
 		return o;
