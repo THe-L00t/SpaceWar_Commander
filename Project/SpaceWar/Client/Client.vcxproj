@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <VCProjectVersion>18.0</VCProjectVersion>
+    <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{d4deada1-89ff-47a7-959a-798e824c4abf}</ProjectGuid>
     <RootNamespace>Client</RootNamespace>
@@ -21,13 +21,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -56,6 +56,13 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Message>DXC 런타임(dxcompiler/dxil) 및 셰이더 복사</Message>
+      <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
+xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
+xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png" "$(OutDir)assets\terrain\"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -74,14 +81,60 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Message>DXC 런타임(dxcompiler/dxil) 및 셰이더 복사</Message>
+      <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
+xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
+xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png" "$(OutDir)assets\terrain\"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Scene.cpp" />
+    <ClCompile Include="GRenderer.cpp" />
+    <ClCompile Include="Camera.cpp" />
+    <ClCompile Include="GameTimer.cpp" />
+    <ClCompile Include="Input.cpp" />
+    <ClCompile Include="PlayerController.cpp" />
+    <ClCompile Include="ShaderCompiler.cpp" />
+    <ClCompile Include="AccelStructure.cpp" />
+    <ClCompile Include="Resource\ResourceManager.cpp" />
+    <ClCompile Include="Net\SimpleNet.cpp" />
+    <ClCompile Include="Resource\HeightmapLoader.cpp" />
+    <ClCompile Include="Terrain\TerrainSampler.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Forward.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
       <Project>{8e906f9e-e567-48d7-b78e-de2f56716dcc}</Project>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Handles.h" />
+    <ClInclude Include="RenderItem.h" />
+    <ClInclude Include="Scene.h" />
+    <ClInclude Include="GRenderer.h" />
+    <ClInclude Include="Vertex.h" />
+    <ClInclude Include="DummyMesh.h" />
+    <ClInclude Include="Camera.h" />
+    <ClInclude Include="GameTimer.h" />
+    <ClInclude Include="Input.h" />
+    <ClInclude Include="PlayerController.h" />
+    <ClInclude Include="DXCommon.h" />
+    <ClInclude Include="ShaderCompiler.h" />
+    <ClInclude Include="AccelStructure.h" />
+    <ClInclude Include="RayTracingParams.h" />
+    <ClInclude Include="Planet.h" />
+    <ClInclude Include="Vec3d.h" />
+    <ClInclude Include="Resource\ResourceManager.h" />
+    <ClInclude Include="Net\SimpleNet.h" />
+    <ClInclude Include="Resource\HeightmapLoader.h" />
+    <ClInclude Include="Terrain\TerrainSampler.h" />
+    <ClInclude Include="..\Shared\Units.h" />
+    <ClInclude Include="..\Shared\HeightmapData.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
