@@ -100,6 +100,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClCompile Include="ShaderCompiler.cpp" />
     <ClCompile Include="AccelStructure.cpp" />
     <ClCompile Include="Resource\ResourceManager.cpp" />
+    <ClCompile Include="Net\SimpleNet.cpp" />
     <ClCompile Include="Resource\HeightmapLoader.cpp" />
     <ClCompile Include="Terrain\TerrainSampler.cpp" />
   </ItemGroup>
@@ -129,6 +130,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="Planet.h" />
     <ClInclude Include="Vec3d.h" />
     <ClInclude Include="Resource\ResourceManager.h" />
+    <ClInclude Include="Net\SimpleNet.h" />
     <ClInclude Include="Resource\HeightmapLoader.h" />
     <ClInclude Include="Terrain\TerrainSampler.h" />
     <ClInclude Include="..\Shared\Units.h" />
