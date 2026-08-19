@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <vector>
 #include <string>
+#include <unordered_map>
 #include <cstdio>
 #include <DirectXMath.h>
 #include "GRenderer.h"
@@ -184,6 +185,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::NodeHandle nose = scene.AddNode(player, noseMesh, 0);
 	scene.SetLocalTransform(nose, XMMatrixTranslation(0.0f, 0.0f, 1.3f));
 
+	// ── 원격 플레이어 ───────────────────────────────────────
+	//  ★ 노드를 지우지 않고 재사용한다
+	//    Scene 에 노드 삭제 API 가 없다. 나갈 때마다 새로 만들면
+	//    접속·퇴장을 반복하는 동안 노드가 계속 쌓인다.
+	//    나간 노드는 화면 밖으로 치워 두었다가 다음 사람에게 다시 쓴다.
+	std::unordered_map<uint32_t, swc::NodeHandle> remoteNodes;
+	std::vector<swc::NodeHandle>                  freeRemoteNodes;
+	std::vector<swc::RemoteView>                  remoteViews;
+
+	// 행성 반지름이 120km 이므로 그보다 훨씬 먼 곳이면 절대 보이지 않는다.
+	const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
+
 	swc::GameTimer timer;
 	swc::Input input;
 	swc::Camera camera;
@@ -287,8 +300,55 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 				swc::send_to_server(float(pos.x), float(pos.y), float(pos.z));
 			}
 
-			//서버가 되돌려준 에코를 받는다. 논블로킹이라 즉시 돌아온다.
+			//서버가 뿌린 다른 플레이어의 좌표를 받는다. 논블로킹이라 즉시 돌아온다.
 			swc::net_poll();
+
+			// ── 원격 플레이어 노드 갱신 ─────────────────────
+			swc::net_remote_players(remoteViews);
+
+			// 이번 프레임 목록에 없는 = 나간 플레이어의 노드를 회수한다.
+			for (std::unordered_map<uint32_t, swc::NodeHandle>::iterator it = remoteNodes.begin();
+				it != remoteNodes.end(); )
+			{
+				bool alive = false;
+				for (size_t i = 0; i < remoteViews.size(); ++i)
+				{
+					if (remoteViews[i].playerId == it->first) { alive = true; break; }
+				}
+
+				if (alive) { ++it; continue; }
+
+				scene.SetLocalTransform(it->second, parkedTransform);
+				freeRemoteNodes.push_back(it->second);
+				it = remoteNodes.erase(it);
+			}
+
+			// 보이는 플레이어를 그 자리에 놓는다. 처음 보는 번호면 노드를 하나 붙인다.
+			for (size_t i = 0; i < remoteViews.size(); ++i)
+			{
+				const swc::RemoteView& v = remoteViews[i];
+
+				std::unordered_map<uint32_t, swc::NodeHandle>::iterator found =
+					remoteNodes.find(v.playerId);
+
+				if (found == remoteNodes.end())
+				{
+					swc::NodeHandle handle;
+					if (!freeRemoteNodes.empty())
+					{
+						handle = freeRemoteNodes.back();
+						freeRemoteNodes.pop_back();
+					}
+					else
+					{
+						handle = scene.AddNode(swc::kInvalidNode, cubeMesh, 0);
+					}
+					found = remoteNodes.emplace(v.playerId, handle).first;
+				}
+
+				scene.SetLocalTransform(found->second,
+					XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
+			}
 		}
 
 		scene.SetLocalTransform(player, controller.WorldMatrix());
@@ -319,12 +379,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			wchar_t netText[200];
 			if (swc::net_connected())
 			{
-				float echo[3] = { 0.0f, 0.0f, 0.0f };
-				swc::net_last_echo(echo);
 				swprintf_s(netText,
-					L"송신 %u  에코 %u  마지막에코(%.1f, %.1f, %.1f)",
-					swc::net_sent_count(), swc::net_echo_count(),
-					echo[0], echo[1], echo[2]);
+					L"나=%u  송신 %u  수신 %u  다른플레이어 %u명",
+					swc::net_my_id(), swc::net_sent_count(),
+					swc::net_echo_count(), swc::net_remote_count());
 			}
 			else
 			{
