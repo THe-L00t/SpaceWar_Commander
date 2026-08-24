@@ -1,6 +1,8 @@
 #include "SimpleNet.h"
+#include <windows.h>
 #include <ws2tcpip.h>
 #include <cstring>
+#include <unordered_map>
 #include "Shared/Protocol.h"
 
 #pragma comment(lib, "ws2_32")
@@ -20,6 +22,81 @@ namespace swc {
 		unsigned g_nEcho = 0;
 		float    g_lastEcho[3] = { 0.0f, 0.0f, 0.0f };
 
+		uint32_t g_myId = 0;		// 서버가 알려준 내 번호
+
+		// ── 보간 지연 ───────────────────────────────────────────
+		//  받은 좌표를 즉시 그리면, 다음 갱신이 올 때까지 멈춰 있다가 튄다.
+		//  일부러 이만큼 과거를 그리면 항상 "받아둔 두 점 사이"를 지나가므로
+		//  끊김이 사라진다. 대신 원격 플레이어가 이만큼 늦게 보인다.
+		//  서버 갱신 간격(1/30초 = 33ms)보다 넉넉히 커야 한 번 늦게 와도 버틴다.
+		constexpr double kInterpDelay = 0.10;   // 100ms
+
+		// ── 원격 플레이어 한 명 ─────────────────────────────────
+		//  마지막 두 개의 수신 좌표와 그 도착 시각을 들고 있는다.
+		//  그 사이를 시간으로 훑으면 부드러운 움직임이 나온다.
+		struct Remote
+		{
+			float  prevPos[3];
+			float  currPos[3];
+			double prevTime;
+			double currTime;
+			bool   hasPrev;
+		};
+
+		std::unordered_map<uint32_t, Remote> g_remotes;
+
+		// ── 시각 ────────────────────────────────────────────────
+		//  GetTickCount 는 해상도가 10~16ms 라 33ms 간격을 재기엔 거칠다.
+		//  보간 비율이 계단처럼 튀므로 고해상도 카운터를 쓴다.
+		double NowSeconds()
+		{
+			static LARGE_INTEGER freq = {};
+			if (freq.QuadPart == 0) ::QueryPerformanceFrequency(&freq);
+
+			LARGE_INTEGER now = {};
+			::QueryPerformanceCounter(&now);
+			return double(now.QuadPart) / double(freq.QuadPart);
+		}
+
+		void OnWelcome(const Shared::WelcomePacket* p)
+		{
+			g_myId = p->playerId;
+		}
+
+		void OnPlayerMove(const Shared::PlayerMovePacket* p)
+		{
+			g_lastEcho[0] = p->pos[0];
+			g_lastEcho[1] = p->pos[1];
+			g_lastEcho[2] = p->pos[2];
+			++g_nEcho;
+
+			// 내 좌표가 되돌아온 것은 무시한다. 그리면 큐브가 겹치고,
+			// 과거 위치로 끌려가 조작이 밀리는 것처럼 보인다.
+			if (p->playerId == g_myId || p->playerId == 0) return;
+
+			Remote& r = g_remotes[p->playerId];
+			const double now = NowSeconds();
+
+			if (r.currTime > 0.0)
+			{
+				r.prevPos[0] = r.currPos[0];
+				r.prevPos[1] = r.currPos[1];
+				r.prevPos[2] = r.currPos[2];
+				r.prevTime = r.currTime;
+				r.hasPrev = true;
+			}
+
+			r.currPos[0] = p->pos[0];
+			r.currPos[1] = p->pos[1];
+			r.currPos[2] = p->pos[2];
+			r.currTime = now;
+		}
+
+		void OnPlayerLeave(const Shared::PlayerLeavePacket* p)
+		{
+			g_remotes.erase(p->playerId);
+		}
+
 		std::wstring ToWide(const char* s)
 		{
 			if (!s) return L"";
@@ -32,28 +109,58 @@ namespace swc {
 		// ── 받은 바이트에서 완전한 패킷만 꺼내 해석한다 ──
 		//
 		//  ★ 서버와 똑같은 처리가 클라에도 필요하다
-		//    TCP 는 양방향 모두 스트림이다. 서버가 보낸 32바이트 에코도
+		//    TCP 는 양방향 모두 스트림이다. 서버가 보낸 32바이트 패킷도
 		//    20+12 로 쪼개져 오거나 두 개가 붙어서 올 수 있다.
 		//    "recv 한 번 = 패킷 한 개" 로 가정하면 좌표가 깨진다.
+		//
+		//  ★ 고정 크기로 자르면 안 된다
+		//    Welcome(8) / PlayerLeave(8) / PlayerMove(32) 가 섞여서 온다.
+		//    32 단위로 자르면 8바이트짜리 하나에 경계가 밀려 전부 쓰레기가 된다.
+		//    반드시 header.size 만큼씩 잘라야 한다.
 		void ProcessPackets()
 		{
-			const int nPacketSize = (int)sizeof(Shared::PlayerMovePacket);
+			const int nHeaderSize = (int)sizeof(Shared::PacketHeader);
 			int nOffset = 0;
 
-			while (g_nRecvd - nOffset >= nPacketSize)
+			while (g_nRecvd - nOffset >= nHeaderSize)
 			{
-				const Shared::PlayerMovePacket* pMove =
-					(const Shared::PlayerMovePacket*)(g_recvBuf + nOffset);
+				const Shared::PacketHeader* pHead =
+					(const Shared::PacketHeader*)(g_recvBuf + nOffset);
+				const int nSize = (int)pHead->size;
 
-				if (pMove->header.type == Shared::PacketType::PlayerMove)
+				// 규격에 없는 크기 = 스트림이 어긋났다. 이어 읽어도 복구되지 않는다.
+				if (nSize < nHeaderSize || nSize >(int)sizeof(g_recvBuf))
 				{
-					g_lastEcho[0] = pMove->pos[0];
-					g_lastEcho[1] = pMove->pos[1];
-					g_lastEcho[2] = pMove->pos[2];
-					++g_nEcho;
+					g_nRecvd = 0;
+					return;
 				}
 
-				nOffset += nPacketSize;
+				// 아직 다 안 왔다. 다음 수신 때 이어서 처리한다.
+				if (g_nRecvd - nOffset < nSize)
+					break;
+
+				switch (pHead->type)
+				{
+				case Shared::PacketType::Welcome:
+					if (nSize == (int)sizeof(Shared::WelcomePacket))
+						OnWelcome((const Shared::WelcomePacket*)pHead);
+					break;
+
+				case Shared::PacketType::PlayerMove:
+					if (nSize == (int)sizeof(Shared::PlayerMovePacket))
+						OnPlayerMove((const Shared::PlayerMovePacket*)pHead);
+					break;
+
+				case Shared::PacketType::PlayerLeave:
+					if (nSize == (int)sizeof(Shared::PlayerLeavePacket))
+						OnPlayerLeave((const Shared::PlayerLeavePacket*)pHead);
+					break;
+
+				default:
+					break;		// 모르는 종류는 크기만큼 건너뛴다
+				}
+
+				nOffset += nSize;
 			}
 
 			// 처리하고 남은 자투리를 앞으로 당겨둔다. 다음 수신 때 이어붙는다.
@@ -114,6 +221,8 @@ namespace swc {
 		g_nRecvd = 0;
 		g_nSent = 0;
 		g_nEcho = 0;
+		g_myId = 0;
+		g_remotes.clear();
 		g_connected = true;
 		return true;
 	}
@@ -204,8 +313,61 @@ namespace swc {
 		ProcessPackets();
 	}
 
+	// ── 원격 플레이어 ───────────────────────────────────────
+	uint32_t net_my_id() { return g_myId; }
+
+	// ★ 지금 그려야 할 위치를 시간 보간으로 만들어 낸다.
+	//
+	//   기준 시각을 kInterpDelay 만큼 과거로 잡는다. 그러면 그 시점은
+	//   이미 받아둔 두 좌표 사이에 있으므로, 미래를 추측할 필요 없이
+	//   두 점을 잇기만 하면 된다. (추측하면 틀렸을 때 되돌아가며 떨린다)
+	void net_remote_players(std::vector<RemoteView>& out)
+	{
+		out.clear();
+		out.reserve(g_remotes.size());
+
+		const double renderTime = NowSeconds() - kInterpDelay;
+
+		for (std::unordered_map<uint32_t, Remote>::const_iterator it = g_remotes.begin();
+			it != g_remotes.end(); ++it)
+		{
+			const Remote& r = it->second;
+			if (r.currTime <= 0.0) continue;
+
+			RemoteView v = {};
+			v.playerId = it->first;
+
+			const double span = r.currTime - r.prevTime;
+
+			if (!r.hasPrev || span <= 0.0 || renderTime >= r.currTime)
+			{
+				// 보간할 구간이 없다 = 방금 처음 봤거나, 갱신이 끊겼다.
+				// 이럴 때 계속 밀어붙이면(외삽) 벽을 뚫고 나간다. 그냥 멈춰 세운다.
+				v.pos[0] = r.currPos[0];
+				v.pos[1] = r.currPos[1];
+				v.pos[2] = r.currPos[2];
+			}
+			else if (renderTime <= r.prevTime)
+			{
+				v.pos[0] = r.prevPos[0];
+				v.pos[1] = r.prevPos[1];
+				v.pos[2] = r.prevPos[2];
+			}
+			else
+			{
+				const float t = float((renderTime - r.prevTime) / span);
+				v.pos[0] = r.prevPos[0] + (r.currPos[0] - r.prevPos[0]) * t;
+				v.pos[1] = r.prevPos[1] + (r.currPos[1] - r.prevPos[1]) * t;
+				v.pos[2] = r.prevPos[2] + (r.currPos[2] - r.prevPos[2]) * t;
+			}
+
+			out.push_back(v);
+		}
+	}
+
 	unsigned net_sent_count() { return g_nSent; }
 	unsigned net_echo_count() { return g_nEcho; }
+	unsigned net_remote_count() { return (unsigned)g_remotes.size(); }
 
 	void net_last_echo(float outPos[3])
 	{
