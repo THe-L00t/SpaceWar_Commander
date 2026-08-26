@@ -7,9 +7,11 @@
 #include <dxgi1_6.h>
 #include <wrl.h>
 #include <cstring>
+#include <psapi.h>      // GetProcessMemoryInfo — 진단용
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "psapi.lib")
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -185,16 +187,127 @@ namespace swc {
 		uint32_t width = 0;
 		uint32_t height = 0;
 
+		// ── 진단용 ────────────────────────────────────────────
+		//  누수가 시스템 메모리인지 VRAM 인지 가리려면 둘을 따로 봐야 한다.
+		ComPtr<IDXGIAdapter3> adapter3;      // QueryVideoMemoryInfo 용
+		DiagInfo diag;
+
 		void WaitForGpu()
 		{
 			const UINT64 target = ++fenceValue;
-			commandQueue->Signal(fence.Get(), target);
+
+			// ★ Signal 실패는 디바이스가 이미 죽었다는 뜻이다
+			if (FAILED(commandQueue->Signal(fence.Get(), target)))
+			{
+				CaptureDeviceRemoved(L"Signal 실패");
+				return;
+			}
+
 			if (fence->GetCompletedValue() < target)
 			{
 				fence->SetEventOnCompletion(target, fenceEvent);
-				WaitForSingleObject(fenceEvent, INFINITE);
+
+				// ★ INFINITE 를 쓰면 디바이스가 죽었을 때 영원히 멈춘다 (= 먹통)
+				//   교수님이 겪은 "일정 시간 후 먹통" 이 정확히 이 자리다.
+				const DWORD r = WaitForSingleObject(fenceEvent, 5000);
+				if (r == WAIT_TIMEOUT)
+				{
+					CaptureDeviceRemoved(L"GPU 대기 5초 초과");
+					return;
+				}
 			}
 			frameIndex = swapChain->GetCurrentBackBufferIndex();
+		}
+
+		// 디바이스 제거 사유를 붙잡아 둔다. 이게 없으면 원인을 영영 모른다.
+		void CaptureDeviceRemoved(const wchar_t* where)
+		{
+			if (diag.deviceRemoved) return;
+			diag.deviceRemoved = true;
+
+			const HRESULT reason = device ? device->GetDeviceRemovedReason() : E_FAIL;
+			const wchar_t* text = L"알 수 없음";
+			switch (reason)
+			{
+			case DXGI_ERROR_DEVICE_HUNG:            text = L"DEVICE_HUNG (우리 명령이 GPU 를 멈춤)"; break;
+			case DXGI_ERROR_DEVICE_REMOVED:         text = L"DEVICE_REMOVED"; break;
+			case DXGI_ERROR_DEVICE_RESET:           text = L"DEVICE_RESET (TDR)"; break;
+			case DXGI_ERROR_DRIVER_INTERNAL_ERROR:  text = L"DRIVER_INTERNAL_ERROR"; break;
+			case DXGI_ERROR_INVALID_CALL:           text = L"INVALID_CALL"; break;
+			case E_OUTOFMEMORY:                     text = L"E_OUTOFMEMORY (메모리 고갈)"; break;
+			case S_OK:                              text = L"S_OK (제거 아님)"; break;
+			}
+			wchar_t buf[256];
+			swprintf_s(buf, L"[%s] 0x%08X %s", where, static_cast<unsigned>(reason), text);
+			diag.removedReason = buf;
+			OutputDebugStringW((std::wstring(L"*** 디바이스 제거: ") + buf + L"\n").c_str());
+
+			DumpDred();
+		}
+
+		// DRED 자취를 출력창에 쏟아낸다. 어느 명령에서 죽었는지 여기서 드러난다.
+		void DumpDred()
+		{
+#if defined(_DEBUG)
+			ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+			if (!device || FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) return;
+
+			D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT crumbs = {};
+			if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&crumbs)))
+			{
+				OutputDebugStringW(L"*** DRED 자취 (마지막에 실행된 명령들) ***\n");
+				for (const D3D12_AUTO_BREADCRUMB_NODE* n = crumbs.pHeadAutoBreadcrumbNode;
+					n != nullptr; n = n->pNext)
+				{
+					// 완료 개수 < 전체 개수 = 이 커맨드리스트 중간에서 멈췄다는 뜻
+					const UINT done = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+					wchar_t line[512];
+					swprintf_s(line, L"  [%s / %s] %u / %u 실행됨\n",
+						n->pCommandListDebugNameW ? n->pCommandListDebugNameW : L"이름없음",
+						n->pCommandQueueDebugNameW ? n->pCommandQueueDebugNameW : L"이름없음",
+						done, n->BreadcrumbCount);
+					OutputDebugStringW(line);
+
+					if (done < n->BreadcrumbCount && n->pCommandHistory)
+					{
+						swprintf_s(line, L"    -> 멈춘 지점의 명령 코드: %u\n",
+							static_cast<unsigned>(n->pCommandHistory[done]));
+						OutputDebugStringW(line);
+					}
+				}
+			}
+
+			D3D12_DRED_PAGE_FAULT_OUTPUT fault = {};
+			if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault)) && fault.PageFaultVA)
+			{
+				wchar_t line[256];
+				swprintf_s(line, L"*** DRED 페이지 폴트 주소: 0x%llX (이미 해제한 리소스를 GPU 가 읽었다는 뜻)\n",
+					static_cast<unsigned long long>(fault.PageFaultVA));
+				OutputDebugStringW(line);
+			}
+#endif
+		}
+
+		// 시스템 메모리(커밋) + GPU 메모리(로컬/논로컬)를 한 번에 읽는다
+		void SampleMemory()
+		{
+			PROCESS_MEMORY_COUNTERS_EX pmc = {};
+			pmc.cb = sizeof(pmc);
+			if (GetProcessMemoryInfo(GetCurrentProcess(),
+				reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)))
+			{
+				diag.privateBytes = pmc.PrivateUsage;
+				diag.workingSet = pmc.WorkingSetSize;
+			}
+
+			if (adapter3)
+			{
+				DXGI_QUERY_VIDEO_MEMORY_INFO local = {}, nonLocal = {};
+				adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local);
+				adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocal);
+				diag.vramUsed = local.CurrentUsage;          // 전용 VRAM
+				diag.sharedUsed = nonLocal.CurrentUsage;     // 공유 시스템 메모리
+			}
 		}
 
 		// 초기화 중 커맨드를 한 번 기록·실행하고 완료까지 기다린다.
@@ -235,6 +348,21 @@ namespace swc {
 				factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
 			}
 		}
+
+		// ★ DRED — 디바이스가 왜 죽었는지 알아내는 유일한 방법
+		//
+		//   GetDeviceRemovedReason() 은 "DEVICE_HUNG" 같은 분류만 알려준다.
+		//   그것만으로는 «우리 코드 어디가» 원인인지 알 수 없다.
+		//   DRED 를 켜두면 GPU 가 마지막으로 실행한 명령의 자취(breadcrumb)와
+		//   페이지 폴트 주소를 남겨준다. 반드시 디바이스 생성 «전에» 켜야 한다.
+		{
+			ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+			if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred))))
+			{
+				dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+				dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			}
+		}
 #endif
 
 		ComPtr<IDXGIFactory4> factory;
@@ -254,6 +382,9 @@ namespace swc {
 		}
 		impl->rtSupported = pick.raytracing;
 		impl->status = pick.name + (pick.raytracing ? L"  [DXR Tier 1.1]" : L"  [RT 미지원 — 래스터만]");
+
+		// 진단용으로 어댑터를 붙잡아 둔다 (QueryVideoMemoryInfo 는 IDXGIAdapter3 부터)
+		pick.adapter.As(&impl->adapter3);
 
 		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -508,6 +639,15 @@ namespace swc {
 
 	void GRenderer::BeginFrame()
 	{
+		// ★ 디바이스가 죽은 뒤에는 아무것도 기록하지 않는다.
+		//
+		//   죽은 디바이스에 계속 밀어넣으면 이렇게 된다:
+		//     - Present 가 즉시 실패해 v-sync 대기가 사라진다 -> 루프가 최대 속도로 돈다
+		//     - 그런데 GPU 는 아무것도 완료하지 않으므로 WaitForGpu 도 무의미하다
+		//     - 매 프레임 커맨드가 쌓이기만 하고 회수되지 않는다
+		//   결과가 "화면은 새까만데 메모리만 폭주" 다. 여기서 끊어야 한다.
+		if (impl->diag.deviceRemoved) return;
+
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 
@@ -536,6 +676,8 @@ namespace swc {
 
 	void GRenderer::Render(const RenderView& view, const std::vector<RenderItem>& items, const XMFLOAT4X4* worlds)
 	{
+		if (impl->diag.deviceRemoved) return;
+
 		const bool rtActive = impl->rtSupported && impl->rtParams.enabled;
 
 		// ── TLAS 재빌드 (씬 노드 → 인스턴스) ──
@@ -550,6 +692,7 @@ namespace swc {
 				impl->accel.AddInstance(blasIndex, worlds[it.node]);
 			}
 			impl->accel.BuildTlas(impl->commandList.Get());
+			++impl->diag.tlasBuilds;          // 진단: TLAS 재빌드 누적 횟수
 		}
 
 		// ── 프레임 상수 ──
@@ -589,6 +732,8 @@ namespace swc {
 
 	void GRenderer::EndFrame()
 	{
+		if (impl->diag.deviceRemoved) return;
+
 		D3D12_RESOURCE_BARRIER barrier = {};
 		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		barrier.Transition.pResource = impl->renderTargets[impl->frameIndex].Get();
@@ -602,9 +747,21 @@ namespace swc {
 		ID3D12CommandList* lists[] = { impl->commandList.Get() };
 		impl->commandQueue->ExecuteCommandLists(1, lists);
 
-		impl->swapChain->Present(1, 0);
+		// ★ Present 반환값을 반드시 본다.
+		//   여기를 버리면 디바이스가 죽어도 아무 흔적이 안 남는다.
+		const HRESULT hr = impl->swapChain->Present(1, 0);
+		if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+		{
+			impl->CaptureDeviceRemoved(L"Present");
+			return;                      // 죽은 디바이스에 더 밀어넣지 않는다
+		}
+
 		impl->WaitForGpu();
+		impl->SampleMemory();            // 진단: 매 프레임 메모리 표본
 	}
+
+	const DiagInfo& GRenderer::Diagnostics() const { return impl->diag; }
+	bool GRenderer::IsDeviceLost() const { return impl->diag.deviceRemoved; }
 
 	bool GRenderer::SupportsRaytracing() const { return impl->rtSupported; }
 	void GRenderer::SetRayTracingParams(const RayTracingParams& p) { impl->rtParams = p; }
