@@ -60,6 +60,18 @@ namespace swc {
 		//   메모리만 폭주한다. 호출자는 이 값이 true 면 렌더를 멈춰야 한다.
 		bool IsDeviceLost() const;
 
+		// ── 재현 실험용 ──────────────────────────────────────────
+		//  교수님 증상("루프는 도는데 화면 검음 + 메모리 폭주")이
+		//  정말 디바이스 제거로 설명되는지 확인하려면, 죽는 순간을
+		//  우리가 만들 수 있어야 한다.
+
+		// 디바이스를 실제로 제거한다. TDR 과 같은 상태가 된다.
+		void DebugForceDeviceRemoval();
+
+		// 죽은 뒤 렌더를 멈출지 여부. 끄면 수정 이전 동작(폭주)을 재현한다.
+		void SetDeviceLostGuard(bool);
+		bool DeviceLostGuard() const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;

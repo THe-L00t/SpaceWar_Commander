@@ -192,6 +192,9 @@ namespace swc {
 		ComPtr<IDXGIAdapter3> adapter3;      // QueryVideoMemoryInfo 용
 		DiagInfo diag;
 
+		// 끄면 디바이스가 죽어도 계속 렌더를 시도한다 = 수정 이전 동작 재현
+		bool deviceLostGuard = true;
+
 		void WaitForGpu()
 		{
 			const UINT64 target = ++fenceValue;
@@ -646,7 +649,7 @@ namespace swc {
 		//     - 그런데 GPU 는 아무것도 완료하지 않으므로 WaitForGpu 도 무의미하다
 		//     - 매 프레임 커맨드가 쌓이기만 하고 회수되지 않는다
 		//   결과가 "화면은 새까만데 메모리만 폭주" 다. 여기서 끊어야 한다.
-		if (impl->diag.deviceRemoved) return;
+		if (impl->deviceLostGuard && impl->diag.deviceRemoved) return;
 
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
@@ -676,7 +679,7 @@ namespace swc {
 
 	void GRenderer::Render(const RenderView& view, const std::vector<RenderItem>& items, const XMFLOAT4X4* worlds)
 	{
-		if (impl->diag.deviceRemoved) return;
+		if (impl->deviceLostGuard && impl->diag.deviceRemoved) return;
 
 		const bool rtActive = impl->rtSupported && impl->rtParams.enabled;
 
@@ -732,7 +735,7 @@ namespace swc {
 
 	void GRenderer::EndFrame()
 	{
-		if (impl->diag.deviceRemoved) return;
+		if (impl->deviceLostGuard && impl->diag.deviceRemoved) return;
 
 		D3D12_RESOURCE_BARRIER barrier = {};
 		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -762,6 +765,17 @@ namespace swc {
 
 	const DiagInfo& GRenderer::Diagnostics() const { return impl->diag; }
 	bool GRenderer::IsDeviceLost() const { return impl->diag.deviceRemoved; }
+
+	// ── 재현 실험용 ──────────────────────────────────────────────
+	void GRenderer::DebugForceDeviceRemoval()
+	{
+		if (!impl->device) return;
+		OutputDebugStringW(L"*** [실험] RemoveDevice() 호출 — 디바이스를 강제로 제거한다\n");
+		impl->device->RemoveDevice();
+	}
+
+	void GRenderer::SetDeviceLostGuard(bool on) { impl->deviceLostGuard = on; }
+	bool GRenderer::DeviceLostGuard() const { return impl->deviceLostGuard; }
 
 	bool GRenderer::SupportsRaytracing() const { return impl->rtSupported; }
 	void GRenderer::SetRayTracingParams(const RayTracingParams& p) { impl->rtParams = p; }
