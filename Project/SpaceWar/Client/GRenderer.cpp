@@ -584,32 +584,81 @@ namespace swc {
 		return true;
 	}
 
+	// ★ 정점·인덱스 버퍼는 DEFAULT 힙(= VRAM)에 둔다.
+	//
+	//   예전에는 UPLOAD 힙에 만들어 그대로 썼다. 동작은 하지만 UPLOAD 는
+	//   write-combined "시스템 메모리" 다. 그러면 이렇게 된다:
+	//     - 매 프레임 모든 드로우가 PCIe 너머로 지오메트리를 읽는다
+	//     - BLAS 빌드도 시스템 메모리를 읽는다 (지형은 삼각형 52만 개다)
+	//   게다가 UPLOAD 힙을 가속 구조 입력으로 쓰는 건 흔한 경로가 아니라서,
+	//   드라이버가 내부적으로 어떻게 처리하는지가 구현·세대마다 갈린다.
+	//   정석대로 DEFAULT 힙에 복사해 두면 그 변수가 사라지고 성능도 오른다.
+	//
+	//   스테이징 버퍼는 지역 ComPtr 이라 FlushCommands() 로 GPU 완료를 기다린 뒤
+	//   함수를 빠져나가면서 해제된다. 복사가 끝나기 전에 사라지지 않는다.
 	MeshHandle GRenderer::CreateMesh(const Vertex* verts, size_t vcount, const uint32_t* indices, size_t icount)
 	{
 		Impl::MeshGpu m;
 		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+		D3D12_HEAP_PROPERTIES defaultHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 		D3D12_RANGE noRead = { 0, 0 };
 
 		const UINT vbSize = UINT(vcount * sizeof(Vertex));
+		const UINT ibSize = UINT(icount * sizeof(uint32_t));
 		D3D12_RESOURCE_DESC vbDesc = BufferDesc(vbSize);
-		impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vbDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.vertexBuffer));
-		void* vp = nullptr;
-		m.vertexBuffer->Map(0, &noRead, &vp);
-		memcpy(vp, verts, vbSize);
-		m.vertexBuffer->Unmap(0, nullptr);
+		D3D12_RESOURCE_DESC ibDesc = BufferDesc(ibSize);
+
+		// 최종 버퍼 — VRAM
+		if (FAILED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &vbDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m.vertexBuffer))) ||
+			FAILED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &ibDesc,
+				D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m.indexBuffer))))
+		{
+			return kInvalidMesh;
+		}
+
+		// 스테이징 — 시스템 메모리. 복사가 끝나면 버린다.
+		ComPtr<ID3D12Resource> vbStaging, ibStaging;
+		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vbDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbStaging))) ||
+			FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ibDesc,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&ibStaging))))
+		{
+			return kInvalidMesh;
+		}
+
+		void* p = nullptr;
+		vbStaging->Map(0, &noRead, &p);  memcpy(p, verts, vbSize);   vbStaging->Unmap(0, nullptr);
+		ibStaging->Map(0, &noRead, &p);  memcpy(p, indices, ibSize); ibStaging->Unmap(0, nullptr);
+
+		impl->commandAllocator->Reset();
+		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
+
+		impl->commandList->CopyBufferRegion(m.vertexBuffer.Get(), 0, vbStaging.Get(), 0, vbSize);
+		impl->commandList->CopyBufferRegion(m.indexBuffer.Get(), 0, ibStaging.Get(), 0, ibSize);
+
+		// 읽기 상태들은 함께 걸어둘 수 있다. 한 번 걸어두면 이후 전이가 필요 없다.
+		//   NON_PIXEL_SHADER_RESOURCE 는 BLAS 빌드가 지오메트리를 읽을 때 요구하는 상태다.
+		const D3D12_RESOURCE_STATES readStates =
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
+			D3D12_RESOURCE_STATE_INDEX_BUFFER |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+		D3D12_RESOURCE_BARRIER toRead[2] = {};
+		for (int i = 0; i < 2; ++i)
+		{
+			toRead[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toRead[i].Transition.pResource = (i == 0) ? m.vertexBuffer.Get() : m.indexBuffer.Get();
+			toRead[i].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			toRead[i].Transition.StateAfter = readStates;
+			toRead[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		}
+		impl->commandList->ResourceBarrier(2, toRead);
+
 		m.vbv.BufferLocation = m.vertexBuffer->GetGPUVirtualAddress();
 		m.vbv.StrideInBytes = sizeof(Vertex);
 		m.vbv.SizeInBytes = vbSize;
 
-		const UINT ibSize = UINT(icount * sizeof(uint32_t));
-		D3D12_RESOURCE_DESC ibDesc = BufferDesc(ibSize);
-		impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ibDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.indexBuffer));
-		void* ip = nullptr;
-		m.indexBuffer->Map(0, &noRead, &ip);
-		memcpy(ip, indices, ibSize);
-		m.indexBuffer->Unmap(0, nullptr);
 		m.ibv.BufferLocation = m.indexBuffer->GetGPUVirtualAddress();
 		m.ibv.Format = DXGI_FORMAT_R32_UINT;
 		m.ibv.SizeInBytes = ibSize;
@@ -617,6 +666,7 @@ namespace swc {
 		m.indexCount = UINT(icount);
 
 		// BLAS 는 메쉬가 만들어질 때 한 번만 빌드한다 (정적 지오메트리).
+		// 위 복사·전이와 같은 커맨드 리스트에 이어 기록하므로 순서가 보장된다.
 		if (impl->rtSupported)
 		{
 			D3D12_RAYTRACING_GEOMETRY_DESC geo = {};
@@ -630,11 +680,10 @@ namespace swc {
 			geo.Triangles.IndexCount = UINT(icount);
 			geo.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
 
-			impl->commandAllocator->Reset();
-			impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 			m.blasIndex = impl->accel.AddMesh(impl->device.Get(), impl->commandList.Get(), geo);
-			impl->FlushCommands();
 		}
+
+		impl->FlushCommands();   // 실행 + GPU 완료 대기 → 스테이징을 안전하게 버릴 수 있다
 
 		impl->meshes.push_back(std::move(m));
 		return MeshHandle(impl->meshes.size() - 1);
