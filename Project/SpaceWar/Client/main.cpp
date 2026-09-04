@@ -45,19 +45,11 @@ namespace
 	//    비주얼 스튜디오에서 F5 를 누르면 인자가 안 붙는다.
 	//    기본이 오프라인이면 서버를 켜놓고 F5 를 눌러도 아무 일이 안 일어나서
 	//    "왜 좌표가 안 뜨지" 로 헤매게 된다. (실제로 그랬다)
-	//  ── 재현 실험용 인자 ──
-	//   Client.exe --kill-device 10    10초 뒤 디바이스를 실제로 제거한다
-	//   Client.exe --no-guard          죽어도 렌더를 멈추지 않는다 (수정 이전 동작)
-	//   Client.exe --quit-after 40     40초 뒤 자동 종료 (무인 측정용)
 	struct NetOptions
 	{
 		bool           online = true;              // 기본 = 접속
 		char           host[64] = "127.0.0.1";
 		unsigned short port = 25000;
-
-		float killDeviceAt = -1.0f;   // 음수면 안 함
-		bool  noGuard = false;
-		float quitAfter = -1.0f;
 	};
 
 	NetOptions ParseCommandLine()
@@ -71,17 +63,6 @@ namespace
 		for (int i = 1; i < argc; ++i)
 		{
 			if (_wcsicmp(argv[i], L"--offline") == 0) { o.online = false; continue; }
-			if (_wcsicmp(argv[i], L"--no-guard") == 0) { o.noGuard = true; continue; }
-			if (_wcsicmp(argv[i], L"--kill-device") == 0 && i + 1 < argc)
-			{
-				o.killDeviceAt = float(_wtof(argv[++i]));
-				continue;
-			}
-			if (_wcsicmp(argv[i], L"--quit-after") == 0 && i + 1 < argc)
-			{
-				o.quitAfter = float(_wtof(argv[++i]));
-				continue;
-			}
 
 			if (nPositional == 0)
 				WideCharToMultiByte(CP_ACP, 0, argv[i], -1, o.host, sizeof(o.host), nullptr, nullptr);
@@ -244,37 +225,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	}
 	float sendAccumulator = 0.0f;
 
-	// ── 진단 로그 ───────────────────────────────────────────
-	//  먹통이 되면 화면을 못 보므로 파일로 남긴다.
-	//  exe 옆에 diag_client.log 로 떨어진다.
-	FILE* diagLog = nullptr;
-	{
-		wchar_t exePath[MAX_PATH] = {};
-		GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-		std::wstring p(exePath);
-		const size_t slash = p.find_last_of(L"\\/");
-		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
-		p += L"diag_client.log";
-		_wfopen_s(&diagLog, p.c_str(), L"w, ccs=UTF-8");
-		if (diagLog)
-		{
-			fwprintf(diagLog, L"# %s\n", renderer.StatusText().c_str());
-			fwprintf(diagLog, L"# 경과  fps  TLAS누적  커밋  상주  VRAM  공유\n");
-			fflush(diagLog);
-		}
-	}
-	float elapsed = 0.0f;
-
-	// 재현 실험 설정
-	bool killDeviceDone = false;
-	renderer.SetDeviceLostGuard(!netOpt.noGuard);
-	if (diagLog)
-	{
-		fwprintf(diagLog, L"# 실험설정: 가드=%s  kill-device=%.1f  quit-after=%.1f\n",
-			netOpt.noGuard ? L"끔" : L"켬", netOpt.killDeviceAt, netOpt.quitAfter);
-		fflush(diagLog);
-	}
-
 	std::vector<swc::RenderItem> items;
 
 	ShowWindow(hwnd, nCmdShow);
@@ -303,7 +253,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 		timer.Tick();
 		const float dt = timer.DeltaTime();
-		elapsed += dt;
 
 		// ESC 로 마우스 놓기 / 다시 클릭하면 잡기
 		if (input.WasPressed(VK_ESCAPE)) input.SetCaptured(false);
@@ -325,48 +274,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			if (p.rouletteKnee < 0.01f) p.rouletteKnee = 0.01f;
 			if (p.rouletteKnee > 2.0f) p.rouletteKnee = 2.0f;
 			renderer.SetRayTracingParams(p);
-		}
-
-		// ── 재현 실험: 예약된 자동 실행 ─────────────────────
-		if (netOpt.killDeviceAt >= 0.0f && elapsed >= netOpt.killDeviceAt && !killDeviceDone)
-		{
-			killDeviceDone = true;
-			if (diagLog)
-			{
-				fwprintf(diagLog, L"# [실험] %.1f초: RemoveDevice() 호출 (가드 %s)\n",
-					elapsed, renderer.DeviceLostGuard() ? L"켬" : L"끔");
-				fflush(diagLog);
-			}
-			renderer.DebugForceDeviceRemoval();
-		}
-		if (netOpt.quitAfter >= 0.0f && elapsed >= netOpt.quitAfter)
-		{
-			if (diagLog) { fwprintf(diagLog, L"# [실험] %.1f초: 예약 종료\n", elapsed); fflush(diagLog); }
-			running = false;
-		}
-
-		// ── 재현 실험: 수동 ─────────────────────────────────
-		//  F9  : 디바이스를 실제로 제거한다 (TDR 과 같은 상태)
-		//  F10 : 죽은 뒤 렌더를 멈출지 토글. 끄면 수정 이전 동작이 재현된다.
-		if (input.WasPressed(VK_F9))
-		{
-			if (diagLog)
-			{
-				fwprintf(diagLog, L"# [실험] %.1f초: RemoveDevice() 호출 (가드 %s)\n",
-					elapsed, renderer.DeviceLostGuard() ? L"켬" : L"끔");
-				fflush(diagLog);
-			}
-			renderer.DebugForceDeviceRemoval();
-		}
-		if (input.WasPressed(VK_F10))
-		{
-			renderer.SetDeviceLostGuard(!renderer.DeviceLostGuard());
-			if (diagLog)
-			{
-				fwprintf(diagLog, L"# [실험] %.1f초: 디바이스 가드 %s\n",
-					elapsed, renderer.DeviceLostGuard() ? L"켬" : L"끔");
-				fflush(diagLog);
-			}
 		}
 
 		camera.SetAiming(input.Captured() && input.MouseDown(1));
@@ -444,20 +351,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			}
 		}
 
-		// ★ 디바이스가 죽었으면 렌더를 멈춘다.
-		//
-		//   여기서 멈추지 않으면 교수님이 본 증상이 그대로 재현된다:
-		//   Present 가 즉시 실패해 v-sync 대기가 사라지므로 루프가 최대 속도로 돌고,
-		//   매 프레임 커맨드만 쌓여 메모리가 폭주한다. 화면은 새까맣다.
-		//   창은 살려둔다 — 제목표시줄에서 제거 사유를 읽을 수 있어야 하기 때문이다.
-		if (renderer.IsDeviceLost() && renderer.DeviceLostGuard())
-		{
-			Sleep(100);              // CPU 를 태우지 않는다
-			titleTimer += 0.5f;      // 제목은 계속 갱신되게 둔다
-		}
-		else
-		{
-
 		scene.SetLocalTransform(player, controller.WorldMatrix());
 		scene.UpdateWorldTransforms();
 		scene.Extract(items);
@@ -468,25 +361,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		view.eyePosition = camera.EyePosition();
 		renderer.Render(view, items, scene.WorldData());
 		renderer.EndFrame();
-
-		}   // 디바이스 정상일 때만 렌더
-
-		// ★ 실험 안전장치 — 가드를 끈 채로 재현하면 메모리가 실제로 폭주한다.
-		//   개발 PC 를 재우지 않도록 8GB 에서 스스로 끊는다.
-		{
-			const swc::DiagInfo& d = renderer.Diagnostics();
-			if (d.privateBytes > 8ull * 1024 * 1024 * 1024)
-			{
-				if (diagLog)
-				{
-					fwprintf(diagLog,
-						L"# [실험] %.1f초: 커밋 %.1fGB 초과 — 안전장치로 종료\n",
-						elapsed, d.privateBytes / (1024.0 * 1024.0 * 1024.0));
-					fflush(diagLog);
-				}
-				running = false;
-			}
-		}
 
 		// 델타타임 / 하이브리드 상태를 창 제목으로 확인
 		titleTimer += dt;
@@ -515,39 +389,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 				swprintf_s(netText, L"%s", netStatus.c_str());
 			}
 
-			// ── 진단: 메모리가 어디서 늘어나는지 ──────────────
-			const swc::DiagInfo& dg = renderer.Diagnostics();
-			const double MB = 1024.0 * 1024.0;
-
-			wchar_t title[700];
+			wchar_t title[600];
 			swprintf_s(title,
-				L"SpaceWar  FPS %.0f  |  RT %s  TLAS %llu회  |  "
-				L"커밋 %.0fMB  상주 %.0fMB  VRAM %.0fMB  공유 %.0fMB  |  %s  |  고도 %.1fm",
-				timer.Fps(), rtState,
-				static_cast<unsigned long long>(dg.tlasBuilds),
-				dg.privateBytes / MB, dg.workingSet / MB,
-				dg.vramUsed / MB, dg.sharedUsed / MB,
-				dg.deviceRemoved ? dg.removedReason.c_str() : L"정상",
-				controller.Altitude());
+				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
+				L"|  %s  |  %s  |  RT %s knee %.2f view %u",
+				timer.Fps(), dt * 1000.0f,
+				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
+				distFromSpawn, controller.Speed(),
+				netText,
+				terrainStatus.c_str(),
+				rtState, rt.rouletteKnee, renderer.DebugMode());
 			SetWindowText(hwnd, title);
-
-			// 로그 파일 — 화면을 못 보는 상황(먹통)에도 기록이 남는다
-			if (diagLog)
-			{
-				fwprintf(diagLog,
-					L"%7.1fs  fps=%6.1f  tlas=%9llu  commit=%9.1fMB  ws=%9.1fMB  "
-					L"vram=%8.1fMB  shared=%8.1fMB  %s\n",
-					elapsed, timer.Fps(),
-					static_cast<unsigned long long>(dg.tlasBuilds),
-					dg.privateBytes / MB, dg.workingSet / MB,
-					dg.vramUsed / MB, dg.sharedUsed / MB,
-					dg.deviceRemoved ? dg.removedReason.c_str() : L"");
-				fflush(diagLog);
-			}
 		}
 	}
 
-	if (diagLog) { fwprintf(diagLog, L"# 정상 종료 (%.1f초)\n", elapsed); fclose(diagLog); }
 	swc::net_disconnect();
 	g_input = nullptr;
 	input.SetCaptured(false);
