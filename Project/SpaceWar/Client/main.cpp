@@ -135,7 +135,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		return 1;
 	}
 
-	swc::Planet planet;   // 반지름 120km, 중심 (0,-R,0), 월드 원점 = 스폰 지점
+	swc::Planet planet;   // 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
 
 	// ── 하이트맵 1장을 스폰 위치에 적용 ──
 	swc::ResourceManager resources;
@@ -146,7 +146,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		AssetPath(L"terrain\\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png").c_str());
 	if (const Shared::HeightmapData* hm = resources.Get(tile))
 	{
-		terrain.Configure(hm, planet.radius, {});   // 1km / 150m / 25% 감쇠
+		terrain.Configure(hm, planet.radius, {});   // 1km / 30m / 25% 감쇠 (TerrainConfig 기본값)
 		planet.terrain = &terrain;
 
 		wchar_t buf[96];
@@ -158,10 +158,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		terrainStatus = L"지형 실패: " + resources.LastError();
 	}
 
-	// 더미 메쉬 (파일 없이 코드로 생성) — 테스트용
-	// 2.4km 패치 / 513격자 = 정점 간격 4.7m.
-	// 변 중앙까지 1,200m 라 지평선(1,084m)을 넘어 패치 끝이 안 보인다.
-	swc::MeshData groundData = swc::MakeSpherePatch(planet, 2400.0, 513,
+	// 지면 = 큐브 구 6면 전체 메시 (파일 없이 코드로 생성)
+	// 면당 321 격자 → 정점 간격 약 7.9m, 정점 61.8만 / 삼각형 123만.
+	// 513 이면 4.9m 간격이지만 삼각형 315만이라 BLAS 부담이 크다.
+	constexpr int kPlanetFaceGrid = 321;
+	swc::MeshData groundData = swc::MakeCubeSphere(planet, kPlanetFaceGrid,
 		{ 0.15f, 0.30f, 0.18f });
 	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
 	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
@@ -194,7 +195,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	std::vector<swc::NodeHandle>                  freeRemoteNodes;
 	std::vector<swc::RemoteView>                  remoteViews;
 
-	// 행성 반지름이 120km 이므로 그보다 훨씬 먼 곳이면 절대 보이지 않는다.
+	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
 	const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
 
 	swc::GameTimer timer;
