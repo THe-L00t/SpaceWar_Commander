@@ -14,10 +14,14 @@
 
 namespace swc {
 
+	// 반지름 1.6km 기준 배율 (2026-09-04). 120km 시절엔 relief 150m 였다.
+	//   relief 30m = 반지름의 1.8% — 교수님 프로토타입의 진폭 비율을 따랐다.
+	//   150m 를 그대로 두면 반지름의 9.4% 라 행성이 가시 돋친 공처럼 보인다.
+	//   tileSize 는 1024px 조각이 약 1m/px 가 되는 1km 를 유지한다.
 	struct TerrainConfig
 	{
 		double tileSize = 1000.0;   // 조각이 덮는 실제 크기 (m)
-		double relief = 150.0;      // 표고차 (m)
+		double relief = 30.0;       // 표고차 (m)
 		double fade = 0.25;         // 바깥 몇 %를 0으로 감쇠할지 (경계 절벽 방지)
 	};
 
@@ -34,7 +38,7 @@ namespace swc {
 
 	private:
 		const Shared::HeightmapData* data = nullptr;
-		double radius = 120000.0;
+		double radius = 1600.0;     // Configure() 가 Planet 의 값으로 덮어쓴다
 		TerrainConfig config;
 	};
 }
