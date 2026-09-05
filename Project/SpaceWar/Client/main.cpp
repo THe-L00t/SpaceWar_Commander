@@ -146,7 +146,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		AssetPath(L"terrain\\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png").c_str());
 	if (const Shared::HeightmapData* hm = resources.Get(tile))
 	{
-		terrain.Configure(hm, planet.radius, {});   // 1km / 30m / 25% 감쇠 (TerrainConfig 기본값)
+		terrain.Configure(hm, planet.radius, {});   // 1km / 60m / 10% 감쇠 (TerrainConfig 기본값)
 		planet.terrain = &terrain;
 
 		wchar_t buf[96];
