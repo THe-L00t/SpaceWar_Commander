@@ -72,6 +72,26 @@ namespace swc {
 			return false;
 		}
 
+		// ★ min-max 정규화 — 0~65535 전체를 쓰도록 늘린다.
+		//   Gaea 출력은 범위 일부만 쓰는 경우가 많다 (Realistic_Mountain_v00 은 최대 0.617).
+		//   그대로 두면 TerrainConfig::relief 가 «표고차» 가 아니라 «상한» 이 되어
+		//   조각마다 실제 봉우리-골 높이가 달라진다. 늘려 두면 relief = 실제 표고차.
+		{
+			uint16_t lo = 65535;
+			uint16_t hi = 0;
+			for (uint16_t s : out.samples)
+			{
+				if (s < lo) lo = s;
+				if (s > hi) hi = s;
+			}
+			if (hi > lo)
+			{
+				const double scale = 65535.0 / double(hi - lo);
+				for (uint16_t& s : out.samples)
+					s = uint16_t(double(s - lo) * scale + 0.5);
+			}
+		}
+
 		// mean 은 로드 시 한 번만 구해 캐싱한다 (샘플마다 재계산 금지)
 		double sum = 0.0;
 		for (uint16_t s : out.samples) sum += s;
