@@ -136,3 +136,10 @@
  - AI 추가 (랜덤 이동, 총에 맞으면 HP 감소하다가 0이되면 사라짐,  10초 후 리스폰)
 3. 다음 미팅
  - 9월 15일 화요일 저녁 7시
+
+
+9월8일 오류 메세지
+
+44520 스레드가 종료되었습니다(코드: 0 (0x0)).
+D3D12: Removing Device.
+D3D12 ERROR: ID3D12Device::RemoveDevice: Device removal has been triggered for the following reason (DXGI_ERROR_DEVICE_HUNG: The Device took an unreasonable amount of time to execute its commands, or the hardware crashed/hung. As a result, the TDR (Timeout Detection and Recovery) mechanism has been triggered. The current Device Context was executing commands when the hang occurred. The application may want to respawn and fallback to less aggressive use of the display hardware). [ EXECUTION ERROR #232: DEVICE_REMOVAL_PROCESS_AT_FAULT]
