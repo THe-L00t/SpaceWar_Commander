@@ -18,6 +18,7 @@
 #include "Input.h"
 #include "PlayerController.h"
 #include "RayTracingParams.h"
+#include "Diag.h"
 #include "Resource/ResourceManager.h"
 #include "Terrain/TerrainSampler.h"
 #include <objbase.h>
@@ -75,6 +76,33 @@ namespace
 		return o;
 	}
 
+	// ── 메모리 폭주 원인 규명 실험 스위치 ────────────────────
+	//  실행 인자가 아니라 «코드» 로 고른다. 값을 바꾸고 다시 빌드해서 실행한다.
+	//
+	//  실험 순서
+	//   A 기준        아래 기본값 그대로. 교수님이 돌린 08-26 빌드와 같은 조건이다
+	//   B 계층 OFF    kEnableDebugLayer = false   (A 에서 재현됐을 때만 의미가 있다)
+	//   C 전체 래스터 kForceRaster      = true    (DXR 을 통째로 뺀다)
+	//
+	//  ★ 재현은 클라 1개 단독으로 시도한다. 3개를 띄우기 전에도 문제가 났었다.
+	//    조건을 늘리면 원인만 흐려진다.
+	constexpr bool kEnableDebugLayer = true;    // D3D12 디버그 계층. Debug 빌드에서만 의미가 있다
+	constexpr bool kForceRaster = false;        // true = DXR 완전 제거. BLAS/TLAS/RT 셰이더가 전부 빠진다
+	constexpr bool kEnableDiag = true;          // diag_client.log 커밋 계측
+
+	// 진단 로그 헤더에 남길 실행 구성 한 줄.
+	void DescribeOptions(char* out, size_t cap)
+	{
+#if defined(_DEBUG)
+		const char* layer = kEnableDebugLayer ? "디버그계층 ON" : "디버그계층 OFF";
+#else
+		const char* layer = "디버그계층 없음(Release)";
+#endif
+		sprintf_s(out, cap, "%s, %s",
+			layer,
+			kForceRaster ? "전체 래스터(RT 없음)" : "하이브리드(RT)");
+	}
+
 	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
 	// ★ 반드시 와이드로 다룬다. GetModuleFileNameA 는 ANSI(CP949)를 주므로
 	//   경로에 한글이 있으면 UTF-8 로 오인해 깨진다.
@@ -128,11 +156,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
 		nullptr, nullptr, hInstance, nullptr);
 
+	swc::RendererOptions renderOpt;
+	renderOpt.debugLayer = kEnableDebugLayer;
+	renderOpt.forceRaster = kForceRaster;
+
 	swc::GRenderer renderer;
-	if (!renderer.Initialize(hwnd, width, height))
+	if (!renderer.Initialize(hwnd, width, height, renderOpt))
 	{
 		MessageBox(hwnd, renderer.StatusText().c_str(), L"렌더러 초기화 실패", MB_OK | MB_ICONERROR);
 		return 1;
+	}
+
+	// ── 메모리 계측 ─────────────────────────────────────────
+	//  이 문제의 지문은 "커밋이 32MB 단위로 계단식 증가" 다. 창 제목과 로그에 같이 남긴다.
+	swc::Diag diag;
+	if (kEnableDiag)
+	{
+		char optionText[256];
+		DescribeOptions(optionText, sizeof(optionText));
+		diag.Initialize(optionText);
 	}
 
 	swc::Planet planet;   // 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
@@ -363,14 +405,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		renderer.Render(view, items, scene.WorldData());
 		renderer.EndFrame();
 
+		// 커밋/작업집합을 1초마다 diag_client.log 에 남긴다 (내부에서 주기 판정)
+		if (kEnableDiag)
+			diag.Tick(dt, timer.Fps(), renderer.TlasBuildCount());
+
 		// 델타타임 / 하이브리드 상태를 창 제목으로 확인
 		titleTimer += dt;
 		if (titleTimer >= 0.5f)
 		{
 			titleTimer = 0.0f;
 			const swc::RayTracingParams& rt = renderer.GetRayTracingParams();
-			const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
+			const wchar_t* rtState = renderer.IsRasterOnly() ? L"래스터고정"
+				: !renderer.SupportsRaytracing() ? L"미지원"
 				: (rt.enabled ? L"ON" : L"OFF");
+
+			// 메모리 — 이 문제의 지문. 커밋이 32MB 칸 단위로 오르는지가 판별점이다.
+			wchar_t memText[96];
+			if (kEnableDiag)
+			{
+				swprintf_s(memText, L"커밋 %lluMB  32MB칸 %u",
+					diag.CommitBytes() / (1024ull * 1024ull), diag.Blocks32MB());
+			}
+			else
+			{
+				swprintf_s(memText, L"계측 꺼짐");
+			}
 
 			// 구면 이동 검증용: 고도 / 접지 / 스폰에서의 거리
 			const swc::Vec3d& p = controller.Position();
@@ -392,9 +451,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 			wchar_t title[600];
 			swprintf_s(title,
-				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
+				L"SpaceWar   FPS %.0f  dt %.1fms  |  %s  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
 				L"|  %s  |  %s  |  RT %s knee %.2f view %u",
 				timer.Fps(), dt * 1000.0f,
+				memText,
 				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 				distFromSpawn, controller.Speed(),
 				netText,

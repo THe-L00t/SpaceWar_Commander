@@ -36,6 +36,9 @@
     <Filter Include="클래스 목록\GameTimer">
       <UniqueIdentifier>{3b1c58a4-5e77-4a02-9d16-7c40e2b9a511}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Diag">
+      <UniqueIdentifier>{5c7f19b2-3a48-4d61-8e05-91b6c2f7d340}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\Input">
       <UniqueIdentifier>{6e2a91d7-0c33-4f5b-8a91-b4d7e0663c28}</UniqueIdentifier>
     </Filter>
@@ -80,6 +83,9 @@
     <ClCompile Include="GameTimer.cpp">
       <Filter>클래스 목록\GameTimer</Filter>
     </ClCompile>
+    <ClCompile Include="Diag.cpp">
+      <Filter>클래스 목록\Diag</Filter>
+    </ClCompile>
     <ClCompile Include="Input.cpp">
       <Filter>클래스 목록\Input</Filter>
     </ClCompile>
@@ -120,6 +126,9 @@
     </ClInclude>
     <ClInclude Include="GameTimer.h">
       <Filter>클래스 목록\GameTimer</Filter>
+    </ClInclude>
+    <ClInclude Include="Diag.h">
+      <Filter>클래스 목록\Diag</Filter>
     </ClInclude>
     <ClInclude Include="Input.h">
       <Filter>클래스 목록\Input</Filter>
