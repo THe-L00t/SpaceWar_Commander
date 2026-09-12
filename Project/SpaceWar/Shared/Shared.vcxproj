@@ -67,9 +67,44 @@
     <ClInclude Include="Protocol.h" />
     <ClInclude Include="Units.h" />
     <ClInclude Include="HeightmapData.h" />
+    <ClInclude Include="Vec3.h" />
+    <ClInclude Include="GameObject\Object.h" />
+    <ClInclude Include="GameObject\DynamicObject.h" />
+    <ClInclude Include="GameObject\StaticObject.h" />
+    <ClInclude Include="GameObject\Player.h" />
+    <ClInclude Include="GameObject\OtherPlayer.h" />
+    <ClInclude Include="GameObject\NPC.h" />
+    <ClInclude Include="AI\BehaviorTree.h" />
+    <ClInclude Include="AI\BehaviorStatus.h" />
+    <ClInclude Include="AI\BehaviorContext.h" />
+    <ClInclude Include="AI\Node\BehaviorNode.h" />
+    <ClInclude Include="AI\Node\CompositeNode.h" />
+    <ClInclude Include="AI\Node\SequenceNode.h" />
+    <ClInclude Include="AI\Node\SelectorNode.h" />
+    <ClInclude Include="AI\Node\DecoratorNode.h" />
+    <ClInclude Include="AI\Node\InverterNode.h" />
+    <ClInclude Include="AI\Node\LeafNode.h" />
+    <ClInclude Include="AI\Node\ActionNode.h" />
+    <ClInclude Include="AI\Node\ConditionNode.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
+    <ClCompile Include="GameObject\Object.cpp" />
+    <ClCompile Include="GameObject\DynamicObject.cpp" />
+    <ClCompile Include="GameObject\StaticObject.cpp" />
+    <ClCompile Include="GameObject\Player.cpp" />
+    <ClCompile Include="GameObject\OtherPlayer.cpp" />
+    <ClCompile Include="GameObject\NPC.cpp" />
+    <ClCompile Include="AI\BehaviorTree.cpp" />
+    <ClCompile Include="AI\Node\BehaviorNode.cpp" />
+    <ClCompile Include="AI\Node\CompositeNode.cpp" />
+    <ClCompile Include="AI\Node\SequenceNode.cpp" />
+    <ClCompile Include="AI\Node\SelectorNode.cpp" />
+    <ClCompile Include="AI\Node\DecoratorNode.cpp" />
+    <ClCompile Include="AI\Node\InverterNode.cpp" />
+    <ClCompile Include="AI\Node\LeafNode.cpp" />
+    <ClCompile Include="AI\Node\ActionNode.cpp" />
+    <ClCompile Include="AI\Node\ConditionNode.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
