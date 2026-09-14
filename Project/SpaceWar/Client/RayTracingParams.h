@@ -14,7 +14,11 @@ namespace swc {
 	//    · 루트 시그니처에서 TLAS SRV 파라미터를 뺀다
 	//
 	//  ★ 실행 인자로 만들지 않는다. 되돌리려면 true 로 고치고 다시 빌드한다.
-	inline constexpr bool kEnableRaytracing = false;
+	//
+	//  ★ test 브랜치에서는 true 다 (2026-09-14).
+	//    아래 DXR 부분 차단 키(Z·X·C·B)는 RT 경로가 살아 있어야 의미가 있다.
+	//    이 값이 false 면 BLAS·TLAS 가 아예 만들어지지 않아 키가 전부 무효다.
+	inline constexpr bool kEnableRaytracing = true;
 
 	struct RayTracingParams
 	{
@@ -30,5 +34,16 @@ namespace swc {
 
 		float    resolutionScale = 1.0f;   // 예약 (RT 해상도 분리 시)
 		uint32_t raysPerPixel = 1;         // 예약
+
+		// ── DXR 부분 차단 (디버깅용) ─────────────────────────
+		//  메모리 폭주의 «방아쇠» 를 좁히려면 RT 경로를 한 조각씩 끊어봐야 한다.
+		//  enabled(R 키)는 전부를 끄므로 어느 조각이 원인인지 가릴 수 없다.
+		//
+		//  ★ 런타임에 끌 수 없는 것: BLAS. 메쉬를 만들 때 한 번만 빌드하므로
+		//    끄려면 kEnableRaytracing 을 false 로 두고 다시 빌드해야 한다.
+		bool     buildTlas = true;     // Z : 매 프레임 TLAS 재빌드
+		bool     traceRays = true;     // X : 셰이더의 레이 발사
+		bool     bindTlas = true;      // C : TLAS 를 루트 SRV 로 바인딩
+		uint32_t tlasInterval = 1;     // B : 재빌드 주기 (1·2·4·8·16 프레임)
 	};
 }

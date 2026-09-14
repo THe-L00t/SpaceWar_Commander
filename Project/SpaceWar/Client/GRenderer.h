@@ -29,6 +29,10 @@ namespace swc {
 		void SetRayTracingParams(const RayTracingParams&);
 		const RayTracingParams& GetRayTracingParams() const;
 
+		// 지금까지 TLAS 를 몇 번 빌드했는가 (디버깅용 누적값).
+		// 커밋 증가가 빌드 횟수에 비례하는지 보려면 이 수를 같이 봐야 한다.
+		uint32_t TlasBuildCount() const;
+
 		void SetSunDirection(const DirectX::XMFLOAT3&);
 		void SetDebugMode(uint32_t);
 		uint32_t DebugMode() const;

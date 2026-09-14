@@ -169,6 +169,7 @@ namespace swc {
 
 		bool rtSupported = false;
 		RayTracingParams rtParams;
+		uint32_t tlasBuildCount = 0;   // 디버깅용 누적 빌드 횟수
 		// 정규화 필수 — GGX 의 H = normalize(L+V) 계산에 들어간다
 		XMFLOAT3 sunDir{ 0.3563f, -0.8144f, 0.4581f };
 		uint32_t debugMode = 0;
@@ -548,7 +549,15 @@ namespace swc {
 		const bool rtActive = impl->rtSupported && impl->rtParams.enabled;
 
 		// ── TLAS 재빌드 (씬 노드 → 인스턴스) ──
-		if (rtActive)
+		//
+		//  ★ 빌드를 멈춰도 마지막에 만든 TLAS 는 그대로 남는다.
+		//    셰이더는 계속 그것을 읽으므로 반사가 «그 시점에 얼어붙은» 상태가 된다.
+		//    화면이 틀리는 대신, 빌드만 단독으로 끊어 그 영향을 볼 수 있다.
+		const uint32_t interval = impl->rtParams.tlasInterval ? impl->rtParams.tlasInterval : 1u;
+		const bool buildNow = rtActive && impl->rtParams.buildTlas
+			&& (impl->frameCounter % interval == 0);
+
+		if (buildNow)
 		{
 			impl->accel.ResetInstances();
 			for (const RenderItem& it : items)
@@ -559,6 +568,7 @@ namespace swc {
 				impl->accel.AddInstance(blasIndex, worlds[it.node]);
 			}
 			impl->accel.BuildTlas(impl->commandList.Get());
+			++impl->tlasBuildCount;
 		}
 
 		// ── 프레임 상수 ──
@@ -566,7 +576,12 @@ namespace swc {
 		XMStoreFloat4x4(&fc.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
 		fc.eyePos = view.eyePosition;
 		fc.sunDir = impl->sunDir;
-		fc.rtEnabled = (rtActive && impl->accel.InstanceCount() > 0) ? 1u : 0u;
+		// ★ 바인딩을 끄면 발사도 반드시 꺼야 한다.
+		//   t0 가 비어 있는데 셰이더가 TraceRayInline 을 부르면 무슨 일이 날지 모른다.
+		const bool bindTlas = impl->rtSupported && impl->rtParams.bindTlas
+			&& impl->accel.InstanceCount() > 0;
+
+		fc.rtEnabled = (rtActive && impl->rtParams.traceRays && bindTlas) ? 1u : 0u;
 		fc.rouletteKnee = impl->rtParams.rouletteKnee;
 		fc.fresnelBoost = impl->rtParams.fresnelBoost;
 		fc.debugMode = impl->debugMode;
@@ -578,7 +593,7 @@ namespace swc {
 		impl->commandList->SetPipelineState(impl->pso.Get());
 		impl->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		impl->commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress());
-		if (impl->rtSupported && impl->accel.InstanceCount() > 0)
+		if (bindTlas)
 			impl->commandList->SetGraphicsRootShaderResourceView(2, impl->accel.TlasAddress());
 
 		for (const RenderItem& it : items)
@@ -616,6 +631,7 @@ namespace swc {
 	}
 
 	bool GRenderer::SupportsRaytracing() const { return impl->rtSupported; }
+	uint32_t GRenderer::TlasBuildCount() const { return impl->tlasBuildCount; }
 	void GRenderer::SetRayTracingParams(const RayTracingParams& p) { impl->rtParams = p; }
 	const RayTracingParams& GRenderer::GetRayTracingParams() const { return impl->rtParams; }
 	void GRenderer::SetSunDirection(const XMFLOAT3& d) { impl->sunDir = d; }
