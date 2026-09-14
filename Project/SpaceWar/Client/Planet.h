@@ -1,6 +1,7 @@
 #pragma once
 #include "Vec3d.h"
 #include "Terrain/TerrainSampler.h"
+#include "Shared/PlanetConst.h"
 
 // ============================================================
 //  Planet.h — 구형 행성 정의
@@ -26,7 +27,8 @@
 namespace swc {
 
 	// 2026-08-05 회의: 120km → 1.6km (교수님 프로토타입 1,650m 와 같은 급)
-	inline constexpr double kPlanetRadius = 1600.0;   // 1.6 km
+	// ★ 실제 값은 Shared 에 있다. 서버도 같은 값을 봐야 NPC 가 지표면에 놓인다.
+	inline constexpr double kPlanetRadius = Shared::kPlanetRadius;
 
 	struct Planet
 	{

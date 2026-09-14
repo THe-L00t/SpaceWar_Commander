@@ -168,8 +168,6 @@ namespace swc {
 		AccelStructure accel;
 
 		bool rtSupported = false;
-		bool rasterForced = false;      // --raster 로 RT 를 강제로 끈 상태인가
-		uint32_t tlasBuilds = 0;        // TLAS 재빌드 누적 횟수 (진단 로그용)
 		RayTracingParams rtParams;
 		// 정규화 필수 — GGX 의 H = normalize(L+V) 계산에 들어간다
 		XMFLOAT3 sunDir{ 0.3563f, -0.8144f, 0.4581f };
@@ -222,15 +220,13 @@ namespace swc {
 			CloseHandle(impl->fenceEvent);
 	}
 
-	bool GRenderer::Initialize(HWND hwnd, uint32_t width, uint32_t height, const RendererOptions& options)
+	bool GRenderer::Initialize(HWND hwnd, uint32_t width, uint32_t height)
 	{
 		impl->width = width;
 		impl->height = height;
-		impl->rasterForced = options.forceRaster;
 
 		UINT factoryFlags = 0;
 #if defined(_DEBUG)
-		if (options.debugLayer)
 		{
 			ComPtr<ID3D12Debug> debug;
 			if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
@@ -256,11 +252,17 @@ namespace swc {
 			impl->status = L"D3D12 디바이스 생성 실패.";
 			return false;
 		}
-		impl->rtSupported = pick.raytracing && !options.forceRaster;
-		if (options.forceRaster)
-			impl->status = pick.name + L"  [전체 래스터 — RT 강제 끔]";
+		// kEnableRaytracing 이 false 면 장치가 지원해도 RT 경로를 전부 끈다.
+		// 이 한 줄이 BLAS·TLAS 빌드, 셰이더의 RayQuery, TLAS 루트 SRV 를 모두 막는다.
+		impl->rtSupported = pick.raytracing && kEnableRaytracing;
+
+		impl->status = pick.name;
+		if (impl->rtSupported)
+			impl->status += L"  [DXR Tier 1.1]";
+		else if (pick.raytracing)
+			impl->status += L"  [DXR 지원 — 임시 비활성, 래스터만]";
 		else
-			impl->status = pick.name + (pick.raytracing ? L"  [DXR Tier 1.1]" : L"  [RT 미지원 — 래스터만]");
+			impl->status += L"  [RT 미지원 — 래스터만]";
 
 		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -557,7 +559,6 @@ namespace swc {
 				impl->accel.AddInstance(blasIndex, worlds[it.node]);
 			}
 			impl->accel.BuildTlas(impl->commandList.Get());
-			++impl->tlasBuilds;
 		}
 
 		// ── 프레임 상수 ──
@@ -615,8 +616,6 @@ namespace swc {
 	}
 
 	bool GRenderer::SupportsRaytracing() const { return impl->rtSupported; }
-	bool GRenderer::IsRasterOnly() const { return impl->rasterForced; }
-	uint32_t GRenderer::TlasBuildCount() const { return impl->tlasBuilds; }
 	void GRenderer::SetRayTracingParams(const RayTracingParams& p) { impl->rtParams = p; }
 	const RayTracingParams& GRenderer::GetRayTracingParams() const { return impl->rtParams; }
 	void GRenderer::SetSunDirection(const XMFLOAT3& d) { impl->sunDir = d; }

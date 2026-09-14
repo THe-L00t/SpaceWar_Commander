@@ -99,7 +99,6 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClCompile Include="PlayerController.cpp" />
     <ClCompile Include="ShaderCompiler.cpp" />
     <ClCompile Include="AccelStructure.cpp" />
-    <ClCompile Include="Diag.cpp" />
     <ClCompile Include="Resource\ResourceManager.cpp" />
     <ClCompile Include="Net\SimpleNet.cpp" />
     <ClCompile Include="Resource\HeightmapLoader.cpp" />
@@ -128,7 +127,6 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="ShaderCompiler.h" />
     <ClInclude Include="AccelStructure.h" />
     <ClInclude Include="RayTracingParams.h" />
-    <ClInclude Include="Diag.h" />
     <ClInclude Include="Planet.h" />
     <ClInclude Include="Vec3d.h" />
     <ClInclude Include="Resource\ResourceManager.h" />
@@ -137,6 +135,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="Terrain\TerrainSampler.h" />
     <ClInclude Include="..\Shared\Units.h" />
     <ClInclude Include="..\Shared\HeightmapData.h" />
+    <ClInclude Include="..\Shared\PlanetConst.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -19,6 +19,8 @@ enum class PacketType : uint16_t {
 
     Welcome,        // 서버 -> 클라 : 접속 직후 1회. 네 번호는 이것이다
     PlayerLeave,    // 서버 -> 클라 : 이 번호가 나갔다
+
+    NpcState,       // 서버 -> 클라 : NPC 한 마리의 현재 위치
 };
 
 // 모든 패킷 공통 헤더
@@ -57,6 +59,18 @@ struct PlayerLeavePacket {
     uint32_t     playerId;
 };
 
+// 서버 -> 클라 : NPC 한 마리의 현재 위치.
+//
+// ★ 행동 계산은 서버가 한다. 클라는 받은 위치를 보간해서 그리기만 한다
+//   (아키텍처 명세서 6.13 — 판정은 언제나 서버).
+//   별도의 스폰/퇴장 패킷을 두지 않았다. 처음 보는 npcId 가 오면 그때 만들고,
+//   원격 플레이어와 같은 방식으로 다룬다.
+struct NpcStatePacket {
+    PacketHeader header;
+    uint32_t     npcId;
+    float        pos[3];
+};
+
 // ── 크기 확인 ────────────────────────────────────────────────
 //  구조체를 그대로 바이트로 보내므로 크기가 어긋나면 좌표가 통째로 깨진다.
 //  런타임에 이상한 값이 나오는 것보다 컴파일이 실패하는 편이 낫다.
@@ -64,5 +78,6 @@ static_assert(sizeof(PacketHeader)      ==  4, "PacketHeader 크기 변경됨");
 static_assert(sizeof(PlayerMovePacket)  == 32, "PlayerMovePacket 크기 변경됨");
 static_assert(sizeof(WelcomePacket)     ==  8, "WelcomePacket 크기 변경됨");
 static_assert(sizeof(PlayerLeavePacket) ==  8, "PlayerLeavePacket 크기 변경됨");
+static_assert(sizeof(NpcStatePacket)    == 20, "NpcStatePacket 크기 변경됨");
 
 } // namespace Shared

@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdio>
 #include "Shared/Protocol.h"
+#include "AI/NpcWorld.h"
 
 #define MAX_THREAD_CNT		4
 #define SERVER_PORT			25000
@@ -215,6 +216,10 @@ SOCKET	g_hSocket;									//서버의 리슨 소켓
 HANDLE	g_hIocp;									//IOCP 핸들
 LONG	g_nNextPlayerId = 0;						//플레이어 번호 발급기
 
+//NPC 무리. 행동 스레드 하나만 건드린다.
+srv::NpcWorld	g_npcWorld;
+volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
+
 SessionPtr FindSession(UINT32 nPlayerId)
 {
 	SessionPtr p;
@@ -294,6 +299,10 @@ void CloseAll()
 
 void ReleaseServer(void)
 {
+	//행동 스레드부터 세운다. 소켓이 닫힌 뒤에 브로드캐스트를 돌면 안 된다.
+	::InterlockedExchange(&g_bRunning, 0);
+	::Sleep(100);
+
 	CloseAll();
 	::Sleep(500);
 
@@ -404,6 +413,101 @@ DWORD WINAPI ThreadComplete(LPVOID pParam)
 	}
 
 	puts("[IOCP 작업자 스레드 종료]");
+	return 0;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  NPC 행동 스레드
+//
+//  ★ 행동 계산도 위치 판정도 서버가 한다 (아키텍처 명세서 6.13).
+//    클라는 결과 위치를 받아 그리기만 한다. 다른 플레이어를 그리는 경로와 똑같다.
+//
+//  ★ 30Hz — 클라가 좌표를 보내는 주기(1/30초)와 맞춘다.
+//    더 자주 보내도 클라가 100ms 보간 지연을 두고 그리므로 부드러움은 늘지 않고
+//    대역폭만 는다.
+//
+//  ★ 스레드를 하나만 쓴다
+//    NPC 를 건드리는 것은 이 스레드뿐이다. IOCP 작업자 스레드는 g_npcWorld 를
+//    모른다. 그래서 NPC 쪽에는 락이 없다.
+DWORD WINAPI ThreadNpcTick(LPVOID pParam)
+{
+	const DWORD dwIntervalMs = 33;
+	const float fDt = (float)dwIntervalMs / 1000.0f;
+
+	std::vector<srv::PlayerView> players;
+	std::vector<srv::NpcView>    views;
+
+	int nTicks = 0;
+
+	puts("[NPC 행동 스레드 시작]");
+
+	while (::InterlockedCompareExchange(&g_bRunning, 1, 1) == 1)
+	{
+		::Sleep(dwIntervalMs);
+
+		//1) 위치를 한 번이라도 보낸 플레이어를 모은다.
+		players.clear();
+		{
+			std::vector<SessionPtr> list = SnapshotSessions();
+
+			for (size_t i = 0; i < list.size(); ++i)
+			{
+				if (!list[i]->HasPos()) continue;
+
+				float pos[3];
+				list[i]->LastPos(pos);
+
+				srv::PlayerView pv;
+				pv.playerId = list[i]->PlayerId();
+				pv.pos.x = pos[0];
+				pv.pos.y = pos[1];
+				pv.pos.z = pos[2];
+				players.push_back(pv);
+			}
+		}
+
+		//2) 첫 플레이어가 자리를 잡으면 그 주변에 한 번 깔아둔다.
+		if (g_npcWorld.Empty())
+		{
+			if (players.empty()) continue;
+
+			g_npcWorld.SpawnAround(players[0].pos, srv::kNpcSpawnCount);
+			printf("NPC %zu 마리를 플레이어 %u 주변에 배치했습니다.\n",
+				g_npcWorld.Count(), players[0].playerId);
+		}
+
+		//3) 행동 트리를 돌리고 결정대로 위치를 옮긴다.
+		g_npcWorld.Tick(players, fDt);
+
+		//4) 전원에게 뿌린다. PlayerMove 브로드캐스트와 같은 방식이다.
+		g_npcWorld.Snapshot(views);
+
+		for (size_t i = 0; i < views.size(); ++i)
+		{
+			Shared::NpcStatePacket pkt = {};
+			pkt.header.size = (uint16_t)sizeof(pkt);
+			pkt.header.type = Shared::PacketType::NpcState;
+			pkt.npcId  = views[i].npcId;
+			pkt.pos[0] = views[i].pos.x;
+			pkt.pos[1] = views[i].pos.y;
+			pkt.pos[2] = views[i].pos.z;
+
+			SendToAll(&pkt, (int)sizeof(pkt), 0);
+		}
+
+		//1초에 한 번만 상태를 찍는다. 매 틱 찍으면 좌표 로그에 묻힌다.
+		if (++nTicks >= 30)
+		{
+			nTicks = 0;
+			if (!views.empty())
+			{
+				printf("[NPC] %zu 마리 / 추격 %d 마리 (플레이어 %zu명)\n",
+					views.size(), g_npcWorld.ChasingCount(), players.size());
+			}
+		}
+	}
+
+	puts("[NPC 행동 스레드 종료]");
 	return 0;
 }
 
@@ -546,9 +650,16 @@ int main()
 				(LPVOID)NULL, 0, &dwThreadID);
 	::CloseHandle(hThread);
 
+	//NPC 행동 스레드. 첫 플레이어가 좌표를 보내면 그 주변에 NPC 를 깔고 굴린다.
+	hThread = ::CreateThread(NULL, 0, ThreadNpcTick,
+				(LPVOID)NULL, 0, &dwThreadID);
+	::CloseHandle(hThread);
+
 	printf("*** 좌표서버를 시작합니다! (포트 %d) ***\n", SERVER_PORT);
-	printf("    좌표 패킷 크기 = %d 바이트 / 수신한 당사자에게만 에코\n",
-		(int)sizeof(Shared::PlayerMovePacket));
+	printf("    좌표 패킷 크기 = %d 바이트 / NPC 패킷 크기 = %d 바이트\n",
+		(int)sizeof(Shared::PlayerMovePacket),
+		(int)sizeof(Shared::NpcStatePacket));
+	printf("    NPC %d 마리를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount);
 	while (1)
 		getchar();
 

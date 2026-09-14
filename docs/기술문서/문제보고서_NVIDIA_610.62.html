@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NVIDIA 610.62 드라이버 D3D12 푸시버퍼 미회수 — 문제 보고서</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600&family=Noto+Serif+KR:wght@500;700&display=swap">
+<style>
+:root{
+  --ground:#F6F5F8; --surface:#FFFFFF; --surface-2:#F0EEF3;
+  --ink:#1A1726; --ink-2:#3B3547; --muted:#605A70; --rule:#E0DDE6; --rule-2:#CFC9D8;
+  --accent:#7A2E52; --accent-soft:#F3E7ED;
+  --fact:#14635C; --fact-soft:#E3F0EE;
+  --warn:#8A5A12; --warn-soft:#F7EEDD;
+  --serif:"Noto Serif KR",Georgia,"Times New Roman",serif;
+  --sans:"IBM Plex Sans KR","Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif;
+  --mono:"IBM Plex Mono","Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#14121A; --surface:#1D1A25; --surface-2:#252131;
+    --ink:#EDEAF2; --ink-2:#C8C2D4; --muted:#9A93A8; --rule:#2E2A38; --rule-2:#413B4E;
+    --accent:#E08BAF; --accent-soft:#3A2130;
+    --fact:#58BFB2; --fact-soft:#173430;
+    --warn:#E0B060; --warn-soft:#372C16;
+  }
+}
+*{box-sizing:border-box}
+html{background:var(--ground)}
+body{
+  background:var(--ground); color:var(--ink); margin:0;
+  font-family:var(--sans); font-weight:300; font-size:16px; line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:860px; margin:0 auto; padding:56px 28px 96px;}
+
+.masthead{border-bottom:2px solid var(--ink); padding-bottom:22px; margin-bottom:14px;}
+.kicker{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; margin:0 0 14px;}
+h1{font-family:var(--serif); font-weight:700; font-size:clamp(30px,5vw,44px);
+  line-height:1.24; letter-spacing:-.01em; margin:0; text-wrap:balance;}
+.dek{color:var(--muted); font-size:17px; margin:14px 0 0; max-width:62ch;}
+.meta{display:flex; flex-wrap:wrap; gap:6px 26px; margin:16px 0 44px;
+  font-family:var(--mono); font-size:12px; color:var(--muted);}
+.meta b{font-weight:600; color:var(--ink-2);}
+
+.chip{display:inline-block; font-family:var(--mono); font-size:10.5px; font-weight:600;
+  letter-spacing:.08em; padding:2px 7px; border-radius:3px; vertical-align:2px; white-space:nowrap;}
+.c-fact{background:var(--fact-soft); color:var(--fact);}
+.c-infer{background:var(--warn-soft); color:var(--warn);}
+.c-unk{background:var(--accent-soft); color:var(--accent);}
+
+section{margin-top:52px;}
+h2{font-family:var(--serif); font-weight:700; font-size:23px; line-height:1.4;
+  margin:0 0 6px; display:flex; gap:14px; align-items:baseline; text-wrap:balance;}
+h2 .num{font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent);
+  flex:none; padding-top:2px;}
+h2 + .sub{color:var(--muted); font-size:14.5px; margin:0 0 20px; padding-left:34px;}
+h3{font-family:var(--sans); font-weight:600; font-size:15px; letter-spacing:.01em;
+  margin:30px 0 10px; color:var(--ink);}
+p{margin:0 0 14px; max-width:66ch;}
+strong{font-weight:600;}
+a{color:var(--accent); text-decoration-thickness:1px; text-underline-offset:2px;}
+a:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+ul,ol{margin:0 0 14px; padding-left:22px; max-width:66ch;}
+li{margin-bottom:7px;}
+code{font-family:var(--mono); font-size:.88em; background:var(--surface-2); padding:1px 5px; border-radius:3px;}
+blockquote{margin:0 0 14px; padding:2px 0 2px 16px; border-left:3px solid var(--rule-2);
+  color:var(--ink-2); max-width:66ch;}
+blockquote p{margin:0;}
+
+.tw{overflow-x:auto; margin:0 0 16px; border:1px solid var(--rule); border-radius:6px; background:var(--surface);}
+table{border-collapse:collapse; width:100%; font-size:14px; min-width:520px;}
+th,td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--rule); vertical-align:top;}
+thead th{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+  font-weight:600; color:var(--muted); background:var(--surface-2); border-bottom:1px solid var(--rule-2);}
+tbody tr:last-child td{border-bottom:none;}
+td.num,th.num{font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap;}
+td.k{font-weight:500; color:var(--ink); white-space:nowrap;}
+.hot{color:var(--accent); font-weight:600;}
+
+pre{font-family:var(--mono); font-size:12.5px; line-height:1.65; margin:0 0 16px;
+  background:var(--surface); border:1px solid var(--rule); border-left:3px solid var(--rule-2);
+  border-radius:5px; padding:14px 16px; overflow-x:auto; color:var(--ink-2);}
+pre .em{color:var(--accent); font-weight:600;}
+
+.bars{background:var(--surface); border:1px solid var(--rule); border-radius:6px; padding:22px 22px 18px; margin:0 0 16px;}
+.bar-row{display:grid; grid-template-columns:104px 1fr; gap:14px; align-items:center; margin-bottom:14px;}
+.bar-row:last-of-type{margin-bottom:0;}
+.bar-lab{font-family:var(--mono); font-size:12px; color:var(--muted); text-align:right;}
+.bar-track{background:var(--surface-2); border-radius:3px; height:30px; overflow:hidden;}
+.bar-fill{height:100%; display:flex; align-items:center; padding:0 10px;
+  font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; font-weight:600; color:#FFF;}
+.f-commit{background:var(--accent); width:100%;}
+.f-ws{background:var(--fact); width:5.2%; min-width:64px;}
+.bar-note{font-size:13px; color:var(--muted); margin:16px 0 0; padding-top:14px; border-top:1px solid var(--rule);}
+
+.call{background:var(--accent-soft); border-radius:6px; padding:18px 20px; margin:0 0 18px;
+  border-left:3px solid var(--accent);}
+.call p{margin:0; max-width:none; font-size:15px;}
+.call p + p{margin-top:10px;}
+.call .lab{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+  font-weight:600; color:var(--accent); display:block; margin-bottom:7px;}
+.gap{background:var(--warn-soft); border-left-color:var(--warn);}
+.gap .lab{color:var(--warn);}
+
+.cause{border:1px solid var(--rule); border-radius:6px; background:var(--surface); padding:18px 20px; margin-bottom:14px;}
+.cause-hd{display:flex; gap:12px; align-items:baseline; margin-bottom:4px; flex-wrap:wrap;}
+.rank{font-family:var(--mono); font-size:12px; font-weight:600; color:var(--accent);}
+.cause-nm{font-weight:600; font-size:16px;}
+.cause p{margin:8px 0 0; font-size:14.5px; max-width:none; color:var(--ink-2);}
+.cause blockquote{margin:10px 0 0; font-size:14px;}
+
+.step{display:grid; grid-template-columns:30px 1fr; gap:16px; padding:16px 0; border-bottom:1px solid var(--rule);}
+.step:last-child{border-bottom:none;}
+.step-n{font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent); padding-top:2px;}
+.step h4{margin:0 0 5px; font-size:15.5px; font-weight:600;}
+.step p{margin:0; font-size:14.5px; color:var(--ink-2); max-width:none;}
+.cost{font-family:var(--mono); font-size:11px; color:var(--muted); margin-left:8px; font-weight:400;}
+
+.srcs{list-style:none; padding:0; margin:0; max-width:none;}
+.srcs li{padding:14px 0; border-bottom:1px solid var(--rule); margin:0;}
+.srcs li:last-child{border-bottom:none;}
+.src-t{font-weight:500; font-size:15px; display:block; margin-bottom:3px;}
+.src-u{font-family:var(--mono); font-size:11.5px; color:var(--muted); word-break:break-all; display:block;}
+.src-n{font-size:13.5px; color:var(--ink-2); margin-top:7px; display:block;}
+
+footer{margin-top:64px; padding-top:20px; border-top:1px solid var(--rule);
+  font-family:var(--mono); font-size:11.5px; color:var(--muted); line-height:1.9;}
+@media (max-width:600px){
+  .wrap{padding:36px 18px 64px;}
+  h2{flex-direction:column; gap:2px;}
+  h2 + .sub{padding-left:0;}
+  .bar-row{grid-template-columns:1fr; gap:5px;}
+  .bar-lab{text-align:left;}
+}
+@media print{
+  html,body{background:#FFF; color:#000; font-size:10.5pt;}
+  .wrap{max-width:none; padding:0;}
+  section{break-inside:avoid;}
+  a{color:#000; text-decoration:none;}
+  .src-u{color:#444;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <p class="kicker">문제 보고서 · SpaceWar Commander 클라이언트</p>
+  <h1>NVIDIA 610.62 드라이버에서 D3D12 푸시버퍼가 회수되지 않는 문제</h1>
+  <p class="dek">지도교수 PC에서만 재현되는 클라이언트 먹통 현상. 63.2GB 전체 메모리 덤프를 실측해 누수의 주체를 확정했다. 원인은 특정 드라이버 버전으로 좁혀졌으나 아직 확정되지 않았다.</p>
+</header>
+
+<div class="meta">
+  <span>작성 <b>2026-09-03</b></span>
+  <span>작성자 <b>이태형</b> (클라이언트·통합)</span>
+  <span>덤프 채집 <b>2026-08-26 14:09</b></span>
+  <span>상태 <b>원인 미확정 · 검증 대기</b></span>
+</div>
+
+<section>
+  <h2><span class="num">01</span>한 장 요약</h2>
+  <p>SpaceWar 클라이언트를 실행하면 <strong>1~2분간 정상 동작하다가</strong> 시스템 커밋 메모리가 급격히 늘기 시작하고, 프레임 시간이 100ms를 넘어가며, 끝내 화면이 검게 변하고 응답이 멈춘다. 메모리는 5분 안에 64GB에 도달한다.</p>
+  <p>덤프 실측 결과 <strong>누수의 주체는 우리 코드가 아니라 GPU 드라이버였다.</strong> 프로세스 커밋의 <strong>98.1%</strong>가 NVIDIA D3D12 드라이버가 할당한 <strong>32MB 크기의 write-combined 블록 1,985개</strong>였고, 이 블록들은 한 번도 회수되지 않았다.</p>
+  <p>문제 PC는 <strong>NVIDIA 610.62</strong>(2026-06-16 릴리즈)를, 재현되지 않는 개발 PC는 <strong>610.88</strong>(2026-07-28 릴리즈)을 쓴다. NVIDIA는 610.88에서 <strong>“DX12 모드에서 장시간 플레이 후 발생하는 간헐적 긴 멈춤”</strong>과 <strong>“R610 드라이버에서 RTX 50 시리즈에 관측된 크래시”</strong>를 수정했다고 공표했다 — 근거는 <a href="#src">10절</a>.</p>
+  <div class="call">
+    <span class="lab">확인해 둘 사실</span>
+    <p>지도교수가 문제를 재현한 <strong>2026-08-26</strong> 시점에, 수정본인 <strong>610.88은 이미 한 달 전(7월 28일)에 배포되어 있었다.</strong> 문제 PC는 두 달 묵은 610.62를 쓰고 있었다.</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">02</span>드라이버 정보</h2>
+  <p class="sub">제조사·버전·릴리즈 시점. 버전 번호는 덤프의 모듈 목록에서 직접 읽었다.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>항목</th><th>문제 발생 환경</th><th>정상 동작 환경</th></tr></thead>
+    <tbody>
+      <tr><td class="k">제조사</td><td colspan="2">NVIDIA Corporation</td></tr>
+      <tr><td class="k">제품</td><td colspan="2">GeForce Game Ready Driver</td></tr>
+      <tr><td class="k">드라이버 버전</td><td class="num hot">610.62</td><td class="num">610.88</td></tr>
+      <tr><td class="k">WDDM 버전</td><td class="num">32.0.16.1062</td><td class="num">32.0.16.1088</td></tr>
+      <tr><td class="k">릴리즈</td><td class="num">2026-06-16 (WHQL)</td><td class="num">2026-07-28 (WHQL)</td></tr>
+      <tr><td class="k">드라이버 파일 날짜</td><td class="num">— (덤프에 없음)</td><td class="num">2026-07-22</td></tr>
+      <tr><td class="k">D3D12 UMD 모듈</td><td colspan="2"><code>nvwgf2umx.dll</code></td></tr>
+      <tr><td class="k">설치 무결성</td><td>정상 — <code>nv*</code> 모듈 8개 전부 동일 버전</td><td>정상</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>드라이버 설치 자체는 정상이다. 버전이 뒤섞인 흔적(설치 실패 시 흔한 증상)은 없었다.</p>
+</section>
+
+<section>
+  <h2><span class="num">03</span>테스트한 PC 환경</h2>
+  <p class="sub">같은 소스, 같은 저장소에서 빌드했으나 결과가 갈렸다.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>항목</th><th>지도교수 PC</th><th>개발 PC (이태형)</th><th>팀원 PC (안병규·한현우)</th></tr></thead>
+    <tbody>
+      <tr><td class="k">GPU</td><td><strong>GeForce RTX 5080</strong><br><span style="color:var(--muted)">Blackwell</span></td><td>GeForce RTX 4070 Laptop<br><span style="color:var(--muted)">Ada Lovelace</span></td><td class="hot">미수집</td></tr>
+      <tr><td class="k">드라이버</td><td class="num hot">610.62</td><td class="num">610.88</td><td class="num hot">미수집</td></tr>
+      <tr><td class="k">CPU / RAM</td><td>Ryzen 7 7700 / 128GB</td><td>— / 31.7GB</td><td class="hot">미수집</td></tr>
+      <tr><td class="k">OS</td><td class="num">Windows 11 · 26200</td><td class="num">Windows 11 · 26200</td><td class="hot">미수집</td></tr>
+      <tr><td class="k">빌드 구성</td><td><strong>x64 Debug</strong><br><span style="color:var(--muted)">D3D12 디버그 계층 ON</span></td><td>Release 위주<br><span style="color:var(--muted)">Debug 시험 여부 불확실</span></td><td class="hot">불확실</td></tr>
+      <tr><td class="k">결과</td><td class="hot">재현됨</td><td>재현 안 됨</td><td>재현 안 됨 (보고)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="call gap">
+    <span class="lab">이 보고서의 가장 큰 공백</span>
+    <p><strong>팀원 2명의 드라이버 버전이 수집되지 않았다.</strong> 이 보고서의 핵심 논거는 “610.62에서는 발생하고 610.88에서는 발생하지 않는다”인데, 현재 그 근거는 <strong>PC 두 대</strong>뿐이다. 팀원 PC가 610.88 이상이면 논거가 크게 강해지고, 610.62인데도 정상이라면 <strong>논거가 무너진다.</strong></p>
+    <p>수집은 팀원이 PowerShell에 한 줄만 붙여넣으면 된다 — 9번 절 참조.</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">04</span>증상</h2>
+  <p class="sub">지도교수 보고 + 덤프 실측을 합친 관찰 사실.</p>
+  <ul>
+    <li>실행 후 <strong>1~2분간은 60fps로 정상</strong> 동작한다.</li>
+    <li>그 뒤 <strong>커밋 메모리가 먼저 늘기 시작</strong>하고, 이어서 게임이 느려진다. 순서가 중요하다 — 누수가 먼저다.</li>
+    <li>프레임 시간이 <strong>100ms 이상</strong>으로 떨어진다. 루프가 폭주하는 것이 아니라 <strong>기어간다.</strong></li>
+    <li>끝내 <strong>화면이 검게 변하고</strong> 응답이 멈춘다. 이 시점에도 렌더 루프 자체는 돌고 있다.</li>
+    <li>메모리는 <strong>5분 안에 64GB</strong>에 도달한다.</li>
+    <li><strong>멀티플레이어는 조건이 아니다.</strong> 클라이언트를 1개만 띄워도 발생한다.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">05</span>덤프 실측 증거</h2>
+  <p class="sub">2026-08-26 14:09:39 채집 · 63.2GB 전체 메모리 덤프 · 디버거로 수동 채집(크래시 아님).</p>
+
+  <h3>커밋은 63GB인데 실제로 쓴 메모리는 3.2GB뿐이다</h3>
+  <div class="bars">
+    <div class="bar-row">
+      <span class="bar-lab">커밋</span>
+      <div class="bar-track"><div class="bar-fill f-commit">63.0 GB</div></div>
+    </div>
+    <div class="bar-row">
+      <span class="bar-lab">작업집합</span>
+      <div class="bar-track"><div class="bar-fill f-ws">3.2 GB</div></div>
+    </div>
+    <p class="bar-note">잡아두기만 하고 <strong>거의 건드리지 않은 메모리</strong>다. 실제로 블록 내용을 표본 조사하니 <strong>93~100%가 0</strong>이었다. 일반적인 “메모리 릭”(할당한 데이터를 해제하지 않음)과는 성격이 다르다.</p>
+  </div>
+
+  <h3>범인의 서명</h3>
+  <pre>COMMIT / PRIVATE / prot 0x404 (<span class="em">PAGE_READWRITE | PAGE_WRITECOMBINE</span>) / 정확히 32.00 MB
+  <span class="em">1,985 개  =  62.0 GB   (전체 커밋의 98.1%)</span>
+  0x01C8D2A80000 ~ 0x01DA5F5C0000   32MB 간격으로 연속, 불연속 5곳뿐
+  AllocationBase 가 전부 각자 다름  =  독립된 VirtualAlloc 1,985 회</pre>
+  <p><code>PAGE_WRITECOMBINE</code>은 사실상 그래픽 드라이버 전용 속성이다(CPU가 쓰고 GPU가 읽는 업로드·커맨드 메모리). 블록 일부에서 GPU 푸시버퍼 패킷 형태의 24바이트 주기 반복이 발견됐다. <strong>우리 애플리케이션의 데이터가 아니다.</strong></p>
+
+  <h3>프로세스는 CPU를 태우지 않고 «기다리고» 있었다</h3>
+  <div class="tw"><table>
+    <thead><tr><th>측정 항목</th><th class="num">값</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td class="k">프로세스 수명</td><td class="num">7분 08초</td><td>14:02:31 시작 → 14:09:39 채집</td></tr>
+      <tr><td class="k">CPU 사용</td><td class="num hot">54초 (12.6%)</td><td>느려진 원인이 연산이 아니라 <strong>대기</strong></td></tr>
+      <tr><td class="k">스레드</td><td class="num">17개</td><td>스레드 누수 아님</td></tr>
+      <tr><td class="k">핸들</td><td class="num">515개</td><td>핸들 누수 아님</td></tr>
+      <tr><td class="k">드라이버 워커 스레드</td><td class="num">7개 / 7분간 0.02초</td><td>회수 작업이 <strong>돌지 않았다</strong></td></tr>
+      <tr><td class="k">덤프 시점 상태</td><td class="num">17개 전원 대기</td><td>실행 중인 스레드가 하나도 없음</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>메인 스레드는 드라이버 안에서 멈춰 있었다</h3>
+  <pre>Rip    ntdll.dll+0x160A04              커널 대기 중
++0     ntdll.dll+0xCFA44
++48    KERNELBASE.dll+0x428D1          WaitForSingleObject 계열
++192~  <span class="em">nvwgf2umx.dll      (12 프레임)   드라이버가 건 대기</span>
++896~  <span class="em">D3D12SDKLayers.dll (42 프레임)   디버그 계층 — 스택 최다 모듈</span>
+       D3D12Core.dll (19) / Client.exe (31) / ucrtbased.dll (11)</pre>
+  <p>우리 코드의 GPU 대기(<code>WaitForSingleObject</code>)였다면 스택에 <code>nvwgf2umx</code> 프레임이 없어야 한다. <strong>D3D12 호출 안에서 드라이버가 건 다른 대기</strong>다.</p>
+</section>
+
+<section>
+  <h2><span class="num">06</span>측정으로 배제된 원인</h2>
+  <p class="sub">아래는 전부 덤프 실측으로 기각됐다. 다시 검토할 필요가 없다.</p>
+  <div class="tw"><table>
+    <thead><tr><th>가설</th><th>기각 근거</th></tr></thead>
+    <tbody>
+      <tr><td class="k">애플리케이션 코드의 힙 누수</td><td>커밋의 98.1%가 드라이버 write-combined 블록. 우리 몫은 1GB 미만</td></tr>
+      <tr><td class="k">스레드 누수</td><td>스레드 17개</td></tr>
+      <tr><td class="k">핸들 누수</td><td>핸들 515개</td></tr>
+      <tr><td class="k">셰이더 컴파일러 버전 차이</td><td>양쪽 <code>dxcompiler.dll</code>이 <code>1.8.2502.11</code>로 동일</td></tr>
+      <tr><td class="k">드라이버 572.16~576.88 결함 계열</td><td>실제 버전은 610.62 — 해당 계열이 아님</td></tr>
+      <tr><td class="k">멀티플레이어 / 다중 실행</td><td>클라이언트 1개만 띄워도 발생</td></tr>
+      <tr><td class="k">디바이스 제거가 누수를 유발</td><td>강제 제거 실험에서 30초간 커밋 증가 0MB</td></tr>
+      <tr><td class="k">매 프레임 TLAS 재빌드 (개발 PC 조건)</td><td>76,345회 빌드에 증가 0MB — 단 610.88·디버그 계층 없음 조건</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2><span class="num">07</span>예상 원인</h2>
+  <p class="sub">확신도 순. <span class="chip c-fact">실측</span> 덤프로 확인 · <span class="chip c-infer">정황</span> 근거는 있으나 미검증 · <span class="chip c-unk">미지</span> 모름.</p>
+
+  <div class="call">
+    <span class="lab">확정된 것과 모르는 것의 경계</span>
+    <p><strong>확정:</strong> 누수의 주체는 NVIDIA D3D12 드라이버의 32MB 푸시버퍼이며, 회수되지 않고 계속 새로 할당됐다. 우리 힙이 아니다. <span class="chip c-fact">실측</span></p>
+    <p><strong>모름:</strong> <strong>왜 1~2분 뒤부터 회수에 실패하기 시작하는가.</strong> 아래 세 후보는 <strong>하나도 검증되지 않았다.</strong> <span class="chip c-unk">미지</span></p>
+  </div>
+
+  <div class="cause">
+    <div class="cause-hd"><span class="rank">1순위</span><span class="cause-nm">드라이버 610.62의 D3D12 버퍼 회수 결함</span><span class="chip c-infer">정황</span></div>
+    <p>NVIDIA는 문제 PC가 쓰던 610.62의 <strong>다음 버전인 610.88에서</strong> 아래 두 건을 수정했다고 공표했다. 출처와 원문은 <a href="#src">10절</a>.</p>
+    <blockquote><p>“Fixed intermittent long pauses that could occur after extended gameplay sessions in <strong>DX12 mode</strong>” — Path of Exile 2</p></blockquote>
+    <blockquote><p>“Resolved game crashes observed on <strong>RTX 50 Series GPUs with R610 drivers</strong>” — Halo: Campaign Evolved</p></blockquote>
+    <p>우리 증상은 <strong>DX12 · 시간 경과형 · RTX 50 시리즈 · R610 브랜치</strong>라는 네 조건을 모두 만족한다. 또한 R610 브랜치에는 Linux 쪽에서도 <strong>VRAM 관련 미해결 문제</strong>가 보고되어 있다.</p>
+    <p><strong>주의 — 이것은 정황이지 증명이 아니다.</strong> 릴리즈 노트의 수정 항목은 <strong>특정 게임 이름으로</strong> 적혀 있고, NVIDIA는 근본 원인을 공개하지 않았다. 우리 문제와 같은 버그인지 알 수 없다. 다만 <strong>검증 비용이 사실상 0</strong>이라 1순위에 둔다.</p>
+  </div>
+
+  <div class="cause">
+    <div class="cause-hd"><span class="rank">2순위</span><span class="cause-nm">D3D12 디버그 계층</span><span class="chip c-infer">정황</span></div>
+    <p>지도교수는 <strong>Debug 빌드</strong>로 실행했고 <code>D3D12SDKLayers.dll</code>이 로드되어 있었다. 디버그 계층은 호출 스택에서 <strong>가장 많이 등장하는 모듈(42프레임)</strong>이다. 디버그 구성에서 메모리가 크래시까지 계속 오른다는 보고 자체는 외부에 실재한다(10절).</p>
+    <p><strong>주의:</strong> 스택이 디버그 계층을 통과한다는 것은 <strong>경로가 그렇다는 사실</strong>이지 <strong>디버그 계층이 회수를 막았다는 증명이 아니다.</strong></p>
+  </div>
+
+  <div class="cause">
+    <div class="cause-hd"><span class="rank">3순위</span><span class="cause-nm">매 프레임 TLAS 전체 재빌드</span><span class="chip c-infer">정황</span></div>
+    <p>클라이언트는 매 프레임 상위 가속구조(TLAS)를 <code>PREFER_FAST_TRACE</code>로 <strong>전체 재빌드</strong>한다. 갱신(refit)이 아니다. 가속구조 빌드는 드라이버가 내부 커맨드 버퍼를 가장 크게 소비하는 경로다.</p>
+    <p><strong>주의:</strong> 개발 PC에서 76,345회 빌드에 증가 0MB로 기각된 적이 있으나, 그 실험은 <strong>610.88 · 디버그 계층 없음</strong> 조건이었다. 조건이 다르므로 완전히 배제할 수 없다.</p>
+  </div>
+
+  <h3>애플리케이션 코드 검토 결과</h3>
+  <p>렌더러와 가속구조 코드를 검토했다. <strong>D3D12 규격 위반이나 명백한 오용은 없다.</strong> 프레임 루프에 리소스 생성이 0건이고, 가속구조는 선할당되며, 빌드 후 UAV 배리어가 정상적으로 걸려 있다. 다만 <strong>드라이버가 흔히 마주치지 않는 패턴</strong> 세 가지가 있다.</p>
+  <div class="tw"><table>
+    <thead><tr><th>패턴</th><th>왜 주목하는가</th></tr></thead>
+    <tbody>
+      <tr><td class="k">커맨드 얼로케이터 1개를<br>매 프레임 <code>Reset()</code></td><td><code>CommandAllocator::Reset()</code>이 <strong>드라이버가 내부 커맨드 메모리를 회수하는 바로 그 지점</strong>이다. 회수 실패가 일어난다면 가장 유력한 자리. 정석은 프레임당 1개</td></tr>
+      <tr><td class="k">매 프레임 TLAS 전체 재빌드</td><td>가장 비싼 빌드 옵션으로 갱신 없이 매번 처음부터 빌드</td></tr>
+      <tr><td class="k">파이프라이닝 없음</td><td><code>Present</code> 직후 GPU 완료를 완전히 기다린다. 매 프레임 큐를 비우는 패턴은 상용 게임이 쓰지 않는다</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2><span class="num">08</span>해결 방법</h2>
+  <p class="sub">비용이 낮고 결과가 이분법으로 갈리는 순서. 1번에서 끝날 가능성이 있다.</p>
+
+  <div class="step">
+    <span class="step-n">1</span>
+    <div>
+      <h4>드라이버를 610.88 이상으로 업데이트하고 1회 실행<span class="cost">비용: 수 분</span></h4>
+      <p>증상이 사라지면 드라이버 세대 문제로 확정된다. 계속되면 1순위 후보가 즉시 기각되고 2·3순위로 넘어간다. 어느 쪽이든 결론이 나오는 유일한 무료 실험이다.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="step-n">2</span>
+    <div>
+      <h4>Release 빌드로 실행<span class="cost">비용: 빌드 1회</span></h4>
+      <p>디버그 계층이 제거된다. 증상이 사라지면 2순위(디버그 계층)가 원인이고, 대응은 <code>EnableDebugLayer()</code>를 환경 변수나 커맨드라인으로 제어 가능하게 만드는 것이다.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="step-n">3</span>
+    <div>
+      <h4>개발 PC에서 Debug 구성으로 재현 시도<span class="cost">비용: 빌드 1회</span></h4>
+      <p>지금까지 “개발 PC에서 재현 안 됨”이 모든 추론의 전제였는데, 그 시험을 Release로만 했다면 전제 자체가 무효다. 클라이언트 <strong>1개 단독</strong>으로 시험한다.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="step-n">4</span>
+    <div>
+      <h4>코드 측 조치<span class="cost">비용: 반나절</span></h4>
+      <p>커맨드 얼로케이터를 프레임당 1개로 분리, TLAS를 <code>ALLOW_UPDATE</code> + refit으로 전환, 프레임 파이프라이닝 도입. 1~3번으로 원인이 좁혀진 뒤에 하는 것이 순서다.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="step-n">5</span>
+    <div>
+      <h4><code>VirtualQuery</code> 순회 계측 삽입<span class="cost">비용: 하루 + 재방문</span></h4>
+      <p>위가 전부 실패했을 때만. 커밋 영역을 주기적으로 순회해 32MB 블록이 늘어나는 시점과 속도를 기록하고, 지도교수 PC에서 1회 실행한다.</p>
+    </div>
+  </div>
+
+  <div class="call">
+    <span class="lab">재현 시 확인할 지문</span>
+    <p>커밋 메모리(<code>PagefileUsage</code>)가 <strong>32MB 단위로 계단식으로 뛰는지</strong>를 본다. 그것이 이 문제의 지문이다. <strong>작업집합은 거의 늘지 않는다</strong>는 점도 함께 확인한다 — 이 둘이 동시에 관측되면 같은 문제다.</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">09</span>수집이 필요한 정보</h2>
+  <p class="sub">아래가 채워지면 1순위 가설의 확신도가 결정된다.</p>
+  <ol>
+    <li><strong>팀원 2명(안병규·한현우)의 GPU·드라이버 버전</strong> — 아래 명령 한 줄</li>
+    <li><strong>팀원들이 Debug 구성으로 시험한 적이 있는지</strong> — Release로만 시험했다면 “재현 안 됨”은 통제된 근거가 아니다</li>
+    <li><strong>지도교수 PC에서 Release 빌드로도 발생하는지</strong> — 8절 2번 조치와 동일</li>
+  </ol>
+  <pre>Get-CimInstance Win32_VideoController |
+  Select-Object Name, DriverVersion, DriverDate</pre>
+  <p>출력의 <code>DriverVersion</code>이 <code>32.0.16.1062</code> 형태로 나온다. 뒤 다섯 자리가 NVIDIA 버전이다 — <code>16.1062</code> → <strong>610.62</strong>.</p>
+</section>
+
+<section id="src">
+  <h2><span class="num">10</span>근거 자료</h2>
+  <p class="sub">7절 1·2순위 가설의 출처. 인용은 원문 그대로이며, 한국어 번역은 본문에만 썼다.</p>
+
+  <h3>드라이버 610.88 릴리즈 노트 — 수정 항목 (1순위 근거)</h3>
+  <ul class="srcs">
+    <li>
+      <span class="src-t">NVIDIA GeForce 610.88 WHQL Driver Available for Download — DSOGaming</span>
+      <a class="src-u" href="https://www.dsogaming.com/news/nvidia-geforce-610-88-whql-driver-available-for-download/">https://www.dsogaming.com/news/nvidia-geforce-610-88-whql-driver-available-for-download/</a>
+      <span class="src-n">릴리즈 <strong>2026-07-28</strong>. 원문 인용: <em>“Resolved game crashes observed on RTX 50 Series GPUs with R610 drivers.”</em> / <em>“Fixed intermittent long pauses that could occur after extended gameplay sessions in DX12 mode.”</em></span>
+    </li>
+    <li>
+      <span class="src-t">NVIDIA 610.88 Driver: Real Fixes and Open Issues — iTechGuides</span>
+      <a class="src-u" href="https://www.itechguides.com/nvidias-geforce-610-88-driver-fixes-real-problems-but-open-issues-remain/">https://www.itechguides.com/nvidias-geforce-610-88-driver-fixes-real-problems-but-open-issues-remain/</a>
+      <span class="src-n"><strong>같은 두 항목을 독립적으로 확인.</strong> 원문 인용: <em>“Fixes intermittent long pauses after extended DX12 gameplay sessions.”</em> / <em>“Resolves crashes reported on RTX 50-series GPUs using the R610 driver branch.”</em> 미해결 항목으로 <em>“Prefer Maximum Performance power-management mode may not be applied correctly.”</em> 및 Linux R610의 VRAM 문제·DLSS 스터터링을 기록.</span>
+    </li>
+    <li>
+      <span class="src-t">610.88 WHQL Game Ready Driver available — Guru3D 포럼</span>
+      <a class="src-u" href="https://forums.guru3d.com/threads/610-88-whql-game-ready-driver-available.461197/">https://forums.guru3d.com/threads/610-88-whql-game-ready-driver-available.461197/</a>
+      <span class="src-n">배포 확인 및 사용자 보고 스레드. (자동 조회는 403으로 차단됨 — 브라우저로 열 것)</span>
+    </li>
+    <li>
+      <span class="src-t">610.88 launches without a resolution for Battlefield 6 Season 4's crashing issues — TweakTown</span>
+      <a class="src-u" href="https://www.tweaktown.com/news/112888/nvidia-geforce-driver-610-88-launches-without-a-resolution-for-battlefield-6-season-4s-crashing-issues/index.html">https://www.tweaktown.com/news/112888/</a>
+      <span class="src-n">610.88 이후로도 R610 브랜치에 미해결 크래시가 남아 있음을 보도.</span>
+    </li>
+  </ul>
+
+  <h3>드라이버 610.62 — 문제 발생 버전</h3>
+  <ul class="srcs">
+    <li>
+      <span class="src-t">New GeForce Game Ready Driver Released — NVIDIA 공식</span>
+      <a class="src-u" href="https://www.nvidia.com/en-us/geforce/news/june-16-2026-geforce-game-ready-driver/">https://www.nvidia.com/en-us/geforce/news/june-16-2026-geforce-game-ready-driver/</a>
+      <span class="src-n">610.62 WHQL, <strong>2026-06-16 릴리즈</strong> 확인. 공식 문서에 이 문제와 직접 관련된 알려진 이슈 기재는 없다.</span>
+    </li>
+    <li>
+      <span class="src-t">GeForce Game Ready Driver 610.62 — NVIDIA 드라이버 상세</span>
+      <a class="src-u" href="https://www.nvidia.com/en-us/drivers/details/272764/">https://www.nvidia.com/en-us/drivers/details/272764/</a>
+      <span class="src-n">버전 상세 및 다운로드 페이지.</span>
+    </li>
+    <li>
+      <span class="src-t">Nvidia 610.62 driver lands with big bug fixes and Empulse support — Neowin</span>
+      <a class="src-u" href="https://www.neowin.net/news/nvidia-61062-driver-lands-with-big-bug-fixes-and-empulse-support/">https://www.neowin.net/news/nvidia-61062-driver-lands-with-big-bug-fixes-and-empulse-support/</a>
+      <span class="src-n">610.62 수정 내역 정리. <strong>우리 증상과 겹치는 항목은 없다</strong>(= 이 버전에서는 아직 안 고쳐졌다는 뜻).</span>
+    </li>
+    <li>
+      <span class="src-t">GeForce GRD 610.62 Feedback Thread — NVIDIA 공식 포럼</span>
+      <a class="src-u" href="https://www.nvidia.com/en-us/geforce/forums/game-ready-drivers/13/587128/">https://www.nvidia.com/en-us/geforce/forums/game-ready-drivers/13/587128/</a>
+      <span class="src-n">610.62 사용자 문제 보고 스레드. 필요하면 우리 사례를 여기에 신고할 수 있다.</span>
+    </li>
+  </ul>
+
+  <h3>RTX 50 시리즈 관련 보도</h3>
+  <ul class="srcs">
+    <li>
+      <span class="src-t">Nvidia is investigating reports of crashes plaguing RTX 5090 and 5080 GPUs with possible driver issues — TechRadar</span>
+      <a class="src-u" href="https://www.techradar.com/computing/gpu/nvidia-is-investigating-reports-of-crashes-plaguing-rtx-5090-and-5080-gpus-with-possible-driver-issues-maybe-hitting-rtx-4000-models-too">https://www.techradar.com/computing/gpu/nvidia-is-investigating-reports-of-crashes-plaguing-rtx-5090-and-5080-gpus-with-possible-driver-issues-maybe-hitting-rtx-4000-models-too</a>
+      <span class="src-n">RTX 5080·5090에서 크래시·프리즈가 반복 보고되어 NVIDIA가 조사 중임을 보도.</span>
+    </li>
+  </ul>
+
+  <h3>D3D12 디버그 계층 관련 (2순위 근거)</h3>
+  <ul class="srcs">
+    <li>
+      <span class="src-t">Memory leak when using DX12 backend in debug configuration — DiligentCore #101</span>
+      <a class="src-u" href="https://github.com/DiligentGraphics/DiligentCore/issues/101">https://github.com/DiligentGraphics/DiligentCore/issues/101</a>
+      <span class="src-n">DX12 백엔드를 debug 구성으로 실행하면 <em>“메모리가 크래시까지 계속 오른다”</em>는 보고. <strong>2019년 · RTX 2070 사례로, 우리 건과 동일 사안이라는 근거는 없다.</strong> 이런 부류의 문제가 실재한다는 참고 자료로만 인용한다.</span>
+    </li>
+    <li>
+      <span class="src-t">Enabling Debug Layer in D3D12 application causes memory… — Visual Studio Developer Community</span>
+      <a class="src-u" href="https://developercommunity.visualstudio.com/content/problem/698264/enabling-debug-layer-in-d3d12-application-causes-m.html">https://developercommunity.visualstudio.com/content/problem/698264/</a>
+      <span class="src-n">동일 부류의 보고. <strong>본문 조회에 실패해 제목만 확인했다.</strong></span>
+    </li>
+  </ul>
+
+  <div class="call gap">
+    <span class="lab">인용의 한계 — 반드시 읽을 것</span>
+    <p>위 릴리즈 노트 인용은 <strong>NVIDIA가 공표한 수정 항목</strong>이지, <strong>우리 문제의 원인을 NVIDIA가 인정한 기록이 아니다.</strong> 우리 증상과 조건이 겹칠 뿐이며 근본 원인이 같다는 확인은 없다. 이 보고서는 그 차이를 유지한다.</p>
+    <p>또한 위 인용은 <strong>2차 출처(기술 매체)를 통한 것</strong>이다. NVIDIA 공식 릴리즈 노트 PDF를 직접 확인하면 더 강한 근거가 된다.</p>
+  </div>
+</section>
+
+<footer>
+  SpaceWar Commander · 클라이언트 렌더링 (DX12 + DXR 하이브리드) · 지도교수 정내훈<br>
+  근거 자료: <code>Client.dmp</code> (63.2GB, 2026-08-26 14:09:39 채집) · NVIDIA GeForce 610.62 / 610.88 릴리즈 노트<br>
+  이 보고서의 모든 수치는 덤프 파싱으로 직접 측정한 값이며, 추정과 미확인 항목은 본문에 표시했다.<br>
+  최종 갱신 2026-09-03
+</footer>
+
+</div>
+</body>
+</html>

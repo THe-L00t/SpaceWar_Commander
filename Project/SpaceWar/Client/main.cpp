@@ -18,7 +18,6 @@
 #include "Input.h"
 #include "PlayerController.h"
 #include "RayTracingParams.h"
-#include "Diag.h"
 #include "Resource/ResourceManager.h"
 #include "Terrain/TerrainSampler.h"
 #include <objbase.h>
@@ -76,33 +75,6 @@ namespace
 		return o;
 	}
 
-	// ── 메모리 폭주 원인 규명 실험 스위치 ────────────────────
-	//  실행 인자가 아니라 «코드» 로 고른다. 값을 바꾸고 다시 빌드해서 실행한다.
-	//
-	//  실험 순서
-	//   A 기준        아래 기본값 그대로. 교수님이 돌린 08-26 빌드와 같은 조건이다
-	//   B 계층 OFF    kEnableDebugLayer = false   (A 에서 재현됐을 때만 의미가 있다)
-	//   C 전체 래스터 kForceRaster      = true    (DXR 을 통째로 뺀다)
-	//
-	//  ★ 재현은 클라 1개 단독으로 시도한다. 3개를 띄우기 전에도 문제가 났었다.
-	//    조건을 늘리면 원인만 흐려진다.
-	constexpr bool kEnableDebugLayer = true;    // D3D12 디버그 계층. Debug 빌드에서만 의미가 있다
-	constexpr bool kForceRaster = false;        // true = DXR 완전 제거. BLAS/TLAS/RT 셰이더가 전부 빠진다
-	constexpr bool kEnableDiag = true;          // diag_client.log 커밋 계측
-
-	// 진단 로그 헤더에 남길 실행 구성 한 줄.
-	void DescribeOptions(char* out, size_t cap)
-	{
-#if defined(_DEBUG)
-		const char* layer = kEnableDebugLayer ? "디버그계층 ON" : "디버그계층 OFF";
-#else
-		const char* layer = "디버그계층 없음(Release)";
-#endif
-		sprintf_s(out, cap, "%s, %s",
-			layer,
-			kForceRaster ? "전체 래스터(RT 없음)" : "하이브리드(RT)");
-	}
-
 	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
 	// ★ 반드시 와이드로 다룬다. GetModuleFileNameA 는 ANSI(CP949)를 주므로
 	//   경로에 한글이 있으면 UTF-8 로 오인해 깨진다.
@@ -156,25 +128,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
 		nullptr, nullptr, hInstance, nullptr);
 
-	swc::RendererOptions renderOpt;
-	renderOpt.debugLayer = kEnableDebugLayer;
-	renderOpt.forceRaster = kForceRaster;
-
 	swc::GRenderer renderer;
-	if (!renderer.Initialize(hwnd, width, height, renderOpt))
+	if (!renderer.Initialize(hwnd, width, height))
 	{
 		MessageBox(hwnd, renderer.StatusText().c_str(), L"렌더러 초기화 실패", MB_OK | MB_ICONERROR);
 		return 1;
-	}
-
-	// ── 메모리 계측 ─────────────────────────────────────────
-	//  이 문제의 지문은 "커밋이 32MB 단위로 계단식 증가" 다. 창 제목과 로그에 같이 남긴다.
-	swc::Diag diag;
-	if (kEnableDiag)
-	{
-		char optionText[256];
-		DescribeOptions(optionText, sizeof(optionText));
-		diag.Initialize(optionText);
 	}
 
 	swc::Planet planet;   // 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
@@ -207,6 +165,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::MeshData groundData = swc::MakeCubeSphere(planet, kPlanetFaceGrid,
 		{ 0.15f, 0.30f, 0.18f });
 	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
+	// NPC 는 붉게 칠해 플레이어(주황)와 눈으로 구분한다.
+	swc::MeshData npcData = swc::MakeCube(2.0f, { 0.85f, 0.15f, 0.15f });
 	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
 
 	swc::MeshHandle groundMesh = renderer.CreateMesh(
@@ -218,6 +178,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::MeshHandle noseMesh = renderer.CreateMesh(
 		noseData.vertices.data(), noseData.vertices.size(),
 		noseData.indices.data(), noseData.indices.size());
+	swc::MeshHandle npcMesh = renderer.CreateMesh(
+		npcData.vertices.data(), npcData.vertices.size(),
+		npcData.indices.data(), npcData.indices.size());
 
 	swc::Scene scene;
 	swc::NodeHandle ground = scene.AddNode(swc::kInvalidNode, groundMesh, 0);
@@ -237,8 +200,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	std::vector<swc::NodeHandle>                  freeRemoteNodes;
 	std::vector<swc::RemoteView>                  remoteViews;
 
+	// ── 서버가 굴리는 NPC ───────────────────────────────────
+	//  행동 계산은 전부 서버가 한다. 클라는 좌표를 받아 그리기만 하므로
+	//  원격 플레이어와 완전히 같은 방식으로 노드를 재사용한다.
+	std::unordered_map<uint32_t, swc::NodeHandle> npcNodes;
+	std::vector<swc::NodeHandle>                  freeNpcNodes;
+	std::vector<swc::NpcView>                     npcViews;
+
 	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
 	const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
+
+	// ★ NPC 를 지면에 붙여 그리기 위한 임시 보정값
+	//   서버는 지형 높이를 모른 채 NPC 를 «쫓는 플레이어와 같은 반지름» 에 놓는다.
+	//   기복이 60m 라 그대로 그리면 파묻히거나 공중에 뜨고, 플레이어가 오르내릴 때마다
+	//   NPC 고도가 통째로 끌려가 순간이동처럼 보인다.
+	//   그래서 서버 좌표에서 «방향» 만 쓰고 고도는 여기서 지형에 맞춰 다시 잡는다.
+	//   ※ 표시 보정일 뿐이다. 서버가 아는 고도와 화면의 고도가 달라지므로,
+	//     사격 판정을 넣기 전에 서버가 지형을 알게 해야 한다(TerrainSampler 를 Shared 로).
+	constexpr double kNpcGroundOffset = 1.0;   // 큐브 2m 의 반높이. PlayerController 와 같은 값
 
 	swc::GameTimer timer;
 	swc::Input input;
@@ -392,6 +371,60 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 				scene.SetLocalTransform(found->second,
 					XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
 			}
+
+			// ── NPC 노드 갱신 ───────────────────────────────
+			//  위 원격 플레이어 갱신과 같은 절차다. 다른 것은 메시 색뿐이다.
+			swc::net_npcs(npcViews);
+
+			// 이번 프레임 목록에 없는 NPC 의 노드를 회수한다.
+			for (std::unordered_map<uint32_t, swc::NodeHandle>::iterator it = npcNodes.begin();
+				it != npcNodes.end(); )
+			{
+				bool alive = false;
+				for (size_t i = 0; i < npcViews.size(); ++i)
+				{
+					if (npcViews[i].npcId == it->first) { alive = true; break; }
+				}
+
+				if (alive) { ++it; continue; }
+
+				scene.SetLocalTransform(it->second, parkedTransform);
+				freeNpcNodes.push_back(it->second);
+				it = npcNodes.erase(it);
+			}
+
+			for (size_t i = 0; i < npcViews.size(); ++i)
+			{
+				const swc::NpcView& v = npcViews[i];
+
+				std::unordered_map<uint32_t, swc::NodeHandle>::iterator found =
+					npcNodes.find(v.npcId);
+
+				if (found == npcNodes.end())
+				{
+					swc::NodeHandle handle;
+					if (!freeNpcNodes.empty())
+					{
+						handle = freeNpcNodes.back();
+						freeNpcNodes.pop_back();
+					}
+					else
+					{
+						handle = scene.AddNode(swc::kInvalidNode, npcMesh, 0);
+					}
+					found = npcNodes.emplace(v.npcId, handle).first;
+				}
+
+				// 서버 좌표에서 방향만 취하고 고도는 지형에 맞춰 다시 잡는다.
+				// 플레이어 착지와 똑같이 Planet::SurfaceHeight 를 지난다 — 계산이 갈리면 또 어긋난다.
+				const swc::Vec3d fromServer{ v.pos[0], v.pos[1], v.pos[2] };
+				const swc::Vec3d up = planet.Up(fromServer);
+				const swc::Vec3d onGround = planet.PositionAt(up,
+					planet.SurfaceHeight(up) + kNpcGroundOffset);
+
+				scene.SetLocalTransform(found->second,
+					XMMatrixTranslation(float(onGround.x), float(onGround.y), float(onGround.z)));
+			}
 		}
 
 		scene.SetLocalTransform(player, controller.WorldMatrix());
@@ -405,31 +438,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		renderer.Render(view, items, scene.WorldData());
 		renderer.EndFrame();
 
-		// 커밋/작업집합을 1초마다 diag_client.log 에 남긴다 (내부에서 주기 판정)
-		if (kEnableDiag)
-			diag.Tick(dt, timer.Fps(), renderer.TlasBuildCount());
-
 		// 델타타임 / 하이브리드 상태를 창 제목으로 확인
 		titleTimer += dt;
 		if (titleTimer >= 0.5f)
 		{
 			titleTimer = 0.0f;
 			const swc::RayTracingParams& rt = renderer.GetRayTracingParams();
-			const wchar_t* rtState = renderer.IsRasterOnly() ? L"래스터고정"
+			// 임시 스위치로 끈 것과 장치가 못 하는 것을 구분해서 보여준다.
+			// 둘을 「미지원」 하나로 뭉치면 RTX 장비에서 «왜 미지원이지» 로 헤맨다.
+			const wchar_t* rtState = !swc::kEnableRaytracing ? L"임시끔(래스터만)"
 				: !renderer.SupportsRaytracing() ? L"미지원"
 				: (rt.enabled ? L"ON" : L"OFF");
-
-			// 메모리 — 이 문제의 지문. 커밋이 32MB 칸 단위로 오르는지가 판별점이다.
-			wchar_t memText[96];
-			if (kEnableDiag)
-			{
-				swprintf_s(memText, L"커밋 %lluMB  32MB칸 %u",
-					diag.CommitBytes() / (1024ull * 1024ull), diag.Blocks32MB());
-			}
-			else
-			{
-				swprintf_s(memText, L"계측 꺼짐");
-			}
 
 			// 구면 이동 검증용: 고도 / 접지 / 스폰에서의 거리
 			const swc::Vec3d& p = controller.Position();
@@ -440,9 +459,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			if (swc::net_connected())
 			{
 				swprintf_s(netText,
-					L"나=%u  송신 %u  수신 %u  다른플레이어 %u명",
+					L"나=%u  송신 %u  수신 %u  다른플레이어 %u명  NPC %u마리",
 					swc::net_my_id(), swc::net_sent_count(),
-					swc::net_echo_count(), swc::net_remote_count());
+					swc::net_echo_count(), swc::net_remote_count(),
+					swc::net_npc_count());
 			}
 			else
 			{
@@ -451,10 +471,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 			wchar_t title[600];
 			swprintf_s(title,
-				L"SpaceWar   FPS %.0f  dt %.1fms  |  %s  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
+				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
 				L"|  %s  |  %s  |  RT %s knee %.2f view %u",
 				timer.Fps(), dt * 1000.0f,
-				memText,
 				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 				distFromSpawn, controller.Speed(),
 				netText,
