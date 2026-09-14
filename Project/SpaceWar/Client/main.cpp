@@ -165,6 +165,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::MeshData groundData = swc::MakeCubeSphere(planet, kPlanetFaceGrid,
 		{ 0.15f, 0.30f, 0.18f });
 	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
+	// NPC 는 붉게 칠해 플레이어(주황)와 눈으로 구분한다.
+	swc::MeshData npcData = swc::MakeCube(2.0f, { 0.85f, 0.15f, 0.15f });
 	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
 
 	swc::MeshHandle groundMesh = renderer.CreateMesh(
@@ -176,6 +178,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::MeshHandle noseMesh = renderer.CreateMesh(
 		noseData.vertices.data(), noseData.vertices.size(),
 		noseData.indices.data(), noseData.indices.size());
+	swc::MeshHandle npcMesh = renderer.CreateMesh(
+		npcData.vertices.data(), npcData.vertices.size(),
+		npcData.indices.data(), npcData.indices.size());
 
 	swc::Scene scene;
 	swc::NodeHandle ground = scene.AddNode(swc::kInvalidNode, groundMesh, 0);
@@ -195,8 +200,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	std::vector<swc::NodeHandle>                  freeRemoteNodes;
 	std::vector<swc::RemoteView>                  remoteViews;
 
+	// ── 서버가 굴리는 NPC ───────────────────────────────────
+	//  행동 계산은 전부 서버가 한다. 클라는 좌표를 받아 그리기만 하므로
+	//  원격 플레이어와 완전히 같은 방식으로 노드를 재사용한다.
+	std::unordered_map<uint32_t, swc::NodeHandle> npcNodes;
+	std::vector<swc::NodeHandle>                  freeNpcNodes;
+	std::vector<swc::NpcView>                     npcViews;
+
 	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
 	const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
+
+	// ★ NPC 를 지면에 붙여 그리기 위한 임시 보정값
+	//   서버는 지형 높이를 모른 채 NPC 를 «쫓는 플레이어와 같은 반지름» 에 놓는다.
+	//   기복이 60m 라 그대로 그리면 파묻히거나 공중에 뜨고, 플레이어가 오르내릴 때마다
+	//   NPC 고도가 통째로 끌려가 순간이동처럼 보인다.
+	//   그래서 서버 좌표에서 «방향» 만 쓰고 고도는 여기서 지형에 맞춰 다시 잡는다.
+	//   ※ 표시 보정일 뿐이다. 서버가 아는 고도와 화면의 고도가 달라지므로,
+	//     사격 판정을 넣기 전에 서버가 지형을 알게 해야 한다(TerrainSampler 를 Shared 로).
+	constexpr double kNpcGroundOffset = 1.0;   // 큐브 2m 의 반높이. PlayerController 와 같은 값
 
 	swc::GameTimer timer;
 	swc::Input input;
@@ -350,6 +371,60 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 				scene.SetLocalTransform(found->second,
 					XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
 			}
+
+			// ── NPC 노드 갱신 ───────────────────────────────
+			//  위 원격 플레이어 갱신과 같은 절차다. 다른 것은 메시 색뿐이다.
+			swc::net_npcs(npcViews);
+
+			// 이번 프레임 목록에 없는 NPC 의 노드를 회수한다.
+			for (std::unordered_map<uint32_t, swc::NodeHandle>::iterator it = npcNodes.begin();
+				it != npcNodes.end(); )
+			{
+				bool alive = false;
+				for (size_t i = 0; i < npcViews.size(); ++i)
+				{
+					if (npcViews[i].npcId == it->first) { alive = true; break; }
+				}
+
+				if (alive) { ++it; continue; }
+
+				scene.SetLocalTransform(it->second, parkedTransform);
+				freeNpcNodes.push_back(it->second);
+				it = npcNodes.erase(it);
+			}
+
+			for (size_t i = 0; i < npcViews.size(); ++i)
+			{
+				const swc::NpcView& v = npcViews[i];
+
+				std::unordered_map<uint32_t, swc::NodeHandle>::iterator found =
+					npcNodes.find(v.npcId);
+
+				if (found == npcNodes.end())
+				{
+					swc::NodeHandle handle;
+					if (!freeNpcNodes.empty())
+					{
+						handle = freeNpcNodes.back();
+						freeNpcNodes.pop_back();
+					}
+					else
+					{
+						handle = scene.AddNode(swc::kInvalidNode, npcMesh, 0);
+					}
+					found = npcNodes.emplace(v.npcId, handle).first;
+				}
+
+				// 서버 좌표에서 방향만 취하고 고도는 지형에 맞춰 다시 잡는다.
+				// 플레이어 착지와 똑같이 Planet::SurfaceHeight 를 지난다 — 계산이 갈리면 또 어긋난다.
+				const swc::Vec3d fromServer{ v.pos[0], v.pos[1], v.pos[2] };
+				const swc::Vec3d up = planet.Up(fromServer);
+				const swc::Vec3d onGround = planet.PositionAt(up,
+					planet.SurfaceHeight(up) + kNpcGroundOffset);
+
+				scene.SetLocalTransform(found->second,
+					XMMatrixTranslation(float(onGround.x), float(onGround.y), float(onGround.z)));
+			}
 		}
 
 		scene.SetLocalTransform(player, controller.WorldMatrix());
@@ -369,7 +444,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		{
 			titleTimer = 0.0f;
 			const swc::RayTracingParams& rt = renderer.GetRayTracingParams();
-			const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
+			// 임시 스위치로 끈 것과 장치가 못 하는 것을 구분해서 보여준다.
+			// 둘을 「미지원」 하나로 뭉치면 RTX 장비에서 «왜 미지원이지» 로 헤맨다.
+			const wchar_t* rtState = !swc::kEnableRaytracing ? L"임시끔(래스터만)"
+				: !renderer.SupportsRaytracing() ? L"미지원"
 				: (rt.enabled ? L"ON" : L"OFF");
 
 			// 구면 이동 검증용: 고도 / 접지 / 스폰에서의 거리
@@ -381,9 +459,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			if (swc::net_connected())
 			{
 				swprintf_s(netText,
-					L"나=%u  송신 %u  수신 %u  다른플레이어 %u명",
+					L"나=%u  송신 %u  수신 %u  다른플레이어 %u명  NPC %u마리",
 					swc::net_my_id(), swc::net_sent_count(),
-					swc::net_echo_count(), swc::net_remote_count());
+					swc::net_echo_count(), swc::net_remote_count(),
+					swc::net_npc_count());
 			}
 			else
 			{

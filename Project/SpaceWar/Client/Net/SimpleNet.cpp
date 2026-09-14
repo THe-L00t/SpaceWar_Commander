@@ -45,6 +45,11 @@ namespace swc {
 
 		std::unordered_map<uint32_t, Remote> g_remotes;
 
+		// ★ NPC 도 같은 구조로 다룬다
+		//   서버가 행동을 계산해 좌표만 보내주므로, 클라 입장에서는
+		//   원격 플레이어와 구별할 이유가 없다. 보간도 그대로 쓴다.
+		std::unordered_map<uint32_t, Remote> g_npcs;
+
 		// ── 시각 ────────────────────────────────────────────────
 		//  GetTickCount 는 해상도가 10~16ms 라 33ms 간격을 재기엔 거칠다.
 		//  보간 비율이 계단처럼 튀므로 고해상도 카운터를 쓴다.
@@ -63,18 +68,10 @@ namespace swc {
 			g_myId = p->playerId;
 		}
 
-		void OnPlayerMove(const Shared::PlayerMovePacket* p)
+		// 새 좌표가 왔다. 직전 좌표를 prev 로 밀고 새 것을 curr 로 둔다.
+		// 이 두 점 사이를 시간으로 훑는 것이 보간이다.
+		void PushSnapshot(Remote& r, const float pos[3])
 		{
-			g_lastEcho[0] = p->pos[0];
-			g_lastEcho[1] = p->pos[1];
-			g_lastEcho[2] = p->pos[2];
-			++g_nEcho;
-
-			// 내 좌표가 되돌아온 것은 무시한다. 그리면 큐브가 겹치고,
-			// 과거 위치로 끌려가 조작이 밀리는 것처럼 보인다.
-			if (p->playerId == g_myId || p->playerId == 0) return;
-
-			Remote& r = g_remotes[p->playerId];
 			const double now = NowSeconds();
 
 			if (r.currTime > 0.0)
@@ -86,10 +83,33 @@ namespace swc {
 				r.hasPrev = true;
 			}
 
-			r.currPos[0] = p->pos[0];
-			r.currPos[1] = p->pos[1];
-			r.currPos[2] = p->pos[2];
+			r.currPos[0] = pos[0];
+			r.currPos[1] = pos[1];
+			r.currPos[2] = pos[2];
 			r.currTime = now;
+		}
+
+		void OnPlayerMove(const Shared::PlayerMovePacket* p)
+		{
+			g_lastEcho[0] = p->pos[0];
+			g_lastEcho[1] = p->pos[1];
+			g_lastEcho[2] = p->pos[2];
+			++g_nEcho;
+
+			// 내 좌표가 되돌아온 것은 무시한다. 그리면 큐브가 겹치고,
+			// 과거 위치로 끌려가 조작이 밀리는 것처럼 보인다.
+			if (p->playerId == g_myId || p->playerId == 0) return;
+
+			PushSnapshot(g_remotes[p->playerId], p->pos);
+		}
+
+		// 서버가 굴리는 NPC 의 위치. 처음 보는 번호면 여기서 생긴다.
+		// 스폰 패킷이 따로 없는 이유다.
+		void OnNpcState(const Shared::NpcStatePacket* p)
+		{
+			if (p->npcId == 0) return;
+
+			PushSnapshot(g_npcs[p->npcId], p->pos);
 		}
 
 		void OnPlayerLeave(const Shared::PlayerLeavePacket* p)
@@ -154,6 +174,11 @@ namespace swc {
 				case Shared::PacketType::PlayerLeave:
 					if (nSize == (int)sizeof(Shared::PlayerLeavePacket))
 						OnPlayerLeave((const Shared::PlayerLeavePacket*)pHead);
+					break;
+
+				case Shared::PacketType::NpcState:
+					if (nSize == (int)sizeof(Shared::NpcStatePacket))
+						OnNpcState((const Shared::NpcStatePacket*)pHead);
 					break;
 
 				default:
@@ -223,6 +248,7 @@ namespace swc {
 		g_nEcho = 0;
 		g_myId = 0;
 		g_remotes.clear();
+		g_npcs.clear();
 		g_connected = true;
 		return true;
 	}
@@ -321,6 +347,38 @@ namespace swc {
 	//   기준 시각을 kInterpDelay 만큼 과거로 잡는다. 그러면 그 시점은
 	//   이미 받아둔 두 좌표 사이에 있으므로, 미래를 추측할 필요 없이
 	//   두 점을 잇기만 하면 된다. (추측하면 틀렸을 때 되돌아가며 떨린다)
+	namespace {
+
+		// 받아둔 두 좌표 사이에서 renderTime 시점의 위치를 뽑는다.
+		// 원격 플레이어와 NPC 가 같은 것을 쓴다.
+		void SampleAt(const Remote& r, double renderTime, float out[3])
+		{
+			const double span = r.currTime - r.prevTime;
+
+			if (!r.hasPrev || span <= 0.0 || renderTime >= r.currTime)
+			{
+				// 보간할 구간이 없다 = 방금 처음 봤거나, 갱신이 끊겼다.
+				// 이럴 때 계속 밀어붙이면(외삽) 벽을 뚫고 나간다. 그냥 멈춰 세운다.
+				out[0] = r.currPos[0];
+				out[1] = r.currPos[1];
+				out[2] = r.currPos[2];
+			}
+			else if (renderTime <= r.prevTime)
+			{
+				out[0] = r.prevPos[0];
+				out[1] = r.prevPos[1];
+				out[2] = r.prevPos[2];
+			}
+			else
+			{
+				const float t = float((renderTime - r.prevTime) / span);
+				out[0] = r.prevPos[0] + (r.currPos[0] - r.prevPos[0]) * t;
+				out[1] = r.prevPos[1] + (r.currPos[1] - r.prevPos[1]) * t;
+				out[2] = r.prevPos[2] + (r.currPos[2] - r.prevPos[2]) * t;
+			}
+		}
+	}
+
 	void net_remote_players(std::vector<RemoteView>& out)
 	{
 		out.clear();
@@ -331,36 +389,31 @@ namespace swc {
 		for (std::unordered_map<uint32_t, Remote>::const_iterator it = g_remotes.begin();
 			it != g_remotes.end(); ++it)
 		{
-			const Remote& r = it->second;
-			if (r.currTime <= 0.0) continue;
+			if (it->second.currTime <= 0.0) continue;
 
 			RemoteView v = {};
 			v.playerId = it->first;
+			SampleAt(it->second, renderTime, v.pos);
+			out.push_back(v);
+		}
+	}
 
-			const double span = r.currTime - r.prevTime;
+	// NPC. 처리가 원격 플레이어와 똑같다 — 서버가 좌표만 뿌려주기 때문이다.
+	void net_npcs(std::vector<NpcView>& out)
+	{
+		out.clear();
+		out.reserve(g_npcs.size());
 
-			if (!r.hasPrev || span <= 0.0 || renderTime >= r.currTime)
-			{
-				// 보간할 구간이 없다 = 방금 처음 봤거나, 갱신이 끊겼다.
-				// 이럴 때 계속 밀어붙이면(외삽) 벽을 뚫고 나간다. 그냥 멈춰 세운다.
-				v.pos[0] = r.currPos[0];
-				v.pos[1] = r.currPos[1];
-				v.pos[2] = r.currPos[2];
-			}
-			else if (renderTime <= r.prevTime)
-			{
-				v.pos[0] = r.prevPos[0];
-				v.pos[1] = r.prevPos[1];
-				v.pos[2] = r.prevPos[2];
-			}
-			else
-			{
-				const float t = float((renderTime - r.prevTime) / span);
-				v.pos[0] = r.prevPos[0] + (r.currPos[0] - r.prevPos[0]) * t;
-				v.pos[1] = r.prevPos[1] + (r.currPos[1] - r.prevPos[1]) * t;
-				v.pos[2] = r.prevPos[2] + (r.currPos[2] - r.prevPos[2]) * t;
-			}
+		const double renderTime = NowSeconds() - kInterpDelay;
 
+		for (std::unordered_map<uint32_t, Remote>::const_iterator it = g_npcs.begin();
+			it != g_npcs.end(); ++it)
+		{
+			if (it->second.currTime <= 0.0) continue;
+
+			NpcView v = {};
+			v.npcId = it->first;
+			SampleAt(it->second, renderTime, v.pos);
 			out.push_back(v);
 		}
 	}
@@ -368,6 +421,7 @@ namespace swc {
 	unsigned net_sent_count() { return g_nSent; }
 	unsigned net_echo_count() { return g_nEcho; }
 	unsigned net_remote_count() { return (unsigned)g_remotes.size(); }
+	unsigned net_npc_count() { return (unsigned)g_npcs.size(); }
 
 	void net_last_echo(float outPos[3])
 	{

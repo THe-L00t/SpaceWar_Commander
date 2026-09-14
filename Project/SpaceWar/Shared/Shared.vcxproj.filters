@@ -85,6 +85,9 @@
     <ClInclude Include="Vec3.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="PlanetConst.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
     <ClInclude Include="GameObject\Object.h">
       <Filter>클래스 목록\Object</Filter>
     </ClInclude>

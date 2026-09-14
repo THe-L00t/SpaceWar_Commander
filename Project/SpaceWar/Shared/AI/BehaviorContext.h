@@ -40,6 +40,15 @@ namespace Shared {
 		uint32_t npc = 0;      // NPC 핸들 (index + generation). 포인터를 쓰지 않는다
 		float    dt = 0.0f;    // 초
 
+		// ── 읽기용 월드 스냅샷 ──────────────────────────────
+		//  이번 틱에 노드가 볼 수 있는 것. 노드는 여기서 읽기만 하고
+		//  게임 객체를 직접 찾아가지 않는다.
+		Vec3     npcPos{};                   // 이 NPC 의 현재 위치
+		bool     hasNearestPlayer = false;
+		uint32_t nearestPlayerId = 0;
+		Vec3     nearestPlayerPos{};
+		float    nearestPlayerDist = 0.0f;   // m
+
 		// 노드 수만큼 트리를 만들 때 미리 잡는다.
 		// Tick 중에는 늘리지 않는다 — 잡 안에서 힙 할당을 하지 않는다.
 		std::vector<BehaviorNodeState> nodeStates;
@@ -55,6 +64,12 @@ namespace Shared {
 				state = BehaviorNodeState{};
 			}
 			decision = BehaviorDecision{};
+		}
+
+		// 노드 수만큼 상태 슬롯을 잡는다. 트리를 붙일 때 한 번만 부른다.
+		void Allocate(uint16_t nodeCount)
+		{
+			nodeStates.assign(nodeCount, BehaviorNodeState{});
 		}
 	};
 
