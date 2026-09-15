@@ -3,12 +3,15 @@
   <!--
     Client 와 같은 규칙을 쓴다.
 
-      소스코드      .cpp
-      헤더파일      클래스가 아닌 것 — 패킷 구조체 / 단위 상수 / 데이터 형식
-      클래스 목록   클래스가 생기면 여기에 이름별 폴더를 만든다 (아직 없음)
+      소스코드      .cpp (클래스가 아닌 것)
+      헤더파일      클래스가 아닌 것 — 패킷 구조체 / 단위 상수 / 데이터 형식 / 공용 수학 타입
+      클래스 목록   클래스 하나당 폴더 하나. .cpp 와 .h 를 같은 폴더에 넣는다.
 
     Shared 는 클라와 서버가 똑같이 알아야 하는 것만 둔다.
-    지금은 전부 데이터 정의라 클래스가 하나도 없다.
+    오브젝트 클래스 계층(아키텍처 명세서 6절)은 실제 폴더 GameObject\ 아래에 있다.
+    NPC 의 행동 트리(명세 6.8.2·6.13)는 AI\ 아래에 있다 — 서버와 클라가 같은 것을 쓴다.
+    행동 트리의 노드 클래스는 AI\Node\ 아래에 있다. 결과 enum 과 실행 컨텍스트는
+    클래스가 아니므로 헤더파일 필터에 둔다.
   -->
   <ItemGroup>
     <Filter Include="소스코드">
@@ -16,6 +19,57 @@
     </Filter>
     <Filter Include="헤더파일">
       <UniqueIdentifier>{c31b9a54-7e08-4c62-9a1d-5b0f7e2c4a83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록">
+      <UniqueIdentifier>{2f5d9b16-8c47-4e03-91ad-6b7c4e8d1520}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Object">
+      <UniqueIdentifier>{7a3e61c8-0d94-4b57-a2f6-93c1e58b7d04}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\DynamicObject">
+      <UniqueIdentifier>{5c81d70a-4f26-49e8-b3d5-1e07a9f26c83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\StaticObject">
+      <UniqueIdentifier>{9b04f2e7-63a1-4d0c-8572-ae3f16b9c247}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Player">
+      <UniqueIdentifier>{1d6a8c39-b750-42fe-9c84-05d27e3af691}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\OtherPlayer">
+      <UniqueIdentifier>{4e92b5d1-7c38-41a6-b09f-68d30c5e7a12}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\NPC">
+      <UniqueIdentifier>{83c1704b-2e69-4fd5-a17c-b9046f2d8e35}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\BehaviorTree">
+      <UniqueIdentifier>{6a27e8d0-95b3-4c14-8e7f-20db5c91a463}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\BehaviorNode">
+      <UniqueIdentifier>{0e5b93a2-7d41-4c68-95b0-3f27a6c81d94}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\CompositeNode">
+      <UniqueIdentifier>{b8412f6d-93c5-4a07-8e21-7d5c09b3e642}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\SequenceNode">
+      <UniqueIdentifier>{37d6c0e9-1a84-4b52-9f63-c802e7145ab8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\SelectorNode">
+      <UniqueIdentifier>{a91e4b07-5f38-42d6-b7c4-0e63d829f571}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\DecoratorNode">
+      <UniqueIdentifier>{65c2a8f4-0b97-4e13-8d5a-24f18b70c3e9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\InverterNode">
+      <UniqueIdentifier>{d472093b-8e61-45af-9207-b3c5e14d6802}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\LeafNode">
+      <UniqueIdentifier>{2b8f5d13-c604-497e-a85d-91e37f0b4c26}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ActionNode">
+      <UniqueIdentifier>{f0397e85-2d16-4b43-90ca-58b7e246d13f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ConditionNode">
+      <UniqueIdentifier>{4c60d1a7-b358-42f9-83e1-07a9c6b52d84}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -28,10 +82,118 @@
     <ClInclude Include="HeightmapData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="Vec3.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="PlanetConst.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\Object.h">
+      <Filter>클래스 목록\Object</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\DynamicObject.h">
+      <Filter>클래스 목록\DynamicObject</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\StaticObject.h">
+      <Filter>클래스 목록\StaticObject</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\Player.h">
+      <Filter>클래스 목록\Player</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\OtherPlayer.h">
+      <Filter>클래스 목록\OtherPlayer</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\NPC.h">
+      <Filter>클래스 목록\NPC</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\BehaviorTree.h">
+      <Filter>클래스 목록\BehaviorTree</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\BehaviorStatus.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\BehaviorContext.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\BehaviorNode.h">
+      <Filter>클래스 목록\BehaviorNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\CompositeNode.h">
+      <Filter>클래스 목록\CompositeNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\SequenceNode.h">
+      <Filter>클래스 목록\SequenceNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\SelectorNode.h">
+      <Filter>클래스 목록\SelectorNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\DecoratorNode.h">
+      <Filter>클래스 목록\DecoratorNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\InverterNode.h">
+      <Filter>클래스 목록\InverterNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\LeafNode.h">
+      <Filter>클래스 목록\LeafNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\ActionNode.h">
+      <Filter>클래스 목록\ActionNode</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\Node\ConditionNode.h">
+      <Filter>클래스 목록\ConditionNode</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp">
       <Filter>소스코드</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\Object.cpp">
+      <Filter>클래스 목록\Object</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\DynamicObject.cpp">
+      <Filter>클래스 목록\DynamicObject</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\StaticObject.cpp">
+      <Filter>클래스 목록\StaticObject</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\Player.cpp">
+      <Filter>클래스 목록\Player</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\OtherPlayer.cpp">
+      <Filter>클래스 목록\OtherPlayer</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\NPC.cpp">
+      <Filter>클래스 목록\NPC</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\BehaviorTree.cpp">
+      <Filter>클래스 목록\BehaviorTree</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\BehaviorNode.cpp">
+      <Filter>클래스 목록\BehaviorNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\CompositeNode.cpp">
+      <Filter>클래스 목록\CompositeNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\SequenceNode.cpp">
+      <Filter>클래스 목록\SequenceNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\SelectorNode.cpp">
+      <Filter>클래스 목록\SelectorNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\DecoratorNode.cpp">
+      <Filter>클래스 목록\DecoratorNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\InverterNode.cpp">
+      <Filter>클래스 목록\InverterNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\LeafNode.cpp">
+      <Filter>클래스 목록\LeafNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\ActionNode.cpp">
+      <Filter>클래스 목록\ActionNode</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\Node\ConditionNode.cpp">
+      <Filter>클래스 목록\ConditionNode</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

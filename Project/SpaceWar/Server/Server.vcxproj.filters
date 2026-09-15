@@ -5,19 +5,64 @@
 
       소스코드      진입점 (main.cpp)
       헤더파일      클래스가 아닌 것
-      클래스 목록   클래스 하나당 폴더 하나
+      클래스 목록   클래스 하나당 폴더 하나. .cpp 와 .h 를 같은 폴더에 넣는다.
 
     지금은 Session / IO_CONTEXT 가 main.cpp 안에 들어 있다.
     파일로 분리하면 클래스 목록\Session 폴더를 만들어 옮긴다.
+
+    NPC 의 행동 트리 노드는 실제 폴더 AI\ 아래에 있다.
+    노드 «틀»(BehaviorNode·Selector·Sequence 등)은 Shared 에 있고,
+    여기 있는 것은 이 게임의 구체적인 판정과 행동이다.
   -->
   <ItemGroup>
     <Filter Include="소스코드">
       <UniqueIdentifier>{7e34a9d1-6b02-4c85-93af-1d5062e7ab48}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록">
+      <UniqueIdentifier>{c5a78b30-46e1-4d29-8f07-3b2496ce015d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\NpcWorld">
+      <UniqueIdentifier>{18fd2064-9a3b-4e57-b0c8-72e4d1596a83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\HasTargetCondition">
+      <UniqueIdentifier>{6b09e347-d152-4a80-95f3-8c07ab214ed6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ChaseTargetAction">
+      <UniqueIdentifier>{29a6c8f5-7304-41bd-86e2-d0b953174fc8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\IdleAction">
+      <UniqueIdentifier>{f31b70d8-52c6-4917-a34e-6d820b5ce197}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
       <Filter>소스코드</Filter>
     </ClCompile>
+    <ClCompile Include="AI\NpcWorld.cpp">
+      <Filter>클래스 목록\NpcWorld</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\HasTargetCondition.cpp">
+      <Filter>클래스 목록\HasTargetCondition</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\ChaseTargetAction.cpp">
+      <Filter>클래스 목록\ChaseTargetAction</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\IdleAction.cpp">
+      <Filter>클래스 목록\IdleAction</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AI\NpcWorld.h">
+      <Filter>클래스 목록\NpcWorld</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\HasTargetCondition.h">
+      <Filter>클래스 목록\HasTargetCondition</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\ChaseTargetAction.h">
+      <Filter>클래스 목록\ChaseTargetAction</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\IdleAction.h">
+      <Filter>클래스 목록\IdleAction</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

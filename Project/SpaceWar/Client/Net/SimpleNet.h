@@ -30,6 +30,16 @@ namespace swc {
 		float    pos[3];
 	};
 
+	// 서버가 굴리는 NPC 한 마리의, 지금 이 순간 그려야 할 위치.
+	//
+	// ★ 행동 계산은 전부 서버가 한다. 클라는 받은 좌표를 보간해 그리기만 한다.
+	//   그래서 원격 플레이어와 처리 경로가 똑같다.
+	struct NpcView
+	{
+		uint32_t npcId;
+		float    pos[3];
+	};
+
 	// 접속. 실패하면 false 이고 사유는 error 에 담긴다.
 	bool net_connect(const char* host, unsigned short port, std::wstring& error);
 	void net_disconnect();
@@ -51,9 +61,14 @@ namespace swc {
 	//   여기서 두 스냅샷 사이를 시간으로 보간해 부드럽게 만든다.
 	void net_remote_players(std::vector<RemoteView>& out);
 
+	// ★ 지금 그려야 할 NPC 목록을 채운다. 매 프레임 호출한다.
+	//   원격 플레이어와 같은 시간 보간을 쓴다.
+	void net_npcs(std::vector<NpcView>& out);
+
 	// 확인용 통계
 	unsigned net_sent_count();
 	unsigned net_echo_count();
 	void     net_last_echo(float outPos[3]);
 	unsigned net_remote_count();
+	unsigned net_npc_count();
 }

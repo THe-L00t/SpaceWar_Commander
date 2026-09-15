@@ -166,6 +166,9 @@
     <ClInclude Include="..\Shared\HeightmapData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="..\Shared\PlanetConst.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl">

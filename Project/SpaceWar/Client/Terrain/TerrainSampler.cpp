@@ -28,6 +28,10 @@ namespace swc {
 	{
 		if (!data) return 0.0;
 
+		// 지면이 구 전체 메시라 반대편 반구도 그려진다. x,z 만 보면 대척점에
+		// 같은 조각이 거울상으로 다시 나타나므로 스폰 반구(up.y > 0)에만 적용한다.
+		if (upDirection.y <= 0.0) return 0.0;
+
 		// 구 표면 위치는 P = center + up*R, center = (0,-R,0) 이므로
 		// 스폰 기준 접평면 좌표는 (up.x*R, up.z*R) 이다.
 		const double x = upDirection.x * radius;
