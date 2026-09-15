@@ -143,3 +143,18 @@
 44520 스레드가 종료되었습니다(코드: 0 (0x0)).
 D3D12: Removing Device.
 D3D12 ERROR: ID3D12Device::RemoveDevice: Device removal has been triggered for the following reason (DXGI_ERROR_DEVICE_HUNG: The Device took an unreasonable amount of time to execute its commands, or the hardware crashed/hung. As a result, the TDR (Timeout Detection and Recovery) mechanism has been triggered. The current Device Context was executing commands when the hang occurred. The application may want to respawn and fallback to less aggressive use of the display hardware). [ EXECUTION ERROR #232: DEVICE_REMOVAL_PROCESS_AT_FAULT]
+
+2026-09-15
+-------------
+1. 진행상황 
+ - 렌더링 파이프라인 변경 => Crash 현상이 사라졌음
+ - NPC 추가 (5개)
+ - 전투 구현은 못함
+2. ToDo
+ - 컨텐츠 : NPC 쏴 죽이기 : 총알, HP 감소 보여주기 (NPC 머리위에 HP BAR)
+ - 비주얼 : Texture Mapping과 모델링 => 정육면체를 멀쩡한 사람으로 교체
+ - 레벨디자인 : 랜덤한 높낮이. 건물과 도로는 손으로 배치 (세기말 폐허의 분위기)
+   => 행성하나 만들기, 손으로 건물들을 배치해 보렴.
+3. 다음 미팅
+ - 9월 29일 화요일 오후 7시
+
