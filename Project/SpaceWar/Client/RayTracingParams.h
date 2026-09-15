@@ -16,8 +16,8 @@ namespace swc {
 	//  ★ 실행 인자로 만들지 않는다. 되돌리려면 true 로 고치고 다시 빌드한다.
 	//
 	//  ★ test 브랜치에서는 true 다 (2026-09-14).
-	//    아래 DXR 부분 차단 키(Z·X·C·B)는 RT 경로가 살아 있어야 의미가 있다.
-	//    이 값이 false 면 BLAS·TLAS 가 아예 만들어지지 않아 키가 전부 무효다.
+	//    아래 DXR 부분 차단 시험(숫자키 1~6)은 RT 경로가 살아 있어야 의미가 있다.
+	//    이 값이 false 면 BLAS·TLAS 가 아예 만들어지지 않아 시험이 전부 무효다.
 	inline constexpr bool kEnableRaytracing = true;
 
 	struct RayTracingParams
@@ -37,13 +37,42 @@ namespace swc {
 
 		// ── DXR 부분 차단 (디버깅용) ─────────────────────────
 		//  메모리 폭주의 «방아쇠» 를 좁히려면 RT 경로를 한 조각씩 끊어봐야 한다.
-		//  enabled(R 키)는 전부를 끄므로 어느 조각이 원인인지 가릴 수 없다.
+		//  아래 세 값은 숫자키 1~6 (kRtTestPresets) 으로 바꾼다.
 		//
 		//  ★ 런타임에 끌 수 없는 것: BLAS. 메쉬를 만들 때 한 번만 빌드하므로
 		//    끄려면 kEnableRaytracing 을 false 로 두고 다시 빌드해야 한다.
-		bool     buildTlas = true;     // Z : 매 프레임 TLAS 재빌드
-		bool     traceRays = true;     // X : 셰이더의 레이 발사
-		bool     bindTlas = true;      // C : TLAS 를 루트 SRV 로 바인딩
-		uint32_t tlasInterval = 1;     // B : 재빌드 주기 (1·2·4·8·16 프레임)
+		bool     buildTlas = true;     // 매 프레임 TLAS 재빌드
+		bool     traceRays = true;     // 셰이더의 레이 발사
+		bool     bindTlas = true;      // TLAS 를 루트 SRV 로 바인딩 (끄면 발사도 멈춘다)
+		uint32_t tlasInterval = 1;     // 재빌드 주기 (프레임)
 	};
+
+	// ── DXR 부분 차단 시험 (숫자키 1~6) ─────────────────────
+	//  바인딩을 끄면 발사도 멈추므로 실제로 다른 상태는 이 6가지뿐이다.
+	//  조건마다 새로 실행하고, 시작하자마자 번호를 누른다.
+	//
+	//    번호  재빌드 바인딩 발사   이것만 재현되면
+	//     1     O      O     O    셋이 겹칠 때 (기준 — 먼저 재현돼야 한다)
+	//     2     O      O     X    재빌드 + 바인딩 조합
+	//     3     X      O     O    발사 (4 가 멀쩡할 때)
+	//     4     X      O     X    바인딩
+	//     5     O      X     X    재빌드
+	//     6     X      X     X    키로 못 끄는 쪽 (BLAS·RT 셰이더·디버그 계층)
+	struct RtTestPreset
+	{
+		bool buildTlas;
+		bool bindTlas;
+		bool traceRays;
+	};
+
+	inline constexpr RtTestPreset kRtTestPresets[] =
+	{
+		{ true,  true,  true  },
+		{ true,  true,  false },
+		{ false, true,  true  },
+		{ false, true,  false },
+		{ true,  false, false },
+		{ false, false, false },
+	};
+	inline constexpr int kRtTestCount = 6;
 }

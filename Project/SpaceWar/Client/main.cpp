@@ -280,39 +280,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		if (input.WasPressed(VK_ESCAPE)) input.SetCaptured(false);
 		else if (!input.Captured() && input.MouseDown(0)) input.SetCaptured(true);
 
-		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
+		// V = 디버그 뷰 순환, [ ] = 룰렛 무릎점(레이 예산), 1~6 = DXR 부분 차단 시험
 		if (input.WasPressed('V'))
 			renderer.SetDebugMode((renderer.DebugMode() + 1) % 10);
-		if (input.WasPressed('R'))
-		{
-			swc::RayTracingParams p = renderer.GetRayTracingParams();
-			p.enabled = !p.enabled;
-			renderer.SetRayTracingParams(p);
-		}
 
-		// ── DXR 부분 차단 (디버깅용) ────────────────────────
-		//  R 은 RT 를 통째로 끈다. 어느 조각이 메모리 폭주의 방아쇠인지 가르려면
-		//  한 조각씩 끊어야 해서 아래 키를 따로 둔다.
+		// ── DXR 부분 차단 시험 (디버깅용) ───────────────────
+		//  숫자키로 RayTracingParams.h 의 kRtTestPresets 상태를 바로 고른다.
+		//  번호별 의미는 그 표에 있다.
 		//
-		//    Z  TLAS 매 프레임 재빌드   (끄면 마지막 TLAS 가 얼어붙은 채 남는다)
-		//    X  셰이더 레이 발사        (TLAS 는 계속 빌드하되 쏘지 않는다)
-		//    C  TLAS 루트 SRV 바인딩    (끄면 발사도 자동으로 멈춘다 — 안전장치)
-		//    B  재빌드 주기 순환         1 → 2 → 4 → 8 → 16 → 1 프레임
-		//
+		//  ★ TLAS 재빌드를 끄면 마지막 TLAS 가 얼어붙은 채 남는다.
 		//  ★ BLAS 는 여기서 못 끈다. 메쉬를 만들 때 한 번만 빌드하므로
 		//    빼려면 RayTracingParams.h 의 kEnableRaytracing 을 false 로 두고 다시 빌드한다.
-		//  ※ V 는 이미 디버그 뷰 순환에 쓰고 있어 비워 두었다.
-		if (input.WasPressed('Z') || input.WasPressed('X')
-			|| input.WasPressed('C') || input.WasPressed('B'))
+		for (int i = 0; i < swc::kRtTestCount; ++i)
 		{
+			if (!input.WasPressed('1' + i))
+				continue;
+
+			const swc::RtTestPreset& t = swc::kRtTestPresets[i];
 			swc::RayTracingParams p = renderer.GetRayTracingParams();
-
-			if (input.WasPressed('Z')) p.buildTlas = !p.buildTlas;
-			if (input.WasPressed('X')) p.traceRays = !p.traceRays;
-			if (input.WasPressed('C')) p.bindTlas = !p.bindTlas;
-			if (input.WasPressed('B'))
-				p.tlasInterval = (p.tlasInterval >= 16u) ? 1u : p.tlasInterval * 2u;
-
+			p.buildTlas = t.buildTlas;
+			p.bindTlas = t.bindTlas;
+			p.traceRays = t.traceRays;
 			renderer.SetRayTracingParams(p);
 		}
 		if (input.WasPressed(VK_OEM_4) || input.WasPressed(VK_OEM_6))
@@ -495,15 +483,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 				swprintf_s(netText, L"%s", netStatus.c_str());
 			}
 
-			// DXR 부분 차단 상태. 어느 조각을 끊어둔 채 재현했는지가 기록의 핵심이라
-			// 제목에 계속 띄워 둔다. tlas 는 누적 빌드 횟수다.
+			// DXR 부분 차단 시험 번호와 «실제 적용» 상태. 어느 조건으로 재현했는지가
+			// 기록의 핵심이라 제목에 계속 띄워 둔다. 바인딩이 꺼지면 발사도 꺼진 것으로 띄운다.
+			// tlas 는 누적 빌드 횟수다.
+			const bool traceActive = rt.traceRays && rt.bindTlas;
+			int rtTest = 0;
+			for (int i = 0; i < swc::kRtTestCount; ++i)
+			{
+				const swc::RtTestPreset& t = swc::kRtTestPresets[i];
+				if (t.buildTlas == rt.buildTlas && t.bindTlas == rt.bindTlas && t.traceRays == traceActive)
+				{
+					rtTest = i + 1;
+					break;
+				}
+			}
+
 			wchar_t rtDetail[120];
 			swprintf_s(rtDetail,
-				L" [빌드%s 발사%s 바인드%s 주기%u tlas %u]",
+				L" [시험 %d/%d  재빌드%s 바인딩%s 발사%s  tlas %u]",
+				rtTest, swc::kRtTestCount,
 				rt.buildTlas ? L"O" : L"X",
-				rt.traceRays ? L"O" : L"X",
 				rt.bindTlas ? L"O" : L"X",
-				rt.tlasInterval, renderer.TlasBuildCount());
+				traceActive ? L"O" : L"X",
+				renderer.TlasBuildCount());
 
 			wchar_t title[720];
 			swprintf_s(title,
