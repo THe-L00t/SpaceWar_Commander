@@ -91,7 +91,16 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Scene.cpp" />
+    <ClCompile Include="LegacyScene.cpp" />
+    <ClCompile Include="Engine\Engine.cpp" />
+    <ClCompile Include="Scene\SceneManager.cpp" />
+    <ClCompile Include="Scene\Scene.cpp" />
+    <ClCompile Include="UI\UI.cpp" />
+    <ClCompile Include="Bridge\ClassBridge.cpp" />
+    <ClCompile Include="State\StateManager.cpp" />
+    <ClCompile Include="Animation\Animator.cpp" />
+    <ClCompile Include="Sound\SoundManager.cpp" />
+    <ClCompile Include="Render\RenderWorld.cpp" />
     <ClCompile Include="GRenderer.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="GameTimer.cpp" />
@@ -113,7 +122,16 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   <ItemGroup>
     <ClInclude Include="Handles.h" />
     <ClInclude Include="RenderItem.h" />
-    <ClInclude Include="Scene.h" />
+    <ClInclude Include="LegacyScene.h" />
+    <ClInclude Include="Engine\Engine.h" />
+    <ClInclude Include="Scene\SceneManager.h" />
+    <ClInclude Include="Scene\Scene.h" />
+    <ClInclude Include="UI\UI.h" />
+    <ClInclude Include="Bridge\ClassBridge.h" />
+    <ClInclude Include="State\StateManager.h" />
+    <ClInclude Include="Animation\Animator.h" />
+    <ClInclude Include="Sound\SoundManager.h" />
+    <ClInclude Include="Render\RenderWorld.h" />
     <ClInclude Include="GRenderer.h" />
     <ClInclude Include="Vertex.h" />
     <ClInclude Include="DummyMesh.h" />

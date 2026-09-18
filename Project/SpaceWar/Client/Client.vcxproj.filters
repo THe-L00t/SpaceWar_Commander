@@ -24,6 +24,33 @@
     <Filter Include="클래스 목록\Scene">
       <UniqueIdentifier>{8f2bf4f9-ad69-445a-816c-2aab383ab149}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\LegacyScene">
+      <UniqueIdentifier>{3a5c96e1-42b7-4d08-9f31-c6a07d2e58b4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Engine">
+      <UniqueIdentifier>{7e14b60d-2c85-49fa-83b6-1d905ea47c32}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\SceneManager">
+      <UniqueIdentifier>{c208d5a3-916f-4b74-80e2-5fb37c1a94d6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\UI">
+      <UniqueIdentifier>{95b7e3c2-0a48-4f16-9d53-2e8c61b70fa9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ClassBridge">
+      <UniqueIdentifier>{1f6042db-87ce-4a35-b902-4c73d5e816a7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\StateManager">
+      <UniqueIdentifier>{ab39c714-5d60-482e-91cf-73b0e5426d18}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\Animator">
+      <UniqueIdentifier>{6d0e28f5-b34a-4c91-857d-90fc2b6e4315}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\SoundManager">
+      <UniqueIdentifier>{48f1a9c6-27d3-4e50-b16a-8c05d37e92b1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\RenderWorld">
+      <UniqueIdentifier>{e75c3b08-1962-4ad7-8e34-b5a0d1962c7f}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\Renderer">
       <UniqueIdentifier>{f9212da7-ba3a-4c30-ba35-7a9ac218e0fa}</UniqueIdentifier>
     </Filter>
@@ -56,8 +83,35 @@
     <ClCompile Include="main.cpp">
       <Filter>소스코드</Filter>
     </ClCompile>
-    <ClCompile Include="Scene.cpp">
+    <ClCompile Include="LegacyScene.cpp">
+      <Filter>클래스 목록\LegacyScene</Filter>
+    </ClCompile>
+    <ClCompile Include="Engine\Engine.cpp">
+      <Filter>클래스 목록\Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\SceneManager.cpp">
+      <Filter>클래스 목록\SceneManager</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\Scene.cpp">
       <Filter>클래스 목록\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\UI.cpp">
+      <Filter>클래스 목록\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="Bridge\ClassBridge.cpp">
+      <Filter>클래스 목록\ClassBridge</Filter>
+    </ClCompile>
+    <ClCompile Include="State\StateManager.cpp">
+      <Filter>클래스 목록\StateManager</Filter>
+    </ClCompile>
+    <ClCompile Include="Animation\Animator.cpp">
+      <Filter>클래스 목록\Animator</Filter>
+    </ClCompile>
+    <ClCompile Include="Sound\SoundManager.cpp">
+      <Filter>클래스 목록\SoundManager</Filter>
+    </ClCompile>
+    <ClCompile Include="Render\RenderWorld.cpp">
+      <Filter>클래스 목록\RenderWorld</Filter>
     </ClCompile>
     <ClCompile Include="GRenderer.cpp">
       <Filter>클래스 목록\Renderer</Filter>
@@ -88,8 +142,35 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Scene.h">
+    <ClInclude Include="LegacyScene.h">
+      <Filter>클래스 목록\LegacyScene</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\Engine.h">
+      <Filter>클래스 목록\Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\SceneManager.h">
+      <Filter>클래스 목록\SceneManager</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\Scene.h">
       <Filter>클래스 목록\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\UI.h">
+      <Filter>클래스 목록\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="Bridge\ClassBridge.h">
+      <Filter>클래스 목록\ClassBridge</Filter>
+    </ClInclude>
+    <ClInclude Include="State\StateManager.h">
+      <Filter>클래스 목록\StateManager</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\Animator.h">
+      <Filter>클래스 목록\Animator</Filter>
+    </ClInclude>
+    <ClInclude Include="Sound\SoundManager.h">
+      <Filter>클래스 목록\SoundManager</Filter>
+    </ClInclude>
+    <ClInclude Include="Render\RenderWorld.h">
+      <Filter>클래스 목록\RenderWorld</Filter>
     </ClInclude>
     <ClInclude Include="GRenderer.h">
       <Filter>클래스 목록\Renderer</Filter>

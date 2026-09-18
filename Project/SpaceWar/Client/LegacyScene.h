@@ -4,8 +4,16 @@
 #include "Handles.h"
 #include "RenderItem.h"
 
+// ============================================================
+//  ★ 없앨 클래스 (2026-09-18)
+//
+//  아키텍처 명세서를 적용할 때 Render World(Client/Render/RenderWorld.h)로 대체된다.
+//  구조가 많이 달라질 예정이라 지금은 그대로 두고 이름만 바꿔 «임시» 임을 표시한다.
+//  새 코드는 이 클래스에 기대지 말 것.
+// ============================================================
+
 namespace swc {
-	class Scene
+	class LegacyScene
 	{
 	public:
 		NodeHandle AddNode(NodeHandle, MeshHandle, MaterialHandle);

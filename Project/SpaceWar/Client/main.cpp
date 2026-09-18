@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <DirectXMath.h>
 #include "GRenderer.h"
-#include "Scene.h"
+#include "LegacyScene.h"
 #include "Camera.h"
 #include "DummyMesh.h"
 #include "GameTimer.h"
@@ -183,7 +183,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		npcData.vertices.data(), npcData.vertices.size(),
 		npcData.indices.data(), npcData.indices.size());
 
-	swc::Scene scene;
+	swc::LegacyScene scene;   // ★ 없앨 클래스. 명세 적용 때 RenderWorld 로 대체된다
 	swc::NodeHandle ground = scene.AddNode(swc::kInvalidNode, groundMesh, 0);
 	swc::NodeHandle player = scene.AddNode(swc::kInvalidNode, cubeMesh, 0);
 	(void)ground;
