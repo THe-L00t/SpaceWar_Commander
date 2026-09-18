@@ -13,7 +13,7 @@
 //   지형 위 고도로 잡으면 점프 중에도 지형을 따라가서
 //   포물선이 아니라 언덕에 들러붙는 점프가 된다.
 namespace swc {
-	class Input;
+	class InputManager;
 	class Camera;
 
 	class PlayerController
@@ -22,7 +22,7 @@ namespace swc {
 		void SetPlanet(const Planet* p) { planet = p; }
 		void Spawn(const Vec3d& worldPosition, const Vec3d& facingDirection);
 
-		void Update(float, const Input&, const Camera&);
+		void Update(float, const InputManager&, const Camera&);
 
 		const Vec3d& Position() const { return position; }
 		const Vec3d& Facing() const { return facing; }

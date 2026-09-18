@@ -15,7 +15,7 @@
 #include "Camera.h"
 #include "DummyMesh.h"
 #include "GameTimer.h"
-#include "Input.h"
+#include "InputManager.h"
 #include "PlayerController.h"
 #include "RayTracingParams.h"
 #include "Resource/ResourceManager.h"
@@ -26,7 +26,7 @@ using namespace DirectX;
 
 namespace
 {
-	swc::Input* g_input = nullptr;
+	swc::InputManager* g_input = nullptr;
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
 
@@ -183,7 +183,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		npcData.vertices.data(), npcData.vertices.size(),
 		npcData.indices.data(), npcData.indices.size());
 
-	swc::LegacyScene scene;   // ★ 없앨 클래스. 명세 적용 때 RenderWorld 로 대체된다
+	swc::LegacyScene scene;   // ★ 임시. 게임 소유 Scene 과 렌더 소유 Render World 로 나뉜다
 	swc::NodeHandle ground = scene.AddNode(swc::kInvalidNode, groundMesh, 0);
 	swc::NodeHandle player = scene.AddNode(swc::kInvalidNode, cubeMesh, 0);
 	(void)ground;
@@ -212,7 +212,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
 
 	swc::GameTimer timer;
-	swc::Input input;
+	swc::InputManager input;
 	swc::Camera camera;
 	swc::PlayerController controller;
 
@@ -239,7 +239,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	}
 	float sendAccumulator = 0.0f;
 
-	std::vector<swc::RenderItem> items;
+	std::vector<swc::InstanceData> items;
 
 	ShowWindow(hwnd, nCmdShow);
 	input.SetCaptured(true);

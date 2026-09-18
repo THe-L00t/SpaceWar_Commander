@@ -104,7 +104,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClCompile Include="GRenderer.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="GameTimer.cpp" />
-    <ClCompile Include="Input.cpp" />
+    <ClCompile Include="InputManager.cpp" />
     <ClCompile Include="PlayerController.cpp" />
     <ClCompile Include="ShaderCompiler.cpp" />
     <ClCompile Include="AccelStructure.cpp" />
@@ -121,7 +121,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Handles.h" />
-    <ClInclude Include="RenderItem.h" />
+    <ClInclude Include="InstanceData.h" />
     <ClInclude Include="LegacyScene.h" />
     <ClInclude Include="Engine\Engine.h" />
     <ClInclude Include="Scene\SceneManager.h" />
@@ -137,7 +137,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="DummyMesh.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="GameTimer.h" />
-    <ClInclude Include="Input.h" />
+    <ClInclude Include="InputManager.h" />
     <ClInclude Include="PlayerController.h" />
     <ClInclude Include="DXCommon.h" />
     <ClInclude Include="ShaderCompiler.h" />

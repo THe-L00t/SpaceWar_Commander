@@ -46,14 +46,14 @@ namespace swc {
 		}
 	}
 
-	void LegacyScene::Extract(std::vector<RenderItem>& out) const
+	void LegacyScene::Extract(std::vector<InstanceData>& out) const
 	{
 		out.clear();
 		const size_t count = parent.size();
 		for (size_t i = 0; i < count; ++i)
 		{
 			if (mesh[i] == kInvalidMesh) continue;
-			RenderItem item;
+			InstanceData item;
 			item.node = static_cast<NodeHandle>(i);
 			item.mesh = mesh[i];
 			item.material = material[i];

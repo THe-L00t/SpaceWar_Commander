@@ -1,5 +1,5 @@
 #include "PlayerController.h"
-#include "Input.h"
+#include "InputManager.h"
 #include "Camera.h"
 #include "Shared/Units.h"
 #include "Shared/PlanetConst.h"
@@ -57,7 +57,7 @@ namespace swc {
 		speed = 0.0f;
 	}
 
-	void PlayerController::Update(float dt, const Input& input, const Camera& camera)
+	void PlayerController::Update(float dt, const InputManager& input, const Camera& camera)
 	{
 		if (dt <= 0.0f || !planet) return;
 

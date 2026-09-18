@@ -63,7 +63,7 @@
     <Filter Include="클래스 목록\GameTimer">
       <UniqueIdentifier>{3b1c58a4-5e77-4a02-9d16-7c40e2b9a511}</UniqueIdentifier>
     </Filter>
-    <Filter Include="클래스 목록\Input">
+    <Filter Include="클래스 목록\InputManager">
       <UniqueIdentifier>{6e2a91d7-0c33-4f5b-8a91-b4d7e0663c28}</UniqueIdentifier>
     </Filter>
     <Filter Include="클래스 목록\PlayerController">
@@ -128,8 +128,8 @@
     <ClCompile Include="GameTimer.cpp">
       <Filter>클래스 목록\GameTimer</Filter>
     </ClCompile>
-    <ClCompile Include="Input.cpp">
-      <Filter>클래스 목록\Input</Filter>
+    <ClCompile Include="InputManager.cpp">
+      <Filter>클래스 목록\InputManager</Filter>
     </ClCompile>
     <ClCompile Include="PlayerController.cpp">
       <Filter>클래스 목록\PlayerController</Filter>
@@ -190,8 +190,8 @@
     <ClInclude Include="GameTimer.h">
       <Filter>클래스 목록\GameTimer</Filter>
     </ClInclude>
-    <ClInclude Include="Input.h">
-      <Filter>클래스 목록\Input</Filter>
+    <ClInclude Include="InputManager.h">
+      <Filter>클래스 목록\InputManager</Filter>
     </ClInclude>
     <ClInclude Include="PlayerController.h">
       <Filter>클래스 목록\PlayerController</Filter>
@@ -205,7 +205,7 @@
     <ClInclude Include="Handles.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
-    <ClInclude Include="RenderItem.h">
+    <ClInclude Include="InstanceData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="Vertex.h">

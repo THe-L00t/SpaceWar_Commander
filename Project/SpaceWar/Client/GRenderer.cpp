@@ -543,7 +543,7 @@ namespace swc {
 		impl->commandList->RSSetScissorRects(1, &scissor);
 	}
 
-	void GRenderer::Render(const RenderView& view, const std::vector<RenderItem>& items, const XMFLOAT4X4* worlds)
+	void GRenderer::Render(const RenderView& view, const std::vector<InstanceData>& items, const XMFLOAT4X4* worlds)
 	{
 		const bool rtActive = impl->rtSupported && impl->rtParams.enabled;
 
@@ -551,7 +551,7 @@ namespace swc {
 		if (rtActive)
 		{
 			impl->accel.ResetInstances();
-			for (const RenderItem& it : items)
+			for (const InstanceData& it : items)
 			{
 				if (it.mesh >= impl->meshes.size()) continue;
 				const uint32_t blasIndex = impl->meshes[it.mesh].blasIndex;
@@ -581,7 +581,7 @@ namespace swc {
 		if (impl->rtSupported && impl->accel.InstanceCount() > 0)
 			impl->commandList->SetGraphicsRootShaderResourceView(2, impl->accel.TlasAddress());
 
-		for (const RenderItem& it : items)
+		for (const InstanceData& it : items)
 		{
 			if (it.mesh >= impl->meshes.size()) continue;
 			const Impl::MeshGpu& m = impl->meshes[it.mesh];
