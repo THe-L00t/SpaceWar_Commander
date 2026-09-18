@@ -1,19 +1,27 @@
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32")
 #include <windows.h>
+#include <objbase.h>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
+#include <cmath>
 #include <cstdio>
 #include "Shared/Protocol.h"
+#include "Shared/PlanetConst.h"
+#include "Shared/Terrain/HeightmapLoader.h"
+#include "Shared/Terrain/TerrainSampler.h"
 #include "AI/NpcWorld.h"
 
 #define MAX_THREAD_CNT		4
 #define SERVER_PORT			25000
 #define RECV_BUFFER_SIZE	8192		//8KB
+#define GROUND_TOLERANCE	0.05		//위치 검사 허용오차 (m). float 전송 오차는 0.1mm 수준이다
 
 //세션이 정의되기 전에 쓰이므로 미리 선언해 둔다.
 void SendToAll(const void *pData, int nLen, UINT32 nExceptId);
+bool ClampToGround(float pos[3]);
 
 enum class IO_TYPE { RECV, SEND };
 
@@ -180,19 +188,34 @@ private:
 		const Shared::PlayerMovePacket *pMove =
 			(const Shared::PlayerMovePacket *)pHead;
 
-		m_lastPos[0] = pMove->pos[0];
-		m_lastPos[1] = pMove->pos[1];
-		m_lastPos[2] = pMove->pos[2];
+		//★ 위치 검사 (서버 권위) — 지형 아래면 지면으로 올린 좌표를 쓴다.
+		//  고친 좌표를 저장하고 뿌리므로 NPC 추격도 다른 플레이어 화면도 서버 판정을 따른다.
+		//  보낸 당사자에게는 아직 알리지 않는다.
+		float pos[3] = { pMove->pos[0], pMove->pos[1], pMove->pos[2] };
+		if (ClampToGround(pos))
+		{
+			printf("[위치 보정] 플레이어 %u : 지형 아래 ( %8.2f, %8.2f, %8.2f ) -> ( %8.2f, %8.2f, %8.2f )\n",
+				m_nPlayerId,
+				pMove->pos[0], pMove->pos[1], pMove->pos[2],
+				pos[0], pos[1], pos[2]);
+		}
+
+		m_lastPos[0] = pos[0];
+		m_lastPos[1] = pos[1];
+		m_lastPos[2] = pos[2];
 		m_bHasPos = true;
 
 		printf("[좌표] 플레이어 %u : ( %8.2f, %8.2f, %8.2f )\n",
 			m_nPlayerId,
-			pMove->pos[0], pMove->pos[1], pMove->pos[2]);
+			pos[0], pos[1], pos[2]);
 
 		//★ 전원에게 알린다. 보낸 사람은 자기 위치를 이미 알고 있으므로 제외한다.
 		//  (돌려주면 자기 큐브가 30Hz 로 과거 위치로 끌려간다)
 		Shared::PlayerMovePacket bcast = *pMove;
 		bcast.playerId = m_nPlayerId;		//서버가 붙인 번호로 바꿔서 보낸다
+		bcast.pos[0] = pos[0];
+		bcast.pos[1] = pos[1];
+		bcast.pos[2] = pos[2];
 		SendToAll(&bcast, (int)sizeof(bcast), m_nPlayerId);
 	}
 
@@ -219,6 +242,86 @@ LONG	g_nNextPlayerId = 0;						//플레이어 번호 발급기
 //NPC 무리. 행동 스레드 하나만 건드린다.
 srv::NpcWorld	g_npcWorld;
 volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
+
+//지형. 시작할 때 한 번 읽고 그 뒤로는 읽기만 하므로 스레드 간에 락이 필요 없다.
+Shared::HeightmapData	g_heightmap;
+Shared::TerrainSampler	g_terrain;
+
+/////////////////////////////////////////////////////////////////////////
+//  지형을 읽는다. 클라와 같은 파일(Shared::kTerrainTileAsset)을 같은 설정으로.
+//
+//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 이벤트가 png 를 복사해 둔다.
+//    작업 디렉터리 기준으로 찾으면 VS 에서 켤 때와 exe 를 직접 켤 때가 갈린다.
+//  ★ WIC 로더가 COM 객체라 CoInitializeEx 가 먼저 있어야 한다.
+//    읽고 나면 COM 은 더 쓰지 않으므로 바로 해제한다.
+bool LoadTerrain()
+{
+	wchar_t szExe[MAX_PATH] = { 0 };
+	::GetModuleFileNameW(NULL, szExe, MAX_PATH);
+
+	std::wstring path(szExe);
+	const size_t nSlash = path.find_last_of(L"\\/");
+	path = (nSlash == std::wstring::npos) ? std::wstring() : path.substr(0, nSlash + 1);
+	path += L"assets\\";
+	path += Shared::kTerrainTileAsset;
+
+	if (FAILED(::CoInitializeEx(NULL, COINIT_MULTITHREADED)))
+	{
+		puts("ERROR: COM 을 초기화할 수 없습니다.");
+		return false;
+	}
+
+	std::wstring error;
+	const bool bLoaded = Shared::LoadHeightmapPng(path.c_str(), g_heightmap, error);
+	::CoUninitialize();
+
+	if (!bLoaded)
+	{
+		char szPath[MAX_PATH * 2] = { 0 };
+		char szError[256] = { 0 };
+		::WideCharToMultiByte(CP_ACP, 0, path.c_str(), -1, szPath, sizeof(szPath), NULL, NULL);
+		::WideCharToMultiByte(CP_ACP, 0, error.c_str(), -1, szError, sizeof(szError), NULL, NULL);
+		printf("ERROR: 지형을 읽을 수 없습니다. (%s)\n\t%s\n", szError, szPath);
+		return false;
+	}
+
+	g_terrain.Configure(&g_heightmap, Shared::kPlanetRadius, Shared::TerrainConfig{});
+	printf("지형 %ux%u (mean %.3f) 을 읽었습니다.\n",
+		g_heightmap.size, g_heightmap.size, g_heightmap.mean);
+	return true;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  플레이어 위치 검사 — 지형 아래면 지면으로 올린다. 올렸으면 true.
+//
+//  ★ 클라 착지와 같은 TerrainSampler · 같은 kGroundOffset 으로 잰다
+//    정직한 클라는 착지하면 정확히 «지면 + kGroundOffset» 을 보내므로 걸리지 않는다.
+//    걸리는 것은 조작됐거나 지형 설정이 서버와 다른 클라다.
+//  ★ 위쪽은 검사하지 않는다 — 점프와 절벽 낙하로 정상적으로 뜬다.
+bool ClampToGround(float pos[3])
+{
+	const double dx = (double)pos[0] - Shared::kPlanetCenterX;
+	const double dy = (double)pos[1] - Shared::kPlanetCenterY;
+	const double dz = (double)pos[2] - Shared::kPlanetCenterZ;
+	const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+	if (len < 1.0e-6)
+		return false;			//행성 중심. 방향을 알 수 없다
+
+	const double ux = dx / len;
+	const double uy = dy / len;
+	const double uz = dz / len;
+
+	const double floorRadius = Shared::kPlanetRadius
+		+ g_terrain.Height(ux, uy, uz) + Shared::kGroundOffset;
+
+	if (len >= floorRadius - GROUND_TOLERANCE)
+		return false;
+
+	pos[0] = (float)(Shared::kPlanetCenterX + ux * floorRadius);
+	pos[1] = (float)(Shared::kPlanetCenterY + uy * floorRadius);
+	pos[2] = (float)(Shared::kPlanetCenterZ + uz * floorRadius);
+	return true;
+}
 
 SessionPtr FindSession(UINT32 nPlayerId)
 {
@@ -584,6 +687,12 @@ int main()
 {
 	::setvbuf(stdout, NULL, _IONBF, 0);
 
+	//★ 지형이 없으면 켜지 않는다. 평평한 구로 돌면 골짜기에 선 플레이어를 전부
+	//  «지형 아래» 로 오판하고, NPC 고도도 클라 화면과 어긋난다.
+	if (!LoadTerrain())
+		return 0;
+	g_npcWorld.SetTerrain(&g_terrain);
+
 	WSADATA wsa = { 0 };
 	if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
 	{
@@ -660,6 +769,7 @@ int main()
 		(int)sizeof(Shared::PlayerMovePacket),
 		(int)sizeof(Shared::NpcStatePacket));
 	printf("    NPC %d 마리를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount);
+	printf("    플레이어가 지형 아래(허용오차 %.2fm)면 지면으로 올립니다.\n", GROUND_TOLERANCE);
 	while (1)
 		getchar();
 

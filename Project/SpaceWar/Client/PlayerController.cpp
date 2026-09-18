@@ -2,6 +2,7 @@
 #include "Input.h"
 #include "Camera.h"
 #include "Shared/Units.h"
+#include "Shared/PlanetConst.h"
 #include <cmath>
 
 using namespace DirectX;
@@ -27,8 +28,8 @@ namespace {
 	constexpr float kJumpSpeed   = 7.0_mps;     // 중력 18 기준 약 1.4m 도약
 
 	// position 은 몸통 중심이다. 발이 지면에 닿으려면 그만큼 띄워야 한다.
-	// (더미 큐브가 2m 이므로 1m. 실제 캐릭터가 들어오면 그 반높이로 교체)
-	constexpr float kGroundOffset = 1.0_m;
+	// ★ 서버가 같은 값으로 위치를 검사하므로 Shared 에서 가져온다 (실제 캐릭터가 들어오면 거기서 교체)
+	constexpr float kGroundOffset = float(Shared::kGroundOffset);
 
 	// 내리막 스텝다운 — 이 낙차까지는 땅에 붙어 내려간다. 이보다 크면(절벽) 실제로 떨어진다.
 	// 없으면 g·dt²(60fps 에서 5mm)보다 빨리 낮아지는 경사(질주 시 1.6도)마다 공중 판정이 나고,

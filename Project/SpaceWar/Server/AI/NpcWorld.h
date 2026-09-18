@@ -23,7 +23,12 @@
 //  ★ 노드는 NPC 를 고치지 않는다
 //    트리는 «무엇을 하겠다» 를 ctx.decision 에 적고, 위치를 실제로 옮기는 것은
 //    이 클래스다. 나중에 트리를 잡으로 돌릴 때 이 경계가 그대로 필요하다.
+//
+//  ★ 고도는 서버가 지형으로 정한다
+//    클라와 같은 TerrainSampler 로 지면 위에 세운다. 클라는 받은 좌표를 그대로 그린다.
 // ============================================================
+
+namespace Shared { class TerrainSampler; }
 
 namespace srv {
 
@@ -53,6 +58,9 @@ namespace srv {
 		bool   Empty() const { return entries.empty(); }
 		size_t Count() const { return entries.size(); }
 
+		// 스폰·이동 고도를 잡을 지형. 행동 스레드를 띄우기 전에 한 번 준다.
+		void SetTerrain(const Shared::TerrainSampler* t) { terrain = t; }
+
 		// 플레이어 주변 고리 모양으로 NPC 를 깔아둔다.
 		void SpawnAround(const Shared::Vec3& playerPos, int count);
 
@@ -74,6 +82,11 @@ namespace srv {
 		};
 
 		void BuildTree();
+
+		// 그 방향의 지면 위(몸통 중심 높이)로 옮긴다.
+		Shared::Vec3 OnGround(const Shared::Vec3& position) const;
+
+		const Shared::TerrainSampler* terrain = nullptr;   // 없으면 평평한 구
 
 		// 트리를 소유한다. 노드 수명은 여기서만 관리한다.
 		std::vector<std::unique_ptr<Shared::BehaviorNode>> nodes;

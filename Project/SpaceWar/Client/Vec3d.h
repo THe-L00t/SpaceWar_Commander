@@ -4,8 +4,8 @@
 
 // 구면 계산 전용 double 벡터. DirectXMath 에는 double 타입이 없다.
 //
-// Planet 에서 분리한 이유: Planet 이 TerrainSampler 를 들고,
-// TerrainSampler 는 Vec3d 를 받으므로 한 헤더에 두면 순환 참조가 된다.
+// 클라 전용이다. Shared 의 TerrainSampler 는 이 타입을 모르고 double 세 개를 받는다.
+// 여기 있는 DirectXMath 의존을 Shared(서버)로 끌고 가지 않기 위해서다.
 namespace swc {
 
 	struct Vec3d

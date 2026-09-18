@@ -69,6 +69,8 @@
     <ClInclude Include="HeightmapData.h" />
     <ClInclude Include="Vec3.h" />
     <ClInclude Include="PlanetConst.h" />
+    <ClInclude Include="Terrain\TerrainSampler.h" />
+    <ClInclude Include="Terrain\HeightmapLoader.h" />
     <ClInclude Include="GameObject\Object.h" />
     <ClInclude Include="GameObject\DynamicObject.h" />
     <ClInclude Include="GameObject\StaticObject.h" />
@@ -90,6 +92,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
+    <ClCompile Include="Terrain\TerrainSampler.cpp" />
+    <ClCompile Include="Terrain\HeightmapLoader.cpp" />
     <ClCompile Include="GameObject\Object.cpp" />
     <ClCompile Include="GameObject\DynamicObject.cpp" />
     <ClCompile Include="GameObject\StaticObject.cpp" />

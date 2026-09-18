@@ -1,6 +1,6 @@
 #pragma once
 #include "Vec3d.h"
-#include "Terrain/TerrainSampler.h"
+#include "Shared/Terrain/TerrainSampler.h"
 #include "Shared/PlanetConst.h"
 
 // ============================================================
@@ -36,7 +36,7 @@ namespace swc {
 		double gravity = 18.0;           // m/s^2 — 물리값 0.18 은 소행성 수준이라 게임이 안 됨
 		Vec3d  center{ 0.0, -radius, 0.0 };
 
-		const TerrainSampler* terrain = nullptr;   // 없으면 평평한 구
+		const Shared::TerrainSampler* terrain = nullptr;   // 없으면 평평한 구
 
 		// 지표면 법선 (= 로컬 위쪽)
 		Vec3d Up(const Vec3d& position) const
@@ -53,7 +53,7 @@ namespace swc {
 		// ★ 지형 높이. 메쉬 생성과 충돌 판정이 반드시 이 경로를 거친다.
 		double SurfaceHeight(const Vec3d& upDirection) const
 		{
-			return terrain ? terrain->Height(upDirection) : 0.0;
+			return terrain ? terrain->Height(upDirection.x, upDirection.y, upDirection.z) : 0.0;
 		}
 
 		// 방향과 고도로부터 위치를 구성

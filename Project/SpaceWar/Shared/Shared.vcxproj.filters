@@ -12,6 +12,8 @@
     NPC 의 행동 트리(명세 6.8.2·6.13)는 AI\ 아래에 있다 — 서버와 클라가 같은 것을 쓴다.
     행동 트리의 노드 클래스는 AI\Node\ 아래에 있다. 결과 enum 과 실행 컨텍스트는
     클래스가 아니므로 헤더파일 필터에 둔다.
+    지형 높이 계산(TerrainSampler)과 하이트맵 로더는 Terrain\ 아래에 있다 — 서버도 같은 지형을 읽는다.
+    로더는 함수 하나라 헤더파일·소스코드 필터에 둔다.
   -->
   <ItemGroup>
     <Filter Include="소스코드">
@@ -71,6 +73,9 @@
     <Filter Include="클래스 목록\ConditionNode">
       <UniqueIdentifier>{4c60d1a7-b358-42f9-83e1-07a9c6b52d84}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\TerrainSampler">
+      <UniqueIdentifier>{e1a7c93d-5b20-4f68-9d14-6c83b0f2a57e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Protocol.h">
@@ -86,6 +91,12 @@
       <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="PlanetConst.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Terrain\TerrainSampler.h">
+      <Filter>클래스 목록\TerrainSampler</Filter>
+    </ClInclude>
+    <ClInclude Include="Terrain\HeightmapLoader.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="GameObject\Object.h">
@@ -145,6 +156,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp">
+      <Filter>소스코드</Filter>
+    </ClCompile>
+    <ClCompile Include="Terrain\TerrainSampler.cpp">
+      <Filter>클래스 목록\TerrainSampler</Filter>
+    </ClCompile>
+    <ClCompile Include="Terrain\HeightmapLoader.cpp">
       <Filter>소스코드</Filter>
     </ClCompile>
     <ClCompile Include="GameObject\Object.cpp">

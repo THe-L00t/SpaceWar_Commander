@@ -19,7 +19,7 @@
 #include "PlayerController.h"
 #include "RayTracingParams.h"
 #include "Resource/ResourceManager.h"
-#include "Terrain/TerrainSampler.h"
+#include "Shared/Terrain/TerrainSampler.h"
 #include <objbase.h>
 
 using namespace DirectX;
@@ -138,12 +138,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::Planet planet;   // 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
 
 	// ── 하이트맵 1장을 스폰 위치에 적용 ──
+	//  ★ 서버도 같은 파일(Shared::kTerrainTileAsset)을 같은 설정으로 읽는다. 여기만 바꾸면 안 된다.
 	swc::ResourceManager resources;
-	swc::TerrainSampler terrain;
+	Shared::TerrainSampler terrain;
 
 	std::wstring terrainStatus;
 	const swc::HeightmapHandle tile = resources.LoadHeightmap(
-		AssetPath(L"terrain\\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png").c_str());
+		AssetPath(Shared::kTerrainTileAsset).c_str());
 	if (const Shared::HeightmapData* hm = resources.Get(tile))
 	{
 		terrain.Configure(hm, planet.radius, {});   // 1km / 60m / 10% 감쇠 (TerrainConfig 기본값)
@@ -209,15 +210,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
 	const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
-
-	// ★ NPC 를 지면에 붙여 그리기 위한 임시 보정값
-	//   서버는 지형 높이를 모른 채 NPC 를 «쫓는 플레이어와 같은 반지름» 에 놓는다.
-	//   기복이 60m 라 그대로 그리면 파묻히거나 공중에 뜨고, 플레이어가 오르내릴 때마다
-	//   NPC 고도가 통째로 끌려가 순간이동처럼 보인다.
-	//   그래서 서버 좌표에서 «방향» 만 쓰고 고도는 여기서 지형에 맞춰 다시 잡는다.
-	//   ※ 표시 보정일 뿐이다. 서버가 아는 고도와 화면의 고도가 달라지므로,
-	//     사격 판정을 넣기 전에 서버가 지형을 알게 해야 한다(TerrainSampler 를 Shared 로).
-	constexpr double kNpcGroundOffset = 1.0;   // 큐브 2m 의 반높이. PlayerController 와 같은 값
 
 	swc::GameTimer timer;
 	swc::Input input;
@@ -415,15 +407,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 					found = npcNodes.emplace(v.npcId, handle).first;
 				}
 
-				// 서버 좌표에서 방향만 취하고 고도는 지형에 맞춰 다시 잡는다.
-				// 플레이어 착지와 똑같이 Planet::SurfaceHeight 를 지난다 — 계산이 갈리면 또 어긋난다.
-				const swc::Vec3d fromServer{ v.pos[0], v.pos[1], v.pos[2] };
-				const swc::Vec3d up = planet.Up(fromServer);
-				const swc::Vec3d onGround = planet.PositionAt(up,
-					planet.SurfaceHeight(up) + kNpcGroundOffset);
-
+				// 고도까지 서버가 지형으로 정해 보낸다. 받은 좌표를 그대로 그린다.
 				scene.SetLocalTransform(found->second,
-					XMMatrixTranslation(float(onGround.x), float(onGround.y), float(onGround.z)));
+					XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
 			}
 		}
 

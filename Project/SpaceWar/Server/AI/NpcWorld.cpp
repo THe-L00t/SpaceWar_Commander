@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "Shared/PlanetConst.h"
+#include "Shared/Terrain/TerrainSampler.h"
 #include "Shared/AI/Node/SelectorNode.h"
 #include "Shared/AI/Node/SequenceNode.h"
 #include "HasTargetCondition.h"
@@ -110,16 +111,27 @@ namespace srv {
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  플레이어 주위에 고리 모양으로 깔아둔다.
+	//  그 방향의 지면 위로 옮긴다.
 	//
-	//  ★ 서버는 지형 높이를 모른다
-	//    그래서 «플레이어와 같은 반지름» 에 놓는다. 플레이어가 지면 위에 있으니
-	//    그 주변도 대체로 지면이다. 경사가 급하면 묻히거나 뜬다 — 알려진 한계.
+	//  ★ 플레이어 착지(클라 PlayerController)·위치 검사(서버 main.cpp)와 같은 계산이다.
+	//    기준구 반지름 + 지형 높이 + kGroundOffset. 하나라도 다르면 NPC 가 묻히거나 뜬다.
+	Shared::Vec3 NpcWorld::OnGround(const Shared::Vec3& position) const
+	{
+		const Shared::Vec3 center = PlanetCenter();
+		const Shared::Vec3 up = Normalize(Sub(position, center));
+
+		const double height = terrain ? terrain->Height(up.x, up.y, up.z) : 0.0;
+		const float  radius = float(Shared::kPlanetRadius + height + Shared::kGroundOffset);
+
+		return Add(center, Scale(up, radius));
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  플레이어 주위에 고리 모양으로 깔아둔다.
 	void NpcWorld::SpawnAround(const Shared::Vec3& playerPos, int count)
 	{
 		const Shared::Vec3 center = PlanetCenter();
 		const Shared::Vec3 up = Normalize(Sub(playerPos, center));
-		const float        radius = Length(Sub(playerPos, center));
 
 		// 접평면의 기준축 두 개. up 과 나란하지 않은 아무 벡터에서 만든다.
 		const Shared::Vec3 seed = (std::fabs(up.z) < 0.9f)
@@ -135,13 +147,12 @@ namespace srv {
 			const Shared::Vec3 offset = Add(Scale(axisX, std::cos(angle) * kSpawnRing),
 											Scale(axisY, std::sin(angle) * kSpawnRing));
 
-			// 고리를 접평면에 그린 뒤 구면으로 되돌린다.
+			// 고리를 접평면에 그린 뒤 그 방향의 지면으로 내린다.
 			const Shared::Vec3 raw = Add(playerPos, offset);
-			const Shared::Vec3 onSphere = Add(center, Scale(Normalize(Sub(raw, center)), radius));
 
 			Entry e;
 			e.npcId = nextNpcId++;
-			e.npc.position = onSphere;
+			e.npc.position = OnGround(raw);
 			e.npc.speed = kNpcSpeed;
 			e.npc.health = 100.0f;
 			e.ctx.npc = e.npcId;
@@ -210,9 +221,8 @@ namespace srv {
 			const Shared::Vec3 next = Add(e.npc.position,
 										  Scale(Scale(tangent, 1.0f / tangentLen), move));
 
-			// 높이는 쫓는 플레이어의 것을 따른다 (서버가 지형을 모르므로).
-			const float targetRadius = Length(Sub(target, center));
-			e.npc.position = Add(center, Scale(Normalize(Sub(next, center)), targetRadius));
+			// 높이는 지형이 정한다. 쫓는 플레이어가 오르내려도 NPC 고도는 끌려가지 않는다.
+			e.npc.position = OnGround(next);
 
 			// 바라보는 방향도 갱신해 둔다. 아직 아무도 쓰지 않는다.
 			e.npc.direction = Scale(tangent, 1.0f / tangentLen);

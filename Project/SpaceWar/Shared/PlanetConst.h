@@ -22,4 +22,8 @@ namespace Shared {
 	inline constexpr double kPlanetCenterY = -kPlanetRadius;
 	inline constexpr double kPlanetCenterZ = 0.0;
 
+	// 몸통 중심이 지면에서 떠 있는 높이 (m). 더미 큐브 2m 의 반높이.
+	// 플레이어 착지(클라)·NPC 고도(서버)·위치 검사(서버)가 같은 값을 써야 발이 땅에 닿는다.
+	inline constexpr double kGroundOffset = 1.0;
+
 } // namespace Shared

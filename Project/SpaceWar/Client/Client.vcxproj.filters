@@ -45,12 +45,6 @@
     <Filter Include="클래스 목록\ResourceManager">
       <UniqueIdentifier>{6d2065af-97cf-4f37-85df-bd15b27b8111}</UniqueIdentifier>
     </Filter>
-    <Filter Include="클래스 목록\HeightmapLoader">
-      <UniqueIdentifier>{c74a1b38-2e56-4f90-8d23-51ba6e7c0942}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="클래스 목록\TerrainSampler">
-      <UniqueIdentifier>{30b81dfc-695e-4b3e-8d88-3cbb99194890}</UniqueIdentifier>
-    </Filter>
     <Filter Include="클래스 목록\SimpleNet">
       <UniqueIdentifier>{6c8b2f19-05a4-4d3e-91f7-4a2e8db06c53}</UniqueIdentifier>
     </Filter>
@@ -89,12 +83,6 @@
     <ClCompile Include="Resource\ResourceManager.cpp">
       <Filter>클래스 목록\ResourceManager</Filter>
     </ClCompile>
-    <ClCompile Include="Resource\HeightmapLoader.cpp">
-      <Filter>클래스 목록\HeightmapLoader</Filter>
-    </ClCompile>
-    <ClCompile Include="Terrain\TerrainSampler.cpp">
-      <Filter>클래스 목록\TerrainSampler</Filter>
-    </ClCompile>
     <ClCompile Include="Net\SimpleNet.cpp">
       <Filter>클래스 목록\SimpleNet</Filter>
     </ClCompile>
@@ -129,12 +117,6 @@
     </ClInclude>
     <ClInclude Include="Resource\ResourceManager.h">
       <Filter>클래스 목록\ResourceManager</Filter>
-    </ClInclude>
-    <ClInclude Include="Resource\HeightmapLoader.h">
-      <Filter>클래스 목록\HeightmapLoader</Filter>
-    </ClInclude>
-    <ClInclude Include="Terrain\TerrainSampler.h">
-      <Filter>클래스 목록\TerrainSampler</Filter>
     </ClInclude>
     <ClInclude Include="Net\SimpleNet.h">
       <Filter>클래스 목록\SimpleNet</Filter>
