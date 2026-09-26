@@ -91,18 +91,25 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Scene.cpp" />
+    <ClCompile Include="LegacyScene.cpp" />
+    <ClCompile Include="Engine\Engine.cpp" />
+    <ClCompile Include="Scene\SceneManager.cpp" />
+    <ClCompile Include="Scene\Scene.cpp" />
+    <ClCompile Include="UI\UI.cpp" />
+    <ClCompile Include="Bridge\ClassBridge.cpp" />
+    <ClCompile Include="State\StateManager.cpp" />
+    <ClCompile Include="Animation\Animator.cpp" />
+    <ClCompile Include="Sound\SoundManager.cpp" />
+    <ClCompile Include="Render\RenderWorld.cpp" />
     <ClCompile Include="GRenderer.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="GameTimer.cpp" />
-    <ClCompile Include="Input.cpp" />
+    <ClCompile Include="InputManager.cpp" />
     <ClCompile Include="PlayerController.cpp" />
     <ClCompile Include="ShaderCompiler.cpp" />
     <ClCompile Include="AccelStructure.cpp" />
     <ClCompile Include="Resource\ResourceManager.cpp" />
-    <ClCompile Include="Net\SimpleNet.cpp" />
-    <ClCompile Include="Resource\HeightmapLoader.cpp" />
-    <ClCompile Include="Terrain\TerrainSampler.cpp" />
+    <ClCompile Include="Net\Network.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
@@ -114,14 +121,23 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Handles.h" />
-    <ClInclude Include="RenderItem.h" />
-    <ClInclude Include="Scene.h" />
+    <ClInclude Include="InstanceData.h" />
+    <ClInclude Include="LegacyScene.h" />
+    <ClInclude Include="Engine\Engine.h" />
+    <ClInclude Include="Scene\SceneManager.h" />
+    <ClInclude Include="Scene\Scene.h" />
+    <ClInclude Include="UI\UI.h" />
+    <ClInclude Include="Bridge\ClassBridge.h" />
+    <ClInclude Include="State\StateManager.h" />
+    <ClInclude Include="Animation\Animator.h" />
+    <ClInclude Include="Sound\SoundManager.h" />
+    <ClInclude Include="Render\RenderWorld.h" />
     <ClInclude Include="GRenderer.h" />
     <ClInclude Include="Vertex.h" />
     <ClInclude Include="DummyMesh.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="GameTimer.h" />
-    <ClInclude Include="Input.h" />
+    <ClInclude Include="InputManager.h" />
     <ClInclude Include="PlayerController.h" />
     <ClInclude Include="DXCommon.h" />
     <ClInclude Include="ShaderCompiler.h" />
@@ -130,9 +146,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="Planet.h" />
     <ClInclude Include="Vec3d.h" />
     <ClInclude Include="Resource\ResourceManager.h" />
-    <ClInclude Include="Net\SimpleNet.h" />
-    <ClInclude Include="Resource\HeightmapLoader.h" />
-    <ClInclude Include="Terrain\TerrainSampler.h" />
+    <ClInclude Include="Net\Network.h" />
     <ClInclude Include="..\Shared\Units.h" />
     <ClInclude Include="..\Shared\HeightmapData.h" />
     <ClInclude Include="..\Shared\PlanetConst.h" />

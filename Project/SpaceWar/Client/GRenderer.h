@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 #include <DirectXMath.h>
-#include "RenderItem.h"
+#include "InstanceData.h"
 #include "Vertex.h"
 #include "RayTracingParams.h"
 
@@ -21,17 +21,13 @@ namespace swc {
 		bool Initialize(HWND, uint32_t, uint32_t);
 		MeshHandle CreateMesh(const Vertex*, size_t, const uint32_t*, size_t);
 		void BeginFrame();
-		void Render(const RenderView&, const std::vector<RenderItem>&, const DirectX::XMFLOAT4X4*);
+		void Render(const RenderView&, const std::vector<InstanceData>&, const DirectX::XMFLOAT4X4*);
 		void EndFrame();
 
 		// ── 하이브리드 제어 (DX 타입 노출 없음) ──
 		bool SupportsRaytracing() const;
 		void SetRayTracingParams(const RayTracingParams&);
 		const RayTracingParams& GetRayTracingParams() const;
-
-		// 지금까지 TLAS 를 몇 번 빌드했는가 (디버깅용 누적값).
-		// 커밋 증가가 빌드 횟수에 비례하는지 보려면 이 수를 같이 봐야 한다.
-		uint32_t TlasBuildCount() const;
 
 		void SetSunDirection(const DirectX::XMFLOAT3&);
 		void SetDebugMode(uint32_t);

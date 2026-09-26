@@ -4,6 +4,9 @@
 #include <utility>
 
 #include "Shared/PlanetConst.h"
+#include "Shared/GameLogic/GameLogic.h"
+#include "Shared/Physics/PhysicsCalculator.h"
+#include "Shared/Terrain/TerrainSampler.h"
 #include "Shared/AI/Node/SelectorNode.h"
 #include "Shared/AI/Node/SequenceNode.h"
 #include "HasTargetCondition.h"
@@ -110,16 +113,27 @@ namespace srv {
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  플레이어 주위에 고리 모양으로 깔아둔다.
+	//  그 방향의 지면 위로 옮긴다.
 	//
-	//  ★ 서버는 지형 높이를 모른다
-	//    그래서 «플레이어와 같은 반지름» 에 놓는다. 플레이어가 지면 위에 있으니
-	//    그 주변도 대체로 지면이다. 경사가 급하면 묻히거나 뜬다 — 알려진 한계.
-	void NpcWorld::SpawnAround(const Shared::Vec3& playerPos, int count)
+	//  ★ 플레이어 착지(클라 PlayerController)·위치 검사(서버 main.cpp)와 같은 계산이다.
+	//    기준구 반지름 + 지형 높이 + kGroundOffset. 하나라도 다르면 NPC 가 묻히거나 뜬다.
+	Shared::Vec3 NpcWorld::OnGround(const Shared::Vec3& position) const
+	{
+		const Shared::Vec3 center = PlanetCenter();
+		const Shared::Vec3 up = Normalize(Sub(position, center));
+
+		const double height = terrain ? terrain->Height(up.x, up.y, up.z) : 0.0;
+		const float  radius = float(Shared::kPlanetRadius + height + Shared::kGroundOffset);
+
+		return Add(center, Scale(up, radius));
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  플레이어 둘레 고리 위의 한 점. 접평면에 그린 뒤 그 방향의 지면으로 내린다.
+	Shared::Vec3 NpcWorld::RingPosition(const Shared::Vec3& playerPos, float angle) const
 	{
 		const Shared::Vec3 center = PlanetCenter();
 		const Shared::Vec3 up = Normalize(Sub(playerPos, center));
-		const float        radius = Length(Sub(playerPos, center));
 
 		// 접평면의 기준축 두 개. up 과 나란하지 않은 아무 벡터에서 만든다.
 		const Shared::Vec3 seed = (std::fabs(up.z) < 0.9f)
@@ -128,27 +142,91 @@ namespace srv {
 		const Shared::Vec3 axisX = Normalize(Cross(up, seed));
 		const Shared::Vec3 axisY = Cross(up, axisX);
 
+		const Shared::Vec3 offset = Add(Scale(axisX, std::cos(angle) * kSpawnRing),
+										Scale(axisY, std::sin(angle) * kSpawnRing));
+
+		return OnGround(Add(playerPos, offset));
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  플레이어 주위에 고리 모양으로 깔아둔다.
+	void NpcWorld::SpawnAround(const Shared::Vec3& playerPos, int count)
+	{
 		for (int i = 0; i < count; ++i)
 		{
 			const float angle = 6.2831853f * float(i) / float(count);
 
-			const Shared::Vec3 offset = Add(Scale(axisX, std::cos(angle) * kSpawnRing),
-											Scale(axisY, std::sin(angle) * kSpawnRing));
-
-			// 고리를 접평면에 그린 뒤 구면으로 되돌린다.
-			const Shared::Vec3 raw = Add(playerPos, offset);
-			const Shared::Vec3 onSphere = Add(center, Scale(Normalize(Sub(raw, center)), radius));
-
 			Entry e;
 			e.npcId = nextNpcId++;
-			e.npc.position = onSphere;
+			e.npc.position = RingPosition(playerPos, angle);
 			e.npc.speed = kNpcSpeed;
-			e.npc.health = 100.0f;
+			e.npc.health = Shared::kMaxHealth;
 			e.ctx.npc = e.npcId;
 			e.ctx.Allocate(nodeCount);
 
 			entries.push_back(std::move(e));
 		}
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  레이에 가장 먼저 맞는 살아 있는 NPC.
+	bool NpcWorld::Raycast(const Shared::Vec3& origin, const Shared::Vec3& direction,
+		float maxDistance, uint32_t& outNpcId, float& outDistance) const
+	{
+		bool  found = false;
+		float nearest = maxDistance;
+
+		for (size_t i = 0; i < entries.size(); ++i)
+		{
+			if (!entries[i].alive) continue;
+
+			float dist = 0.0f;
+			if (!Shared::PhysicsCalculator::RaySphere(origin, direction,
+				entries[i].npc.position, Shared::kHitRadius, nearest, dist))
+				continue;
+
+			if (found && dist >= nearest) continue;
+
+			found = true;
+			nearest = dist;
+			outNpcId = entries[i].npcId;
+			outDistance = dist;
+		}
+
+		return found;
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  피해. 이번 피격으로 쓰러졌으면 true.
+	//
+	//  ★ 사라지는 것은 «목록에서 빼는 것» 이 아니라 alive 를 내리는 것이다
+	//    항목을 지우면 번호가 사라져 재등장 시계를 어디에 둘지가 없어진다.
+	//    같은 번호로 10초 뒤에 다시 세우면 클라도 처음 보는 NPC 처럼 노드를 만든다.
+	bool NpcWorld::Damage(uint32_t npcId, float damage)
+	{
+		for (size_t i = 0; i < entries.size(); ++i)
+		{
+			if (entries[i].npcId != npcId || !entries[i].alive) continue;
+
+			entries[i].npc.health = Shared::GameLogic::ApplyDamage(entries[i].npc.health, damage);
+
+			if (!Shared::GameLogic::IsDown(entries[i].npc.health))
+				return false;
+
+			entries[i].alive = false;
+			entries[i].respawnTimer = Shared::kNpcRespawnDelay;
+			entries[i].ctx.decision = Shared::BehaviorDecision{};
+			despawned.push_back(npcId);
+			return true;
+		}
+
+		return false;
+	}
+
+	void NpcWorld::TakeDespawned(std::vector<uint32_t>& out)
+	{
+		out.swap(despawned);
+		despawned.clear();
 	}
 
 	/////////////////////////////////////////////////////////////////////
@@ -162,6 +240,22 @@ namespace srv {
 		for (size_t i = 0; i < entries.size(); ++i)
 		{
 			Entry& e = entries[i];
+
+			// ── 0) 쓰러져 있으면 재등장 시계만 돈다 ──
+			//  자리는 «그때의 플레이어 둘레» 라 매번 달라진다. 플레이어가 없으면 기다린다.
+			if (!e.alive)
+			{
+				e.respawnTimer -= dt;
+				if (e.respawnTimer > 0.0f || players.empty()) continue;
+
+				const size_t pick = size_t(e.npcId) % players.size();
+				const float  angle = 6.2831853f * float(e.npcId % 8u) / 8.0f;
+
+				e.npc.position = RingPosition(players[pick].pos, angle);
+				e.npc.health = Shared::kMaxHealth;
+				e.alive = true;
+				continue;
+			}
 
 			// ── 1) 이번 틱에 노드가 볼 것을 채운다 ──
 			e.ctx.dt = dt;
@@ -210,9 +304,8 @@ namespace srv {
 			const Shared::Vec3 next = Add(e.npc.position,
 										  Scale(Scale(tangent, 1.0f / tangentLen), move));
 
-			// 높이는 쫓는 플레이어의 것을 따른다 (서버가 지형을 모르므로).
-			const float targetRadius = Length(Sub(target, center));
-			e.npc.position = Add(center, Scale(Normalize(Sub(next, center)), targetRadius));
+			// 높이는 지형이 정한다. 쫓는 플레이어가 오르내려도 NPC 고도는 끌려가지 않는다.
+			e.npc.position = OnGround(next);
 
 			// 바라보는 방향도 갱신해 둔다. 아직 아무도 쓰지 않는다.
 			e.npc.direction = Scale(tangent, 1.0f / tangentLen);
@@ -226,6 +319,8 @@ namespace srv {
 
 		for (size_t i = 0; i < entries.size(); ++i)
 		{
+			if (!entries[i].alive) continue;   // 쓰러진 NPC 는 보내지 않는다
+
 			NpcView v;
 			v.npcId = entries[i].npcId;
 			v.pos = entries[i].npc.position;
@@ -238,7 +333,7 @@ namespace srv {
 		int n = 0;
 		for (size_t i = 0; i < entries.size(); ++i)
 		{
-			if (entries[i].ctx.decision.hasMoveTarget) ++n;
+			if (entries[i].alive && entries[i].ctx.decision.hasMoveTarget) ++n;
 		}
 		return n;
 	}
