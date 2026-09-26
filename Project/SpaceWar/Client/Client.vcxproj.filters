@@ -75,8 +75,20 @@
     <Filter Include="클래스 목록\Network">
       <UniqueIdentifier>{6c8b2f19-05a4-4d3e-91f7-4a2e8db06c53}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Model">
+      <UniqueIdentifier>{0b5e9a41-7c62-4d38-9a15-3f8ed2c47b60}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\FbxModelLoader">
+      <UniqueIdentifier>{5c3a7d18-94b6-42ef-8207-6be1d4a9f735}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\TextureLoader">
+      <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="설정 및 리소스">
+      <UniqueIdentifier>{617c7c5e-f7f8-4a99-af05-7319b9d3bc43}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -140,6 +152,15 @@
     <ClCompile Include="Net\Network.cpp">
       <Filter>클래스 목록\Network</Filter>
     </ClCompile>
+    <ClCompile Include="Model.cpp">
+      <Filter>클래스 목록\Model</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\FbxModelLoader.cpp">
+      <Filter>클래스 목록\FbxModelLoader</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\TextureLoader.cpp">
+      <Filter>클래스 목록\TextureLoader</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="LegacyScene.h">
@@ -202,6 +223,21 @@
     <ClInclude Include="Net\Network.h">
       <Filter>클래스 목록\Network</Filter>
     </ClInclude>
+    <ClInclude Include="Model.h">
+      <Filter>클래스 목록\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\FbxModelLoader.h">
+      <Filter>클래스 목록\FbxModelLoader</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\TextureLoader.h">
+      <Filter>클래스 목록\TextureLoader</Filter>
+    </ClInclude>
+    <ClInclude Include="MeshData.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ModelData.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
     <ClInclude Include="Handles.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
@@ -236,6 +272,18 @@
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl">
       <Filter>셰이더</Filter>
+    </None>
+    <None Include="FbxSdk.props">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="FbxSdk.local.props.example">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="FBX_SETUP.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\*.fbx">
+      <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>
 </Project>

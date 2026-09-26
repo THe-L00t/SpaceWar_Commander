@@ -20,6 +20,7 @@
 #include "Client/Animation/Animator.h"
 #include "Client/GameTimer.h"
 #include "Client/LegacyScene.h"
+#include "Client/Model.h"
 #include "Client/Camera.h"
 #include "Client/PlayerController.h"
 #include "Client/Planet.h"
@@ -93,8 +94,10 @@ namespace swc {
 		Camera                 camera;            // 명세 1절에 자리가 없다
 		PlayerController       controller;        // → Player(6.6) · Game Logic(8절). 입력은 Class Bridge 경유(6.6.3)
 		NodeHandle             player = kInvalidNode;
-		MeshHandle             cubeMesh = kInvalidMesh;
-		MeshHandle             npcMesh = kInvalidMesh;
+
+		// FBX 캐릭터 모델 (client2 `46567fd` 이식). 플레이어·원격 플레이어·NPC 가 공유한다.
+		// 명세 1절에 Model 자리가 없다 — 리소스(ModelData)를 GPU 자원 + Scene 노드로 펼치는 어댑터다.
+		Model                  characterModel;
 
 		// 원격 플레이어 · NPC 노드 → Scene 의 OtherPlayer · NPC (6.10)
 		std::unordered_map<uint32_t, NodeHandle> remoteNodes;

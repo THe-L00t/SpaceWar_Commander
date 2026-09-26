@@ -18,6 +18,11 @@ namespace
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
 
+	// 캐릭터 모델. exe 옆 assets\ 기준이다.
+	// ★ 파일명이 Client.vcxproj 의 CopyModelAssets 검사에도 적혀 있다 — 바꿀 때 두 곳.
+	constexpr const wchar_t* kCharacterModelAsset =
+		L"model\\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx";
+
 	// ── 사격 효과 (임시) ───────────────────────────────────
 	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
 	//  맞은 표시·총구 화염·소리는 없다.
@@ -160,41 +165,50 @@ namespace swc {
 			terrainStatus = L"지형 실패: " + resources.LastError();
 		}
 
+		// ── 캐릭터 모델 (FBX) ──────────────────────────────────
+		//  ★ 한 번만 읽고 GPU 자원을 만든다. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다
+		//    (그래서 BLAS 도 하나다). 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
+		//    «모델이 안 나온다» 를 빌드 문제로 착각한다.
+		//  ★ 렌더러 초기화 뒤에 와야 한다. GPU 메시·텍스처·재질을 만들기 때문이다.
+		const ModelHandle modelHandle = resources.LoadModel(AssetPath(kCharacterModelAsset).c_str());
+		const ModelData* modelData = resources.Get(modelHandle);
+		if (!modelData)
+		{
+			MessageBox(hwnd, resources.LastError().c_str(), L"FBX 모델 로드 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
+		if (!characterModel.Initialize(*modelData, renderer))
+		{
+			MessageBox(hwnd, characterModel.LastError().c_str(), L"모델 초기화 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
+
 		// 지면 = 큐브 구 6면 전체 메시 (파일 없이 코드로 생성)
 		// 면당 321 격자 → 정점 간격 약 7.9m, 정점 61.8만 / 삼각형 123만.
 		// 513 이면 4.9m 간격이지만 삼각형 315만이라 BLAS 부담이 크다.
 		constexpr int kPlanetFaceGrid = 321;
 		MeshData groundData = MakeCubeSphere(planet, kPlanetFaceGrid,
 			{ 0.15f, 0.30f, 0.18f });
-		MeshData cubeData = MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
-		// NPC 는 붉게 칠해 플레이어(주황)와 눈으로 구분한다.
-		MeshData npcData = MakeCube(2.0f, { 0.85f, 0.15f, 0.15f });
-		MeshData noseData = MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
 		// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
 		MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
 
 		const MeshHandle groundMesh = renderer.CreateMesh(
 			groundData.vertices.data(), groundData.vertices.size(),
 			groundData.indices.data(), groundData.indices.size());
-		cubeMesh = renderer.CreateMesh(
-			cubeData.vertices.data(), cubeData.vertices.size(),
-			cubeData.indices.data(), cubeData.indices.size());
-		const MeshHandle noseMesh = renderer.CreateMesh(
-			noseData.vertices.data(), noseData.vertices.size(),
-			noseData.indices.data(), noseData.indices.size());
-		npcMesh = renderer.CreateMesh(
-			npcData.vertices.data(), npcData.vertices.size(),
-			npcData.indices.data(), npcData.indices.size());
+		if (groundMesh == kInvalidMesh)
+		{
+			MessageBox(hwnd, renderer.StatusText().c_str(), L"지형 메시 생성 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
 		tracerMesh = renderer.CreateMesh(
 			tracerData.vertices.data(), tracerData.vertices.size(),
 			tracerData.indices.data(), tracerData.indices.size());
 
 		scene.AddNode(kInvalidNode, groundMesh, 0);
-		player = scene.AddNode(kInvalidNode, cubeMesh, 0);
 
-		// 몸통이 어디를 보는지 눈으로 확인하려고 앞쪽에 자식 노드로 붙인다.
-		const NodeHandle nose = scene.AddNode(player, noseMesh, 0);
-		scene.SetLocalTransform(nose, XMMatrixTranslation(0.0f, 0.0f, 1.3f));
+		// 모델은 루트(이동) + 표시 보정 + FBX 노드 계층으로 펼쳐진다. 반환값이 이동 루트다.
+		// 화면 밖으로 치울 때도 이 루트만 옮기면 자식이 따라온다.
+		player = characterModel.Instantiate(scene);
 
 		// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
 		freeTracerNodes.reserve(kTracerPool);
@@ -210,7 +224,8 @@ namespace swc {
 
 		camera.SetAspect(float(kWidth) / float(kHeight));
 
-		// 스폰 = 월드 원점(구 표면). 큐브 반지름 1 만큼 띄워 발이 땅에 닿게 한다.
+		// 스폰 = 월드 원점(구 표면). 몸통 중심을 1m 띄워 발이 땅에 닿게 한다
+		// (모델도 중심 기준으로 1m 내려 배치된다 — Model.cpp kGroundOffset).
 		controller.SetPlanet(&planet);
 		controller.Spawn(planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0), { 0.0, 0.0, 1.0 });
 		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
@@ -289,8 +304,9 @@ namespace swc {
 		}
 
 		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
+		// 11번째(10) 는 재질 확인용 — 거칠기·금속성 (2026-09-26 FBX 이식에서 추가)
 		if (input.WasPressed('V'))
-			renderer.SetDebugMode((renderer.DebugMode() + 1) % 10);
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);
 		if (input.WasPressed('R'))
 		{
 			RayTracingParams p = renderer.GetRayTracingParams();
@@ -486,7 +502,7 @@ namespace swc {
 				}
 				else
 				{
-					handle = scene.AddNode(kInvalidNode, cubeMesh, 0);
+					handle = characterModel.Instantiate(scene);
 				}
 				found = remoteNodes.emplace(v.playerId, handle).first;
 			}
@@ -534,7 +550,9 @@ namespace swc {
 				}
 				else
 				{
-					handle = scene.AddNode(kInvalidNode, npcMesh, 0);
+					// NPC 도 같은 모델·재질을 쓴다(client2 이식 방침). 눈으로 가리는 것은
+					// 머리 위 HP BAR 로 한다 — 교수님 09-15 ToDo.
+					handle = characterModel.Instantiate(scene);
 				}
 				found = npcNodes.emplace(v.npcId, handle).first;
 			}
