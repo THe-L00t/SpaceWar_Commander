@@ -2,17 +2,12 @@
 #include <vector>
 #include <cstdint>
 #include <cmath>
-#include "Vertex.h"
+#include "MeshData.h"
 #include "Planet.h"
 
-// 테스트용 더미 메쉬 생성 (Assimp 등 파일 로딩 없이 코드로 만든다)
+// 지형 및 테스트용 메시 생성 (파일 로딩 없이 코드로 만든다)
 // 면마다 노멀이 달라야 하므로 박스는 정점을 공유하지 않고 24개로 만든다.
 namespace swc {
-	struct MeshData {
-		std::vector<Vertex> vertices;
-		std::vector<uint32_t> indices;
-	};
-
 	inline MeshData MakeBox(float sx, float sy, float sz, DirectX::XMFLOAT3 color)
 	{
 		using DirectX::XMFLOAT3;

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- 개인 설치 경로는 이 파일 대신 FbxSdk.local.props 또는 FBX_SDK_ROOT에 지정한다. -->
+  <Import Project="$(MSBuildThisFileDirectory)FbxSdk.local.props" Condition="Exists('$(MSBuildThisFileDirectory)FbxSdk.local.props')" />
+  <PropertyGroup>
+    <FbxSdkRoot Condition="'$(FbxSdkRoot)' == ''">$(FBX_SDK_ROOT)</FbxSdkRoot>
+    <FbxSdkRoot Condition="'$(FbxSdkRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\external\fbxsdk\include\fbxsdk.h')">$(MSBuildThisFileDirectory)..\external\fbxsdk</FbxSdkRoot>
+    <FbxSdkRoot Condition="'$(FbxSdkRoot)' == '' and Exists('$(ProgramW6432)\Autodesk\FBX\FBX SDK\2020.3.11\include\fbxsdk.h')">$(ProgramW6432)\Autodesk\FBX\FBX SDK\2020.3.11</FbxSdkRoot>
+    <FbxSdkRoot Condition="'$(FbxSdkRoot)' == '' and Exists('$(ProgramW6432)\Autodesk\FBX\FBX SDK\2020.3.9\include\fbxsdk.h')">$(ProgramW6432)\Autodesk\FBX\FBX SDK\2020.3.9</FbxSdkRoot>
+    <FbxSdkRoot Condition="'$(FbxSdkRoot)' == '' and Exists('$(ProgramW6432)\Autodesk\FBX\FBX SDK\2020.3.7\include\fbxsdk.h')">$(ProgramW6432)\Autodesk\FBX\FBX SDK\2020.3.7</FbxSdkRoot>
+    <FbxSdkCompiler Condition="'$(FbxSdkCompiler)' == '' and Exists('$(FbxSdkRoot)\lib\vs2022\x64')">vs2022</FbxSdkCompiler>
+    <FbxSdkCompiler Condition="'$(FbxSdkCompiler)' == '' and Exists('$(FbxSdkRoot)\lib\vs2019\x64')">vs2019</FbxSdkCompiler>
+    <FbxSdkCompiler Condition="'$(FbxSdkCompiler)' == '' and Exists('$(FbxSdkRoot)\lib\vs2017\x64')">vs2017</FbxSdkCompiler>
+    <FbxSdkCompiler Condition="'$(FbxSdkCompiler)' == ''">vs2022</FbxSdkCompiler>
+    <FbxSdkBuildMode Condition="'$(Configuration)' == 'Debug'">debug</FbxSdkBuildMode>
+    <FbxSdkBuildMode Condition="'$(Configuration)' != 'Debug'">release</FbxSdkBuildMode>
+    <FbxSdkLibraryDir Condition="'$(FbxSdkLibraryDir)' == '' and Exists('$(FbxSdkRoot)\lib\x64\$(FbxSdkBuildMode)\libfbxsdk.lib') and Exists('$(FbxSdkRoot)\lib\x64\$(FbxSdkBuildMode)\libfbxsdk.dll')">$(FbxSdkRoot)\lib\x64\$(FbxSdkBuildMode)</FbxSdkLibraryDir>
+    <FbxSdkLibraryDir Condition="'$(FbxSdkLibraryDir)' == ''">$(FbxSdkRoot)\lib\$(FbxSdkCompiler)\x64\$(FbxSdkBuildMode)</FbxSdkLibraryDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(FbxSdkRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>FBXSDK_SHARED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary Condition="'$(Configuration)' == 'Debug'">MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)' != 'Debug'">MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(FbxSdkLibraryDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libfbxsdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="CheckFbxSdk" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(FbxSdkRoot)' == '' or !Exists('$(FbxSdkRoot)\include\fbxsdk.h')" Text="FBX SDK를 설치하고 Client/FbxSdk.local.props의 FbxSdkRoot 또는 환경 변수 FBX_SDK_ROOT를 지정하세요. Client/FBX_SETUP.md를 참고하세요." />
+    <Error Condition="'$(Platform)' != 'x64'" Text="FBX 모델 로딩은 x64 구성만 지원합니다." />
+    <Error Condition="!Exists('$(FbxSdkLibraryDir)\libfbxsdk.lib') or !Exists('$(FbxSdkLibraryDir)\libfbxsdk.dll')" Text="FBX SDK의 $(Configuration) DLL/import library를 찾지 못했습니다: $(FbxSdkLibraryDir). SDK의 lib\x64 또는 lib\compiler\x64 아래 debug/release 폴더를 확인하세요. 다른 구조는 FbxSdk.local.props에서 FbxSdkLibraryDir을 지정하세요." />
+  </Target>
+  <Target Name="CopyFbxSdkRuntime" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Copy SourceFiles="$(FbxSdkLibraryDir)\libfbxsdk.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

@@ -7,6 +7,7 @@
 #include "RenderItem.h"
 #include "Vertex.h"
 #include "RayTracingParams.h"
+#include "Resource/ModelData.h"
 
 struct HWND__;
 using HWND = HWND__*;
@@ -20,6 +21,9 @@ namespace swc {
 
 		bool Initialize(HWND, uint32_t, uint32_t);
 		MeshHandle CreateMesh(const Vertex*, size_t, const uint32_t*, size_t);
+		// GPU 리소스 등록은 Initialize 이후, BeginFrame 밖에서 수행한다.
+		TextureHandle CreateTexture(const TextureData&);
+		MaterialHandle CreateMaterial(const MaterialData&, const std::array<TextureHandle, kMaterialTextureCount>&);
 		void BeginFrame();
 		void Render(const RenderView&, const std::vector<RenderItem>&, const DirectX::XMFLOAT4X4*);
 		void EndFrame();

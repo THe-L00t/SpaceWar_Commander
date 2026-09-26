@@ -5,6 +5,7 @@
 #include <DirectXMath.h>
 #include "GRenderer.h"
 #include "Scene.h"
+#include "Model.h"
 #include "Camera.h"
 #include "DummyMesh.h"
 #include "GameTimer.h"
@@ -106,32 +107,44 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		terrainStatus = L"지형 실패: " + resources.LastError();
 	}
 
+	// FBX는 한 번만 읽고 GPU 자원을 만든 뒤 Scene에 플레이어 모델을 배치한다.
+	const swc::ModelHandle modelHandle = resources.LoadModel(
+		AssetPath(L"model\\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx").c_str());
+	const swc::ModelData* modelData = resources.Get(modelHandle);
+	if (!modelData)
+	{
+		MessageBox(hwnd, resources.LastError().c_str(), L"FBX 모델 로드 실패", MB_OK | MB_ICONERROR);
+		CoUninitialize();
+		return 1;
+	}
+	swc::Model characterModel;
+	if (!characterModel.Initialize(*modelData, renderer))
+	{
+		MessageBox(hwnd, characterModel.LastError().c_str(), L"모델 초기화 실패", MB_OK | MB_ICONERROR);
+		CoUninitialize();
+		return 1;
+	}
+
 	// 더미 메쉬 (파일 없이 코드로 생성) — 테스트용
 	// 2.4km 패치 / 513격자 = 정점 간격 4.7m.
 	// 변 중앙까지 1,200m 라 지평선(1,084m)을 넘어 패치 끝이 안 보인다.
 	swc::MeshData groundData = swc::MakeSpherePatch(planet, 2400.0, 513,
 		{ 0.15f, 0.30f, 0.18f });
-	swc::MeshData cubeData = swc::MakeCube(2.0f, { 0.90f, 0.45f, 0.15f });
-	swc::MeshData noseData = swc::MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
 
 	swc::MeshHandle groundMesh = renderer.CreateMesh(
 		groundData.vertices.data(), groundData.vertices.size(),
 		groundData.indices.data(), groundData.indices.size());
-	swc::MeshHandle cubeMesh = renderer.CreateMesh(
-		cubeData.vertices.data(), cubeData.vertices.size(),
-		cubeData.indices.data(), cubeData.indices.size());
-	swc::MeshHandle noseMesh = renderer.CreateMesh(
-		noseData.vertices.data(), noseData.vertices.size(),
-		noseData.indices.data(), noseData.indices.size());
+	if (groundMesh == swc::kInvalidMesh)
+	{
+		MessageBox(hwnd, renderer.StatusText().c_str(), L"지형 메시 생성 실패", MB_OK | MB_ICONERROR);
+		CoUninitialize();
+		return 1;
+	}
 
 	swc::Scene scene;
 	swc::NodeHandle ground = scene.AddNode(swc::kInvalidNode, groundMesh, 0);
-	swc::NodeHandle player = scene.AddNode(swc::kInvalidNode, cubeMesh, 0);
+	swc::NodeHandle player = characterModel.Instantiate(scene);
 	(void)ground;
-
-	// 몸통이 어디를 보는지 눈으로 확인하려고 앞쪽에 자식 노드로 붙인다.
-	swc::NodeHandle nose = scene.AddNode(player, noseMesh, 0);
-	scene.SetLocalTransform(nose, XMMatrixTranslation(0.0f, 0.0f, 1.3f));
 
 	swc::GameTimer timer;
 	swc::Input input;
@@ -143,7 +156,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 	camera.SetAspect(float(width) / float(height));
 
-	// 스폰 = 월드 원점(구 표면). 큐브 반지름 1 만큼 띄워 발이 땅에 닿게 한다.
+	// 스폰 = 월드 원점(구 표면). 모델 중심을 1m 띄워 발이 땅에 닿게 한다.
 	controller.SetPlanet(&planet);
 	controller.Spawn(planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0), { 0.0, 0.0, 1.0 });
 	camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());

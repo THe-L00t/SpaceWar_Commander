@@ -43,6 +43,7 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <Import Project="FbxSdk.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -91,6 +92,9 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Model.cpp" />
+    <ClCompile Include="Resource\FbxModelLoader.cpp" />
+    <ClCompile Include="Resource\TextureLoader.cpp" />
     <ClCompile Include="Scene.cpp" />
     <ClCompile Include="GRenderer.cpp" />
     <ClCompile Include="Camera.cpp" />
@@ -105,6 +109,10 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
+    <None Include="FbxSdk.props" />
+    <None Include="FbxSdk.local.props.example" />
+    <None Include="FBX_SETUP.md" />
+    <None Include="..\..\assets\model\*.fbx" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
@@ -113,6 +121,11 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Handles.h" />
+    <ClInclude Include="MeshData.h" />
+    <ClInclude Include="Model.h" />
+    <ClInclude Include="Resource\ModelData.h" />
+    <ClInclude Include="Resource\FbxModelLoader.h" />
+    <ClInclude Include="Resource\TextureLoader.h" />
     <ClInclude Include="RenderItem.h" />
     <ClInclude Include="Scene.h" />
     <ClInclude Include="GRenderer.h" />
@@ -135,6 +148,13 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="..\Shared\HeightmapData.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CopyModelAssets" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\**\*" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx')" Text="assets/model에 Arc Sentinel FBX 파일이 필요합니다." />
+    <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>

@@ -52,10 +52,22 @@
     <Filter Include="Temp">
       <UniqueIdentifier>{608964c6-c3d1-4368-825a-a217c14884f5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="설정 및 리소스">
+      <UniqueIdentifier>{617c7c5e-f7f8-4a99-af05-7319b9d3bc43}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <!-- main.cpp 은 진입점이라 필터 없이 최상단에 둔다 -->
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Model.cpp">
+      <Filter>Engine\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\FbxModelLoader.cpp">
+      <Filter>Engine\Resource</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\TextureLoader.cpp">
+      <Filter>Engine\Resource</Filter>
+    </ClCompile>
     <ClCompile Include="GRenderer.cpp">
       <Filter>Engine\Graphics</Filter>
     </ClCompile>
@@ -91,6 +103,21 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Model.h">
+      <Filter>Engine\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\FbxModelLoader.h">
+      <Filter>Engine\Resource</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\TextureLoader.h">
+      <Filter>Engine\Resource</Filter>
+    </ClInclude>
+    <ClInclude Include="MeshData.h">
+      <Filter>Engine\Graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ModelData.h">
+      <Filter>Engine\Resource</Filter>
+    </ClInclude>
     <ClInclude Include="GRenderer.h">
       <Filter>Engine\Graphics</Filter>
     </ClInclude>
@@ -158,6 +185,18 @@
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl">
       <Filter>Shaders</Filter>
+    </None>
+    <None Include="FbxSdk.props">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="FbxSdk.local.props.example">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="FBX_SETUP.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\*.fbx">
+      <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>
 </Project>

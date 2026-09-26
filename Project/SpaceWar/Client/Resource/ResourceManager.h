@@ -3,7 +3,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 #include "Shared/HeightmapData.h"
+#include "ModelData.h"
 
 // ============================================================
 //  ResourceManager — 리소스 캐싱 + 핸들 발급
@@ -30,23 +32,38 @@ namespace swc {
 		bool Valid() const { return index != 0; }
 	};
 
+	struct ModelHandle
+	{
+		uint32_t index = 0;
+		uint32_t generation = 0;
+
+		bool Valid() const { return index != 0; }
+	};
+
 	class ResourceManager
 	{
 	public:
 		// 같은 경로를 두 번 요청하면 캐시에서 같은 핸들을 준다.
 		// 경로는 와이드 문자열 — 윈도우 경로는 원래 UTF-16 이다.
 		HeightmapHandle LoadHeightmap(const wchar_t* path);
+		ModelHandle LoadModel(const wchar_t* path);
 
 		// 무효 핸들이면 nullptr
 		const Shared::HeightmapData* Get(HeightmapHandle) const;
+		const ModelData* Get(ModelHandle) const;
 
 		const std::wstring& LastError() const { return lastError; }
 		size_t HeightmapCount() const { return heightmaps.size(); }
+		size_t ModelCount() const { return models.size(); }
 
 	private:
 		std::unordered_map<std::wstring, HeightmapHandle> pathCache;
 		std::vector<Shared::HeightmapData> heightmaps;
 		std::vector<uint32_t> generations;
+		std::unordered_map<std::wstring, ModelHandle> modelPathCache;
+		// 새 모델을 추가해도 기존 Get()의 주소가 바뀌지 않는다.
+		std::vector<std::unique_ptr<ModelData>> models;
+		std::vector<uint32_t> modelGenerations;
 		std::wstring lastError;
 	};
 }
