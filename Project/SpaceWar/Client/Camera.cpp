@@ -52,6 +52,11 @@ namespace swc {
 		if (pitch > kPitchMax) pitch = kPitchMax;
 	}
 
+	Vec3d Camera::LookDirection() const
+	{
+		return Normalize(forward * std::cos(pitch) - up * std::sin(pitch));
+	}
+
 	void Camera::SnapTo(const Vec3d& target, const Vec3d& upDirection, const Vec3d& forwardHint)
 	{
 		smoothTarget = target;

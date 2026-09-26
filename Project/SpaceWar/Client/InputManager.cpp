@@ -74,6 +74,7 @@ namespace swc {
 	void InputManager::BeginFrame()
 	{
 		memcpy(prevKeys, keys, sizeof(keys));
+		memcpy(prevMouseButtons, mouseButtons, sizeof(mouseButtons));
 		mouseDeltaX = 0.0f;
 		mouseDeltaY = 0.0f;
 	}
@@ -102,6 +103,7 @@ namespace swc {
 	{
 		memset(keys, 0, sizeof(keys));
 		memset(mouseButtons, 0, sizeof(mouseButtons));
+		memset(prevMouseButtons, 0, sizeof(prevMouseButtons));
 		mouseDeltaX = 0.0f;
 		mouseDeltaY = 0.0f;
 	}

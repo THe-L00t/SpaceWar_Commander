@@ -56,6 +56,8 @@ namespace swc {
 		bool PumpMessages();
 		void HandleSystemKeys();
 		void UpdatePlayer(float);
+		void UpdateFire(float);
+		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim);
 		void UpdateNetwork(float);
 		void RenderFrame();
 		void UpdateTitle(float);
@@ -100,8 +102,25 @@ namespace swc {
 		std::unordered_map<uint32_t, NodeHandle> npcNodes;
 		std::vector<NodeHandle>                  freeNpcNodes;
 
+		// ── 사격 효과 (임시) ────────────────────────────────
+		//  얇고 긴 상자를 발사선에 잠깐 놓는 것뿐이다. 명세에는 이펙트 자리가 없다 —
+		//  나중에 Scene 의 표시 요소나 파티클(설계 v1)로 옮긴다.
+		//  노드는 원격 플레이어와 같은 방식으로 재사용한다(Scene 에 삭제 API 가 없다).
+		struct Tracer
+		{
+			NodeHandle node = kInvalidNode;
+			float      life = 0.0f;      // 남은 시간 (s)
+		};
+
+		MeshHandle              tracerMesh = kInvalidMesh;
+		std::vector<Tracer>     tracers;
+		std::vector<NodeHandle> freeTracerNodes;
+
 		std::vector<InstanceData> items;
 		float                     titleTimer = 0.0f;
+
+		// 마우스를 다시 잡으려고 누른 클릭이 그대로 사격이 되지 않게 한 프레임 막는다.
+		bool                      suppressFire = false;
 	};
 
 } // namespace swc

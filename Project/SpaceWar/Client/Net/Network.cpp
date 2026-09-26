@@ -101,6 +101,52 @@ namespace swc {
 		remotes.erase(p->playerId);
 	}
 
+	// 서버가 판정한 체력. 클라는 규칙을 모르고 받은 값만 들고 있는다.
+	void Network::OnPlayerHealth(const Shared::PlayerHealthPacket* p)
+	{
+		if (p->playerId != myId) return;   // 남의 체력은 아직 쓰지 않는다
+
+		myHealth = p->health;
+		if (p->attackerId != 0) ++nHits;   // 0 = 접속 직후 알림
+	}
+
+	// 체력이 0 이 됐다. 되살아날 자리는 서버가 정해 보낸다.
+	void Network::OnPlayerNeutralized(const Shared::PlayerNeutralizedPacket* p)
+	{
+		if (p->playerId == myId)
+		{
+			myHealth = p->health;
+			respawnPos[0] = p->pos[0];
+			respawnPos[1] = p->pos[1];
+			respawnPos[2] = p->pos[2];
+			hasRespawn = true;
+			return;
+		}
+
+		// 남이 쓰러졌다 = 그 자리로 순간이동했다. 보간 구간을 끊고 바로 옮긴다.
+		Remote& r = remotes[p->playerId];
+		r = Remote{};
+		PushSnapshot(r, p->pos);
+	}
+
+	// ★ 이게 없으면 쓰러진 NPC 가 화면에 영원히 서 있는다.
+	//   마지막으로 받은 좌표를 계속 그리기 때문이다.
+	void Network::OnNpcDespawn(const Shared::NpcDespawnPacket* p)
+	{
+		npcs.erase(p->npcId);
+	}
+
+	bool Network::TakeRespawn(float outPos[3])
+	{
+		if (!hasRespawn) return false;
+
+		outPos[0] = respawnPos[0];
+		outPos[1] = respawnPos[1];
+		outPos[2] = respawnPos[2];
+		hasRespawn = false;
+		return true;
+	}
+
 	// ── 받은 바이트에서 완전한 패킷만 꺼내 해석한다 ──
 	//
 	//  ★ 서버와 똑같은 처리가 클라에도 필요하다
@@ -154,6 +200,21 @@ namespace swc {
 			case Shared::PacketType::NpcState:
 				if (nSize == (int)sizeof(Shared::NpcStatePacket))
 					OnNpcState((const Shared::NpcStatePacket*)pHead);
+				break;
+
+			case Shared::PacketType::PlayerHealth:
+				if (nSize == (int)sizeof(Shared::PlayerHealthPacket))
+					OnPlayerHealth((const Shared::PlayerHealthPacket*)pHead);
+				break;
+
+			case Shared::PacketType::PlayerNeutralized:
+				if (nSize == (int)sizeof(Shared::PlayerNeutralizedPacket))
+					OnPlayerNeutralized((const Shared::PlayerNeutralizedPacket*)pHead);
+				break;
+
+			case Shared::PacketType::NpcDespawn:
+				if (nSize == (int)sizeof(Shared::NpcDespawnPacket))
+					OnNpcDespawn((const Shared::NpcDespawnPacket*)pHead);
 				break;
 
 			default:
@@ -221,6 +282,9 @@ namespace swc {
 		nSent = 0;
 		nEcho = 0;
 		myId = 0;
+		myHealth = -1.0f;
+		nHits = 0;
+		hasRespawn = false;
 		remotes.clear();
 		npcs.clear();
 		connected = true;
@@ -262,29 +326,55 @@ namespace swc {
 		pkt.velocity[1] = 0.0f;
 		pkt.velocity[2] = 0.0f;
 
-		// ★ 논블로킹 소켓이라 send 가 일부만 보낼 수 있다.
-		//   보낸 만큼 빼고 남은 것을 이어서 보낸다.
-		//   (32바이트라 사실상 한 번에 나가지만, 안 하면 언젠가 좌표가 깨진다)
-		const char* p = (const char*)&pkt;
-		int nTotal = (int)sizeof(pkt);
+		if (SendRaw(&pkt, (int)sizeof(pkt)))
+			++nSent;
+	}
+
+	// ── 사격 ────────────────────────────────────────────────
+	//
+	//  ★ «맞췄다» 가 아니라 «쐈다» 를 보낸다
+	//    누가 맞았는지는 서버가 정한다 (명세 18절 원칙 4). 클라가 대상을 정해 보내면
+	//    조작된 클라가 아무나 죽일 수 있다.
+	void Network::SendFire(const float origin[3], const float direction[3])
+	{
+		if (!connected) return;
+
+		Shared::PlayerFirePacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::PlayerFire;
+		pkt.playerId = 0;              // 번호는 서버가 붙인다
+		pkt.origin[0] = origin[0];
+		pkt.origin[1] = origin[1];
+		pkt.origin[2] = origin[2];
+		pkt.direction[0] = direction[0];
+		pkt.direction[1] = direction[1];
+		pkt.direction[2] = direction[2];
+
+		SendRaw(&pkt, (int)sizeof(pkt));
+	}
+
+	// ★ 논블로킹 소켓이라 send 가 일부만 보낼 수 있다.
+	//   보낸 만큼 빼고 남은 것을 이어서 보낸다.
+	//   (수십 바이트라 사실상 한 번에 나가지만, 안 하면 언젠가 패킷이 깨진다)
+	bool Network::SendRaw(const void* data, int size)
+	{
+		const char* p = (const char*)data;
 		int nSentBytes = 0;
 
-		while (nSentBytes < nTotal)
+		while (nSentBytes < size)
 		{
-			const int n = ::send(sock, p + nSentBytes, nTotal - nSentBytes, 0);
+			const int n = ::send(sock, p + nSentBytes, size - nSentBytes, 0);
 			if (n > 0) { nSentBytes += n; continue; }
 
 			if (n == SOCKET_ERROR && ::WSAGetLastError() == WSAEWOULDBLOCK)
 			{
-				// 커널 송신 버퍼가 찼다. 다음 프레임에 다시 시도하게 두는 게 맞지만,
-				// 이 단계에서는 32바이트라 여기 걸릴 일이 사실상 없다.
-				// 걸린다면 그 프레임의 좌표는 버린다 (다음 좌표가 곧 온다).
-				return;
+				// 커널 송신 버퍼가 찼다. 이 패킷은 버린다 (다음 좌표가 곧 온다).
+				return false;
 			}
 			connected = false;   // 진짜 오류 = 연결이 끊겼다
-			return;
+			return false;
 		}
-		++nSent;
+		return true;
 	}
 
 	// ── 수신 ────────────────────────────────────────────────

@@ -21,6 +21,13 @@ namespace swc {
 		bool WasPressed(int vk) const { return keys[vk & 0xFF] && !prevKeys[vk & 0xFF]; }
 		bool MouseDown(int button) const { return mouseButtons[button & 3]; }
 
+		// 이번 프레임에 «눌린 순간» 인가. 키의 WasPressed 와 같은 규칙이다.
+		// 사격은 이걸 써야 한 번 누를 때 한 발만 나간다.
+		bool MouseWasPressed(int button) const
+		{
+			return mouseButtons[button & 3] && !prevMouseButtons[button & 3];
+		}
+
 		float MouseDeltaX() const { return mouseDeltaX; }
 		float MouseDeltaY() const { return mouseDeltaY; }
 
@@ -35,6 +42,7 @@ namespace swc {
 		bool  keys[256] = {};
 		bool  prevKeys[256] = {};
 		bool  mouseButtons[4] = {};
+		bool  prevMouseButtons[4] = {};
 		float mouseDeltaX = 0.0f;
 		float mouseDeltaY = 0.0f;
 		bool  captured = false;

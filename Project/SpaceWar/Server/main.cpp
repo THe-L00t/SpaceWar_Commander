@@ -10,6 +10,8 @@
 #include <cstdio>
 #include "Shared/Protocol.h"
 #include "Shared/PlanetConst.h"
+#include "Shared/GameLogic/GameLogic.h"
+#include "Shared/Physics/PhysicsCalculator.h"
 #include "Shared/Terrain/HeightmapLoader.h"
 #include "Shared/Terrain/TerrainSampler.h"
 #include "AI/NpcWorld.h"
@@ -22,6 +24,23 @@
 //세션이 정의되기 전에 쓰이므로 미리 선언해 둔다.
 void SendToAll(const void *pData, int nLen, UINT32 nExceptId);
 bool ClampToGround(float pos[3]);
+
+/////////////////////////////////////////////////////////////////////////
+//  발사 요청 — IOCP 워커가 넣고, NPC 행동 스레드가 꺼내 판정한다.
+//
+//  ★ 왜 워커에서 바로 판정하지 않는가
+//    NpcWorld 는 «행동 스레드 하나만 건드린다» 는 약속 위에 서 있다(NpcWorld.h).
+//    워커가 패킷을 받은 자리에서 NPC 를 깎으면 그 약속이 깨지고,
+//    같은 NPC 를 두 스레드가 동시에 죽이는 경쟁이 생긴다.
+//    워커는 «쐈다» 만 남기고, 판정·피해·재등장은 전부 틱 스레드에서 한 번에 한다.
+struct FireRequest
+{
+	UINT32	nShooterId;
+	float	origin[3];
+	float	dir[3];
+};
+
+void QueueFire(UINT32 nShooterId, const float origin[3], const float dir[3]);
 
 enum class IO_TYPE { RECV, SEND };
 
@@ -54,7 +73,8 @@ class Session
 public:
 	Session(SOCKET hSocket, UINT32 nPlayerId)
 		: m_hSocket(hSocket), m_nPlayerId(nPlayerId), m_nRecvd(0),
-		  m_bHasPos(false), m_recvCtx(IO_TYPE::RECV)
+		  m_bHasPos(false), m_fHealth(Shared::kMaxHealth), m_nLastFireMs(0),
+		  m_recvCtx(IO_TYPE::RECV)
 	{
 		::ZeroMemory(m_buffer, sizeof(m_buffer));
 		::ZeroMemory(m_lastPos, sizeof(m_lastPos));
@@ -79,6 +99,19 @@ public:
 		outPos[0] = m_lastPos[0];
 		outPos[1] = m_lastPos[1];
 		outPos[2] = m_lastPos[2];
+	}
+
+	//체력. ★ 쓰는 쪽은 NPC 행동 스레드 하나뿐이다 (사격 판정이 거기서만 돈다).
+	float	Health()	const		{ return m_fHealth; }
+	void	SetHealth(float f)		{ m_fHealth = f; }
+
+	//되살아날 자리로 옮긴다. 다음 PlayerMove 가 올 때까지 이 자리가 서버가 아는 위치다.
+	void	Teleport(const float pos[3])
+	{
+		m_lastPos[0] = pos[0];
+		m_lastPos[1] = pos[1];
+		m_lastPos[2] = pos[2];
+		m_bHasPos = true;
 	}
 
 	bool PostRecv()
@@ -182,12 +215,44 @@ private:
 	//  완전한 패킷 한 개를 처리한다.
 	void HandlePacket(const Shared::PacketHeader *pHead, int nSize)
 	{
-		if (pHead->type != Shared::PacketType::PlayerMove) return;
-		if (nSize != (int)sizeof(Shared::PlayerMovePacket)) return;
+		switch (pHead->type)
+		{
+		case Shared::PacketType::PlayerMove:
+			if (nSize == (int)sizeof(Shared::PlayerMovePacket))
+				OnPlayerMove((const Shared::PlayerMovePacket *)pHead);
+			break;
 
-		const Shared::PlayerMovePacket *pMove =
-			(const Shared::PlayerMovePacket *)pHead;
+		case Shared::PacketType::PlayerFire:
+			if (nSize == (int)sizeof(Shared::PlayerFirePacket))
+				OnPlayerFire((const Shared::PlayerFirePacket *)pHead);
+			break;
 
+		default:
+			break;		//모르는 종류는 크기만큼 건너뛴다
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  좌클릭 한 발. ★ 여기서 판정하지 않는다 — 큐에 넣기만 한다.
+	//
+	//  연사 제한은 워커에서 건다. 조작된 클라가 한 프레임에 수백 발을 보내도
+	//  큐가 부풀지 않는다. 이 값은 이 세션만 만지므로 락이 필요 없다.
+	void OnPlayerFire(const Shared::PlayerFirePacket *pFire)
+	{
+		const ULONGLONG nNow = ::GetTickCount64();
+		const ULONGLONG nInterval = (ULONGLONG)(Shared::kFireInterval * 1000.0f);
+
+		if (m_nLastFireMs != 0 && nNow - m_nLastFireMs < nInterval)
+			return;
+
+		m_nLastFireMs = nNow;
+		QueueFire(m_nPlayerId, pFire->origin, pFire->direction);
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  좌표 한 번.
+	void OnPlayerMove(const Shared::PlayerMovePacket *pMove)
+	{
 		//★ 위치 검사 (서버 권위) — 지형 아래면 지면으로 올린 좌표를 쓴다.
 		//  고친 좌표를 저장하고 뿌리므로 NPC 추격도 다른 플레이어 화면도 서버 판정을 따른다.
 		//  보낸 당사자에게는 아직 알리지 않는다.
@@ -228,6 +293,9 @@ private:
 	float		m_lastPos[3];		//마지막으로 받은 위치
 	bool		m_bHasPos;			//한 번이라도 좌표를 보냈는가
 
+	float		m_fHealth;			//남은 체력. 쓰는 쪽은 행동 스레드 하나
+	ULONGLONG	m_nLastFireMs;		//마지막 발사 시각 (연사 제한). 이 세션의 워커만 만진다
+
 	IO_CONTEXT	m_recvCtx;
 };
 
@@ -241,6 +309,10 @@ LONG	g_nNextPlayerId = 0;						//플레이어 번호 발급기
 
 //NPC 무리. 행동 스레드 하나만 건드린다.
 srv::NpcWorld	g_npcWorld;
+
+//발사 요청 큐. IOCP 워커가 넣고 행동 스레드가 비운다.
+CRITICAL_SECTION			g_csFire;
+std::vector<FireRequest>	g_fireQueue;
 volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
 
 //지형. 시작할 때 한 번 읽고 그 뒤로는 읽기만 하므로 스레드 간에 락이 필요 없다.
@@ -424,6 +496,7 @@ void ReleaseServer(void)
 
 	::Sleep(500);
 	::DeleteCriticalSection(&g_cs);
+	::DeleteCriticalSection(&g_csFire);
 }
 
 BOOL CtrlHandler(DWORD dwType)
@@ -532,6 +605,215 @@ DWORD WINAPI ThreadComplete(LPVOID pParam)
 //  ★ 스레드를 하나만 쓴다
 //    NPC 를 건드리는 것은 이 스레드뿐이다. IOCP 작업자 스레드는 g_npcWorld 를
 //    모른다. 그래서 NPC 쪽에는 락이 없다.
+/////////////////////////////////////////////////////////////////////////
+//  발사 큐 — 워커가 넣고 행동 스레드가 통째로 가져간다.
+void QueueFire(UINT32 nShooterId, const float origin[3], const float dir[3])
+{
+	FireRequest req = {};
+	req.nShooterId = nShooterId;
+	req.origin[0] = origin[0];
+	req.origin[1] = origin[1];
+	req.origin[2] = origin[2];
+	req.dir[0] = dir[0];
+	req.dir[1] = dir[1];
+	req.dir[2] = dir[2];
+
+	::EnterCriticalSection(&g_csFire);
+	//상한을 둔다. 조작된 클라가 큐를 부풀려도 메모리가 늘지 않는다.
+	if (g_fireQueue.size() < 256)
+		g_fireQueue.push_back(req);
+	::LeaveCriticalSection(&g_csFire);
+}
+
+void TakeFires(std::vector<FireRequest> &out)
+{
+	out.clear();
+
+	::EnterCriticalSection(&g_csFire);
+	out.swap(g_fireQueue);
+	::LeaveCriticalSection(&g_csFire);
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  시작 위치 — 월드 원점 방향(0,1,0) 의 지면 위.
+//
+//  ★ 클라 스폰과 같은 규약이다: 기준구 반지름 + 지형 높이 + kGroundOffset.
+//    클라가 자기 판단으로 되살아나지 않고 이 좌표를 받아 옮겨간다(서버 권위).
+void SpawnPoint(float outPos[3])
+{
+	const double height = g_terrain.Height(0.0, 1.0, 0.0);
+	const double radius = Shared::kPlanetRadius + height + Shared::kGroundOffset;
+
+	outPos[0] = (float)Shared::kPlanetCenterX;
+	outPos[1] = (float)(Shared::kPlanetCenterY + radius);
+	outPos[2] = (float)Shared::kPlanetCenterZ;
+}
+
+void BroadcastHealth(UINT32 nPlayerId, UINT32 nAttackerId, float fHealth)
+{
+	Shared::PlayerHealthPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::PlayerHealth;
+	pkt.playerId = nPlayerId;
+	pkt.attackerId = nAttackerId;
+	pkt.health = fHealth;
+
+	SendToAll(&pkt, (int)sizeof(pkt), 0);
+}
+
+void BroadcastNeutralized(UINT32 nPlayerId, UINT32 nAttackerId,
+	const float pos[3], float fHealth)
+{
+	Shared::PlayerNeutralizedPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::PlayerNeutralized;
+	pkt.playerId = nPlayerId;
+	pkt.attackerId = nAttackerId;
+	pkt.pos[0] = pos[0];
+	pkt.pos[1] = pos[1];
+	pkt.pos[2] = pos[2];
+	pkt.health = fHealth;
+
+	SendToAll(&pkt, (int)sizeof(pkt), 0);
+}
+
+void BroadcastNpcDespawn(UINT32 nNpcId)
+{
+	Shared::NpcDespawnPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::NpcDespawn;
+	pkt.npcId = nNpcId;
+
+	SendToAll(&pkt, (int)sizeof(pkt), 0);
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  한 발을 판정한다. ★ 행동 스레드에서만 부른다.
+//
+//  순서: 쏜 사람 -> 방향·원점 검사 -> 가장 가까운 대상 -> 지형 가림 -> 피해.
+//  클라는 «누가 맞았는지» 를 말하지 않는다 (명세 18절 원칙 4).
+void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
+{
+	//1) 쏜 사람. 그 사이 나갔으면 버린다.
+	SessionPtr pShooter;
+	for (size_t i = 0; i < list.size(); ++i)
+	{
+		if (list[i]->PlayerId() == req.nShooterId) { pShooter = list[i]; break; }
+	}
+	if (!pShooter || !pShooter->HasPos()) return;
+
+	//2) 방향. 길이가 0 이면 버린다.
+	const double dx = req.dir[0], dy = req.dir[1], dz = req.dir[2];
+	const double dlen = std::sqrt(dx * dx + dy * dy + dz * dz);
+	if (dlen < 1.0e-6) return;
+
+	const Shared::Vec3 dir = { (float)(dx / dlen), (float)(dy / dlen), (float)(dz / dlen) };
+
+	//3) 원점 검사. 서버가 아는 위치에서 너무 벌어지면 서버 위치에서 쏜 것으로 한다.
+	float serverPos[3];
+	pShooter->LastPos(serverPos);
+
+	Shared::Vec3 origin = { req.origin[0], req.origin[1], req.origin[2] };
+
+	const double ox = origin.x - serverPos[0];
+	const double oy = origin.y - serverPos[1];
+	const double oz = origin.z - serverPos[2];
+
+	if (std::sqrt(ox * ox + oy * oy + oz * oz) > Shared::kMuzzleTolerance)
+	{
+		printf("[사격 보정] 플레이어 %u : 총구가 %.1fm 벗어나 서버 위치로 쏩니다\n",
+			req.nShooterId, std::sqrt(ox * ox + oy * oy + oz * oz));
+		origin.x = serverPos[0];
+		origin.y = serverPos[1];
+		origin.z = serverPos[2];
+	}
+
+	//4) 대상 — 다른 플레이어와 NPC 중 가장 가까운 것 하나.
+	bool	bHit		= false;
+	float	fBest		= Shared::kFireRange;
+	UINT32	nHitPlayer	= 0;
+	UINT32	nHitNpc		= 0;
+
+	for (size_t i = 0; i < list.size(); ++i)
+	{
+		if (list[i]->PlayerId() == req.nShooterId) continue;
+		if (!list[i]->HasPos()) continue;
+
+		float target[3];
+		list[i]->LastPos(target);
+
+		const Shared::Vec3 center = { target[0], target[1], target[2] };
+
+		float fDist = 0.0f;
+		if (!Shared::PhysicsCalculator::RaySphere(origin, dir, center,
+			Shared::kHitRadius, fBest, fDist))
+			continue;
+
+		bHit = true;
+		fBest = fDist;
+		nHitPlayer = list[i]->PlayerId();
+		nHitNpc = 0;
+	}
+
+	{
+		uint32_t nNpcId = 0;
+		float    fNpcDist = 0.0f;
+		if (g_npcWorld.Raycast(origin, dir, fBest, nNpcId, fNpcDist))
+		{
+			bHit = true;
+			fBest = fNpcDist;
+			nHitNpc = nNpcId;
+			nHitPlayer = 0;
+		}
+	}
+
+	if (!bHit) return;
+
+	//5) 지형이 막고 있으면 맞지 않는다.
+	if (Shared::PhysicsCalculator::TerrainBlocks(&g_terrain, origin, dir, fBest))
+	{
+		printf("[사격] 플레이어 %u : 지형에 막혔습니다 (%.1fm)\n", req.nShooterId, fBest);
+		return;
+	}
+
+	//6) 피해.
+	if (nHitNpc != 0)
+	{
+		if (g_npcWorld.Damage(nHitNpc, Shared::kShotDamage))
+			printf("[명중] 플레이어 %u -> NPC %u 쓰러짐 (%.1fm)\n", req.nShooterId, nHitNpc, fBest);
+		else
+			printf("[명중] 플레이어 %u -> NPC %u (%.1fm)\n", req.nShooterId, nHitNpc, fBest);
+		return;
+	}
+
+	SessionPtr pVictim;
+	for (size_t i = 0; i < list.size(); ++i)
+	{
+		if (list[i]->PlayerId() == nHitPlayer) { pVictim = list[i]; break; }
+	}
+	if (!pVictim) return;
+
+	const float fLeft = Shared::GameLogic::ApplyDamage(pVictim->Health(), Shared::kShotDamage);
+	pVictim->SetHealth(fLeft);
+	BroadcastHealth(nHitPlayer, req.nShooterId, fLeft);
+
+	printf("[명중] 플레이어 %u -> 플레이어 %u : 남은 체력 %.0f (%.1fm)\n",
+		req.nShooterId, nHitPlayer, fLeft, fBest);
+
+	if (!Shared::GameLogic::IsDown(fLeft)) return;
+
+	//★ 쓰러진 상태가 따로 없다 — 교수님 지시대로 시작 위치로 옮기고 체력을 채운다.
+	float spawn[3];
+	SpawnPoint(spawn);
+
+	pVictim->SetHealth(Shared::kMaxHealth);
+	pVictim->Teleport(spawn);
+	BroadcastNeutralized(nHitPlayer, req.nShooterId, spawn, Shared::kMaxHealth);
+
+	printf("[무력화] 플레이어 %u 가 시작 위치로 돌아갑니다 (가해 %u)\n",
+		nHitPlayer, req.nShooterId);
+}
+
 DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 {
 	const DWORD dwIntervalMs = 33;
@@ -539,6 +821,8 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 
 	std::vector<srv::PlayerView> players;
 	std::vector<srv::NpcView>    views;
+	std::vector<FireRequest>     fires;
+	std::vector<uint32_t>        despawned;
 
 	int nTicks = 0;
 
@@ -579,8 +863,24 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 				g_npcWorld.Count(), players[0].playerId);
 		}
 
-		//3) 행동 트리를 돌리고 결정대로 위치를 옮긴다.
+		//3) 행동 트리를 돌리고 결정대로 위치를 옮긴다. 쓰러진 NPC 의 재등장 시계도 여기서 돈다.
 		g_npcWorld.Tick(players, fDt);
+
+		//3-1) 이번 틱에 들어온 사격을 판정한다.
+		//     ★ 판정은 이 스레드 한 곳에서만 한다. 워커는 큐에 넣기만 했다.
+		TakeFires(fires);
+		if (!fires.empty())
+		{
+			std::vector<SessionPtr> list = SnapshotSessions();
+
+			for (size_t i = 0; i < fires.size(); ++i)
+				ResolveFire(fires[i], list);
+		}
+
+		//3-2) 쓰러진 NPC 를 알린다. 이게 없으면 클라 화면에 그대로 서 있는다.
+		g_npcWorld.TakeDespawned(despawned);
+		for (size_t i = 0; i < despawned.size(); ++i)
+			BroadcastNpcDespawn((UINT32)despawned[i]);
 
 		//4) 전원에게 뿌린다. PlayerMove 브로드캐스트와 같은 방식이다.
 		g_npcWorld.Snapshot(views);
@@ -649,6 +949,15 @@ DWORD WINAPI ThreadAcceptLoop(LPVOID pParam)
 		hello.playerId = nPlayerId;
 		pNewUser->Send(&hello, (int)sizeof(hello));
 
+		//1-1) 시작 체력. 클라는 체력 규칙을 모르고 서버가 보낸 값만 표시한다.
+		Shared::PlayerHealthPacket health = {};
+		health.header.size = (uint16_t)sizeof(health);
+		health.header.type = Shared::PacketType::PlayerHealth;
+		health.playerId = nPlayerId;
+		health.attackerId = 0;			//피해가 아니라 알림
+		health.health = pNewUser->Health();
+		pNewUser->Send(&health, (int)sizeof(health));
+
 		//2) 이미 들어와 있는 사람들의 위치를 한 명씩 보낸다.
 		//   이게 없으면 새로 들어온 사람 화면엔, 기존 플레이어가 "움직일 때까지"
 		//   아무도 안 보인다. 가만히 서 있는 사람은 영영 안 보인다.
@@ -701,6 +1010,7 @@ int main()
 	}
 
 	::InitializeCriticalSection(&g_cs);
+	::InitializeCriticalSection(&g_csFire);
 
 	if (::SetConsoleCtrlHandler(
 			(PHANDLER_ROUTINE)CtrlHandler, TRUE) == FALSE)

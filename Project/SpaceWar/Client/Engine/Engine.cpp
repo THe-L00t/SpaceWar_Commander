@@ -18,6 +18,14 @@ namespace
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
 
+	// ── 사격 효과 (임시) ───────────────────────────────────
+	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
+	//  맞은 표시·총구 화염·소리는 없다.
+	constexpr float  kTracerLife = 0.06f;     // 보이는 시간 (s)
+	constexpr float  kTracerStart = 1.5f;     // 몸통 밖에서 시작 (m)
+	constexpr float  kTracerLength = 120.0f;  // 길이 (m) — 지평선이 125m 다
+	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
+
 	// ── 서버 전송 주기 ──────────────────────────────────────
 	//  렌더는 144fps 로 돌아도 좌표는 1/30초에 한 번만 보낸다.
 	//  매 프레임 보내면 대역폭만 낭비되고 서버 처리량이 프레임률에 끌려간다.
@@ -61,6 +69,13 @@ namespace
 		}
 		LocalFree(argv);
 		return o;
+	}
+
+	// 쓰지 않는 노드를 화면 밖으로 치워 두는 변환.
+	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
+	DirectX::XMMATRIX ParkedTransform()
+	{
+		return DirectX::XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
 	}
 
 	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
@@ -155,6 +170,8 @@ namespace swc {
 		// NPC 는 붉게 칠해 플레이어(주황)와 눈으로 구분한다.
 		MeshData npcData = MakeCube(2.0f, { 0.85f, 0.15f, 0.15f });
 		MeshData noseData = MakeBox(0.5f, 0.5f, 1.0f, { 1.00f, 0.92f, 0.35f });
+		// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
+		MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
 
 		const MeshHandle groundMesh = renderer.CreateMesh(
 			groundData.vertices.data(), groundData.vertices.size(),
@@ -168,6 +185,9 @@ namespace swc {
 		npcMesh = renderer.CreateMesh(
 			npcData.vertices.data(), npcData.vertices.size(),
 			npcData.indices.data(), npcData.indices.size());
+		tracerMesh = renderer.CreateMesh(
+			tracerData.vertices.data(), tracerData.vertices.size(),
+			tracerData.indices.data(), tracerData.indices.size());
 
 		scene.AddNode(kInvalidNode, groundMesh, 0);
 		player = scene.AddNode(kInvalidNode, cubeMesh, 0);
@@ -175,6 +195,15 @@ namespace swc {
 		// 몸통이 어디를 보는지 눈으로 확인하려고 앞쪽에 자식 노드로 붙인다.
 		const NodeHandle nose = scene.AddNode(player, noseMesh, 0);
 		scene.SetLocalTransform(nose, XMMatrixTranslation(0.0f, 0.0f, 1.3f));
+
+		// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
+		freeTracerNodes.reserve(kTracerPool);
+		for (size_t i = 0; i < kTracerPool; ++i)
+		{
+			const NodeHandle tracer = scene.AddNode(kInvalidNode, tracerMesh, 0);
+			scene.SetLocalTransform(tracer, ParkedTransform());
+			freeTracerNodes.push_back(tracer);
+		}
 
 		g_input = &input;
 		input.Initialize(hwnd);
@@ -218,6 +247,7 @@ namespace swc {
 
 			HandleSystemKeys();
 			UpdatePlayer(dt);
+			UpdateFire(dt);
 			UpdateNetwork(dt);
 			RenderFrame();
 			UpdateTitle(dt);
@@ -250,8 +280,13 @@ namespace swc {
 	void Engine::HandleSystemKeys()
 	{
 		// ESC 로 마우스 놓기 / 다시 클릭하면 잡기
+		suppressFire = false;
 		if (input.WasPressed(VK_ESCAPE)) input.SetCaptured(false);
-		else if (!input.Captured() && input.MouseDown(0)) input.SetCaptured(true);
+		else if (!input.Captured() && input.MouseDown(0))
+		{
+			input.SetCaptured(true);
+			suppressFire = true;   // 이 클릭은 «잡기» 였다. 총알이 나가면 안 된다
+		}
 
 		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
 		if (input.WasPressed('V'))
@@ -291,6 +326,92 @@ namespace swc {
 	}
 
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
+	//   입력은 Class Bridge 를 거쳐야 하고(6.6.3), 이펙트는 표시 계층으로 가야 한다.
+	//
+	//  ★ 누른 «순간» 에만 한 발 나간다. 누르고 있어도 연사되지 않는다.
+	//  ★ 클라는 «어디서 어디로» 만 보낸다. 맞았는지는 서버가 정한다 (명세 18절 원칙 4).
+	//    그래서 예광탄은 «맞은 곳» 이 아니라 고정 길이로 그린다. 서버 판정과 무관하다.
+	//    총구는 지금 몸통 중심이다. 1인칭으로 바꾸면 이 원점만 눈 위치로 옮기면 된다.
+	void Engine::UpdateFire(float dt)
+	{
+		// 1) 보이는 예광탄의 수명을 줄이고, 끝난 것은 치운다.
+		for (size_t i = 0; i < tracers.size(); )
+		{
+			tracers[i].life -= dt;
+			if (tracers[i].life > 0.0f) { ++i; continue; }
+
+			scene.SetLocalTransform(tracers[i].node, ParkedTransform());
+			freeTracerNodes.push_back(tracers[i].node);
+
+			tracers[i] = tracers.back();
+			tracers.pop_back();
+		}
+
+		// 2) 이번 프레임에 쐈는가.
+		if (!input.Captured() || suppressFire || !input.MouseWasPressed(0))
+			return;
+
+		const Vec3d muzzle = controller.Position();
+		const Vec3d aim = camera.LookDirection();
+
+		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
+		if (network.Connected())
+		{
+			const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
+			const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
+			network.SendFire(origin, dir);
+		}
+
+		SpawnTracer(muzzle, aim);
+	}
+
+	// 발사선 위에 상자를 놓는다. +Z 를 조준 방향에 맞추고 Z 만 길이만큼 늘린다.
+	void Engine::SpawnTracer(const Vec3d& muzzle, const Vec3d& aim)
+	{
+		if (tracerMesh == kInvalidMesh) return;
+
+		NodeHandle node = kInvalidNode;
+
+		if (!freeTracerNodes.empty())
+		{
+			node = freeTracerNodes.back();
+			freeTracerNodes.pop_back();
+		}
+		else if (!tracers.empty())
+		{
+			// 풀이 다 차 있다 = 가장 오래된 것을 빼서 다시 쓴다.
+			node = tracers.front().node;
+			tracers.erase(tracers.begin());
+		}
+		else
+		{
+			return;
+		}
+
+		// 조준 방향을 Z 축으로 하는 기저. up 과 나란해질 일은 없다(pitch 가 66도로 묶여 있다).
+		const Vec3d zAxis = aim;
+		const Vec3d xAxis = Normalize(Cross(controller.Up(), zAxis));
+		const Vec3d yAxis = Cross(zAxis, xAxis);
+
+		const Vec3d center = muzzle + aim * (double(kTracerStart) + double(kTracerLength) * 0.5);
+
+		XMMATRIX m;
+		m.r[0] = XMVectorSet(float(xAxis.x), float(xAxis.y), float(xAxis.z), 0.0f);
+		m.r[1] = XMVectorSet(float(yAxis.x), float(yAxis.y), float(yAxis.z), 0.0f);
+		m.r[2] = XMVectorSet(float(zAxis.x) * kTracerLength,
+			float(zAxis.y) * kTracerLength,
+			float(zAxis.z) * kTracerLength, 0.0f);
+		m.r[3] = XMVectorSet(float(center.x), float(center.y), float(center.z), 1.0f);
+
+		scene.SetLocalTransform(node, m);
+
+		Tracer t;
+		t.node = node;
+		t.life = kTracerLife;
+		tracers.push_back(t);
+	}
+
+	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
 	//   송신은 Class Bridge → Network(9절), 수신은 Network → State Manager → OtherPlayer · NPC(6.13) 로 옮길 대상이다.
 	void Engine::UpdateNetwork(float dt)
 	{
@@ -310,8 +431,18 @@ namespace swc {
 		//서버가 뿌린 다른 플레이어의 좌표를 받는다. 논블로킹이라 즉시 돌아온다.
 		network.Poll();
 
-		// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
-		const XMMATRIX parkedTransform = XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
+		// ── 리스폰 ──────────────────────────────────────────
+		//  ★ 클라가 스스로 되살아나지 않는다. 체력이 0 인지도 서버가 판정하고,
+		//    돌아갈 좌표도 서버가 보낸 것을 그대로 쓴다 (명세 18절 원칙 4).
+		float respawn[3];
+		if (network.TakeRespawn(respawn))
+		{
+			controller.Spawn(Vec3d(double(respawn[0]), double(respawn[1]), double(respawn[2])),
+				controller.Facing());
+			camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+		}
+
+		const XMMATRIX parkedTransform = ParkedTransform();
 
 		// ── 원격 플레이어 노드 갱신 ─────────────────────
 		//  ★ 노드를 지우지 않고 재사용한다
@@ -448,12 +579,20 @@ namespace swc {
 		const double distFromSpawn = Length(p);
 
 		// 네트워크 상태 — 보낸 수 / 에코 받은 수 / 마지막 에코 좌표
-		wchar_t netText[200];
+		wchar_t netText[240];
 		if (network.Connected())
 		{
+			// 체력은 서버가 보내준 값만 쓴다. 아직 못 받았으면 물음표.
+			wchar_t healthText[24];
+			if (network.MyHealth() >= 0.0f)
+				swprintf_s(healthText, L"%.0f", network.MyHealth());
+			else
+				swprintf_s(healthText, L"?");
+
 			swprintf_s(netText,
-				L"나=%u  송신 %u  수신 %u  다른플레이어 %u명  NPC %u마리",
-				network.MyId(), network.SentCount(),
+				L"나=%u  체력 %s  피격 %u  송신 %u  수신 %u  다른플레이어 %u명  NPC %u마리",
+				network.MyId(), healthText, network.HitCount(),
+				network.SentCount(),
 				network.EchoCount(), network.RemoteCount(),
 				network.NpcCount());
 		}

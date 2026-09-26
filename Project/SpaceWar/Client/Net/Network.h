@@ -14,6 +14,9 @@ namespace Shared {
 	struct PlayerMovePacket;
 	struct PlayerLeavePacket;
 	struct NpcStatePacket;
+	struct PlayerHealthPacket;
+	struct PlayerNeutralizedPacket;
+	struct NpcDespawnPacket;
 }
 
 // ============================================================
@@ -71,6 +74,10 @@ namespace swc {
 		//   좌표를 Shared::PlayerMovePacket 규격으로 담아 보낸다.
 		void SendToServer(float x, float y, float z);
 
+		// ★ 좌클릭 한 발. 판정은 서버가 한다 (명세 18절 원칙 4).
+		//   «어디서 어디로» 만 보낸다. 누가 맞았는지는 말하지 않는다.
+		void SendFire(const float origin[3], const float direction[3]);
+
 		// 서버가 보낸 것을 받아 해석한다. 매 프레임 호출한다.
 		void Poll();
 
@@ -86,6 +93,17 @@ namespace swc {
 		// ★ 지금 그려야 할 NPC 목록을 채운다. 매 프레임 호출한다.
 		//   원격 플레이어와 같은 시간 보간을 쓴다.
 		void Npcs(std::vector<NpcView>& out) const;
+
+		// ── 전투 ────────────────────────────────────────────
+		//  서버가 보내준 내 체력. 아직 못 받았으면 음수.
+		float MyHealth() const { return myHealth; }
+
+		// 서버가 «시작 위치로 돌아가라» 고 했는가. 한 번 가져가면 지워진다.
+		// ★ 클라가 스스로 되살아나지 않는다. 좌표도 서버가 준 것을 그대로 쓴다.
+		bool TakeRespawn(float outPos[3]);
+
+		// 마지막으로 맞은 순간부터 흐른 시간을 재려고 둔 피격 횟수 (표시용).
+		unsigned HitCount() const { return nHits; }
 
 		// 확인용 통계
 		unsigned SentCount() const { return nSent; }
@@ -107,6 +125,9 @@ namespace swc {
 			bool   hasPrev;
 		};
 
+		// 논블로킹 소켓이라 부분 송신이 나올 수 있다. 다 보내면 true.
+		bool SendRaw(const void* data, int size);
+
 		static void PushSnapshot(Remote&, const float pos[3]);
 		static void SampleAt(const Remote&, double renderTime, float out[3]);
 
@@ -115,6 +136,9 @@ namespace swc {
 		void OnPlayerMove(const Shared::PlayerMovePacket*);
 		void OnNpcState(const Shared::NpcStatePacket*);
 		void OnPlayerLeave(const Shared::PlayerLeavePacket*);
+		void OnPlayerHealth(const Shared::PlayerHealthPacket*);
+		void OnPlayerNeutralized(const Shared::PlayerNeutralizedPacket*);
+		void OnNpcDespawn(const Shared::NpcDespawnPacket*);
 
 		SOCKET sock = INVALID_SOCKET;
 		bool   connected = false;
@@ -128,6 +152,12 @@ namespace swc {
 		float    lastEcho[3] = { 0.0f, 0.0f, 0.0f };
 
 		uint32_t myId = 0;		// 서버가 알려준 내 번호
+
+		// ── 전투 ────────────────────────────────────────────
+		float    myHealth = -1.0f;      // 서버가 알려준 내 체력. 음수 = 아직 모름
+		unsigned nHits = 0;             // 내가 맞은 횟수 (표시용)
+		bool     hasRespawn = false;    // 되살아날 자리를 받았는가
+		float    respawnPos[3] = { 0.0f, 0.0f, 0.0f };
 
 		std::unordered_map<uint32_t, Remote> remotes;
 
