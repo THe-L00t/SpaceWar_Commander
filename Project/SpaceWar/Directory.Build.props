@@ -2,8 +2,28 @@
   <!-- Applies to every project under this folder: Client / Server / Shared -->
   <ItemDefinitionGroup>
     <ClCompile>
-      <!-- Read source files as UTF-8 (fixes C4819 and Korean-comment parse errors) -->
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <!--
+        소스 파일은 UTF-8 로 읽고, 좁은 문자열 리터럴은 CP949 로 넣는다.
+
+        ★ 왜 /utf-8 을 쓰면 안 되는가
+          /utf-8 은 "/source-charset:utf-8 /execution-charset:utf-8" 의 줄임이다.
+          소스를 UTF-8 로 읽는 것까지는 맞지만, 실행 문자셋까지 UTF-8 이 되면
+          exe 가 UTF-8 바이트를 뱉는다.
+          한국어 윈도우의 콘솔 기본 코드페이지는 949 이므로,
+          서버 콘솔의 한글이 전부 깨져 보인다.
+            예) "*** 좌표서버를 시작합니다!" -> "*** 醫뚰몴?쒕쾭瑜??쒖옉?⑸땲??"
+
+        ★ 그래서 둘을 갈라 지정한다
+          source-charset:utf-8   -> 소스는 UTF-8 로 읽는다 (C4819 경고, 한글 주석 파싱 오류 방지)
+          execution-charset:.949 -> 리터럴은 CP949 로 넣는다 (콘솔에서 정상 표시)
+
+        ★ 주의
+          이 설정이면 로그 파일로 리다이렉트한 출력도 CP949 다.
+          메모장으로 열면 정상이고, UTF-8 로 읽으면 깨진다.
+          UTF-8 로 통일하고 싶다면 이 값을 .65001 로 바꾸고
+          콘솔 프로그램 시작 시 SetConsoleOutputCP(CP_UTF8) 을 호출하면 된다.
+      -->
+      <AdditionalOptions>/source-charset:utf-8 /execution-charset:.949 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
 </Project>

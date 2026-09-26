@@ -303,8 +303,17 @@ namespace swc {
 			impl->status = L"D3D12 디바이스 생성 실패.";
 			return false;
 		}
-		impl->rtSupported = pick.raytracing;
-		impl->status = pick.name + (pick.raytracing ? L"  [DXR Tier 1.1]" : L"  [RT 미지원 — 래스터만]");
+		// kEnableRaytracing 이 false 면 장치가 지원해도 RT 경로를 전부 끈다.
+		// 이 한 줄이 BLAS·TLAS 빌드, 셰이더의 RayQuery, TLAS 루트 SRV 를 모두 막는다.
+		impl->rtSupported = pick.raytracing && kEnableRaytracing;
+
+		impl->status = pick.name;
+		if (impl->rtSupported)
+			impl->status += L"  [DXR Tier 1.1]";
+		else if (pick.raytracing)
+			impl->status += L"  [DXR 지원 — 임시 비활성, 래스터만]";
+		else
+			impl->status += L"  [RT 미지원 — 래스터만]";
 
 		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -866,7 +875,7 @@ namespace swc {
 		impl->commandList->SetDescriptorHeaps(1, heaps);
 		impl->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		impl->commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress());
-		if (impl->rtSupported)
+		if (impl->rtSupported && impl->accel.InstanceCount() > 0)
 			impl->commandList->SetGraphicsRootShaderResourceView(4, impl->accel.TlasAddress());
 
 		for (const RenderItem& it : items)

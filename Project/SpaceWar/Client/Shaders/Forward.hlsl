@@ -9,7 +9,7 @@
 //
 //  레이 발사는 임계값이 아니라 확률(러시안 룰렛)로 한다 → 화면에 경계선이 없다.
 //
-//  ※ 머티리얼 시스템이 아직 없다. roughness/metallic 은 아래 자리표시자 상수다.
+//  FBX 재질과 텍스처를 사용하며, 지형/더미는 기본 재질과 정점 색을 사용한다.
 // ============================================================
 
 #ifndef RT_SUPPORTED
@@ -32,17 +32,27 @@ cbuffer FrameCB : register(b0)
 cbuffer ObjectCB : register(b1)
 {
 	float4x4 gWorld;
+	float4x4 gNormalWorld;
 };
+
+// GRenderer.cpp의 MaterialConstants와 순서/크기를 맞춘다.
+cbuffer MaterialCB : register(b2)
+{
+	float4 gBaseColor;
+	float3 gEmissive; float gRoughness;
+	float gMetallic; uint gHasNormalMap; float2 _materialPad;
+};
+
+Texture2D<float4> gBaseColorTexture : register(t1);
+Texture2D<float4> gNormalTexture : register(t2);
+Texture2D<float4> gRoughnessTexture : register(t3);
+Texture2D<float4> gMetallicTexture : register(t4);
+Texture2D<float4> gEmissiveTexture : register(t5);
+SamplerState gMaterialSampler : register(s0);
 
 #if RT_SUPPORTED
 RaytracingAccelerationStructure gScene : register(t0);
 #endif
-
-// ── 머티리얼 자리표시자 (머티리얼 시스템 도입 시 제거) ──────────
-//   metallic 0 = 유전체. 정면은 확산, grazing 에서 거울 — 젖은 바닥 효과.
-//   1.0 으로 바꾸면 금속(확산 없음)이 되고 F(p) 예산 신호도 활성화된다.
-static const float kRoughness = 0.10f;
-static const float kMetallic  = 0.00f;
 
 // 기존 (albedo * (NdotL*0.85 + 0.15)) 를 그대로 재현하는 값.
 // 한 번에 하나만 바꾼다 — 새로 생기는 건 태양 하이라이트뿐이어야 검증이 쉽다.
@@ -56,6 +66,8 @@ struct VIn
 	float3 pos : POSITION;
 	float3 nrm : NORMAL;
 	float3 col : COLOR;
+	float2 uv  : TEXCOORD0;
+	float4 tan : TANGENT;
 };
 
 struct VOut
@@ -64,6 +76,8 @@ struct VOut
 	float3 world : WORLDPOS;
 	float3 nrm   : NORMAL;
 	float3 col   : COLOR;
+	float2 uv    : TEXCOORD0;
+	float4 tan   : TANGENT;
 };
 
 VOut VSMain(VIn i)
@@ -72,8 +86,12 @@ VOut VSMain(VIn i)
 	float4 wp = mul(float4(i.pos, 1.0), gWorld);
 	o.world = wp.xyz;
 	o.pos   = mul(wp, gViewProj);
-	o.nrm   = mul(float4(i.nrm, 0.0), gWorld).xyz;
+	o.nrm   = mul(float4(i.nrm, 0.0), gNormalWorld).xyz;
 	o.col   = i.col;
+	o.uv    = i.uv;
+	o.tan.xyz = mul(float4(i.tan.xyz, 0.0), gWorld).xyz;
+	// 반전 스케일이 있는 노드도 탄젠트 공간의 방향을 유지한다.
+	o.tan.w = i.tan.w * (determinant((float3x3)gWorld) < 0.0 ? -1.0 : 1.0);
 	return o;
 }
 
@@ -135,7 +153,7 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 
 	if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
 	{
-		// 머티리얼이 없으므로 거리 감쇠만 돌려준다.
+		// 히트 지점의 재질 조회는 아직 없으므로 거리 감쇠만 돌려준다.
 		float d = saturate(q.CommittedRayT() / 60.0);
 		return lerp(float3(0.32, 0.32, 0.36), float3(0.02, 0.02, 0.03), d);
 	}
@@ -145,12 +163,27 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 
 float4 PSMain(VOut i) : SV_TARGET
 {
+	float4 baseColor = float4(i.col, 1.0) * gBaseColor * gBaseColorTexture.Sample(gMaterialSampler, i.uv);
+	float3 albedo = baseColor.rgb;
+	float roughness = clamp(gRoughness * gRoughnessTexture.Sample(gMaterialSampler, i.uv).r, 0.045, 1.0);
+	float metallic = saturate(gMetallic * gMetallicTexture.Sample(gMaterialSampler, i.uv).r);
+	float3 emissive = gEmissive * gEmissiveTexture.Sample(gMaterialSampler, i.uv).rgb;
 	float3 N = normalize(i.nrm);
+	if (gHasNormalMap != 0)
+	{
+		float3 T = i.tan.xyz - N * dot(N, i.tan.xyz);
+		if (dot(T, T) < 1e-8)
+			T = cross(abs(N.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0), N);
+		T = normalize(T);
+		float3 B = cross(N, T) * (i.tan.w < 0.0 ? -1.0 : 1.0);
+		float3 sampledNormal = gNormalTexture.Sample(gMaterialSampler, i.uv).xyz * 2.0 - 1.0;
+		N = normalize(T * sampledNormal.x + B * sampledNormal.y + N * sampledNormal.z);
+	}
 	float3 V = normalize(gEyePos - i.world);
 	float  NdotV = saturate(dot(N, V));
 	float  grazing = pow(1.0 - NdotV, 5.0);
 
-	float3 F0 = lerp(float3(0.04, 0.04, 0.04), i.col, kMetallic);
+	float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
 	// ① 태양 (방향광) — 분석적. 델타 광원이라 적분이 닫힌 형태다.
 	float3 L = normalize(-gSunDir);
@@ -160,8 +193,8 @@ float4 PSMain(VOut i) : SV_TARGET
 	float  VdotH = saturate(dot(V, H));
 
 	float3 F_dir   = FresnelSchlick(F0, VdotH);          // ★ 반각 기준
-	float3 specSun = SpecularGGX(NdotL, NdotV, NdotH, kRoughness, F_dir) * NdotL * kSunColor;
-	float3 diffSun = (1.0 - F_dir) * (1.0 - kMetallic) * i.col * NdotL * kSunColor;
+	float3 specSun = SpecularGGX(NdotL, NdotV, NdotH, roughness, F_dir) * NdotL * kSunColor;
+	float3 diffSun = (1.0 - F_dir) * (1.0 - metallic) * albedo * NdotL * kSunColor;
 
 	// ② 환경 프레넬 — 완전 거울이므로 반각 H = N, 즉 N·V 기준
 	float3 F  = FresnelSchlick(F0, NdotV);
@@ -170,10 +203,10 @@ float4 PSMain(VOut i) : SV_TARGET
 	// 앰비언트는 반구 전체에서 오는 빛이라 각도 의존 F 로 나누면 안 된다.
 	// (1-F) 로 나누면 grazing 에서 확산이 0이 되어 먼 지형이 색을 잃는다.
 	float3 F_avg   = F0 + (1.0 - F0) * 0.05;
-	float3 diffAmb = (1.0 - F_avg) * (1.0 - kMetallic) * i.col * kAmbient;
+	float3 diffAmb = (1.0 - F_avg) * (1.0 - metallic) * albedo * kAmbient;
 
 	// ③ FGPS F(p) — 예산 신호. 그려지는 값은 건드리지 않고 확률만 밀어올린다.
-	float fp = grazing * saturate(1.0 - kRoughness) * saturate(kMetallic);
+	float fp = grazing * saturate(1.0 - roughness) * metallic;
 
 	// ④ 러시안 룰렛 — 임계값 대신 확률로 발사하므로 화면에 경계선이 생기지 않는다.
 	//    w >= knee 구간은 p=1 (확정 발사, 노이즈 0).
@@ -200,12 +233,12 @@ float4 PSMain(VOut i) : SV_TARGET
 	//    태양과 환경은 같은 정반사 로브로 들어오는 다른 빛이므로 서로를 약화시키지 않는다.
 	//    ★ 확산 몫(kd)이 정반사에 곱해지지 않는다. 곱하면 프레넬 분배를 두 번 적용하는 셈이다.
 	float3 specEnv = F * reflection;
-	float3 color = diffSun + specSun + diffAmb + specEnv;
+	float3 color = diffSun + specSun + diffAmb + specEnv + emissive;
 	//             └─ 확산 ─┘  └──── 정반사 (둘 다 F 를 품음) ────┘
 
 	switch (gDebugMode)
 	{
-	case 1: color = i.col;               break;   // albedo
+	case 1: color = albedo;              break;   // albedo
 	case 2: color = N * 0.5 + 0.5;       break;   // world normal
 	case 3: color = fp.xxx;              break;   // F(p) 예산 신호
 	case 4: color = F;                   break;   // 환경 프레넬 F_env (반사 배분 비율)
@@ -218,5 +251,5 @@ float4 PSMain(VOut i) : SV_TARGET
 	case 9: color = specEnv;             break;   // 환경 반사 몫만 (F 곱한 뒤)
 	}
 
-	return float4(color, 1.0);
+	return float4(color, baseColor.a);
 }

@@ -77,6 +77,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="AI\NpcWorld.cpp" />
+    <ClCompile Include="AI\HasTargetCondition.cpp" />
+    <ClCompile Include="AI\ChaseTargetAction.cpp" />
+    <ClCompile Include="AI\IdleAction.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AI\NpcWorld.h" />
+    <ClInclude Include="AI\HasTargetCondition.h" />
+    <ClInclude Include="AI\ChaseTargetAction.h" />
+    <ClInclude Include="AI\IdleAction.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
