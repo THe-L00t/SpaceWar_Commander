@@ -25,6 +25,10 @@ namespace swc {
 		const Vec3d& Forward() const { return forward; }   // 접평면 전방 (이동 기준축)
 		Vec3d Right() const { return Cross(up, forward); }
 
+		// 화면 한가운데가 향하는 방향 (조준선). 사격이 이걸 쓴다.
+		// Update() 가 eye -> focus 로 쓰는 것과 같은 식이다. pitch 가 + 면 내려다본다.
+		Vec3d LookDirection() const;
+
 		const DirectX::XMFLOAT4X4& ViewProj() const { return viewProj; }
 		const DirectX::XMFLOAT3& EyePosition() const { return eyePosition; }
 

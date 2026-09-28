@@ -1,9 +1,9 @@
-#include "Input.h"
+#include "InputManager.h"
 #include <cstring>
 
 namespace swc {
 
-	bool Input::Initialize(HWND h)
+	bool InputManager::Initialize(HWND h)
 	{
 		hwnd = h;
 
@@ -15,7 +15,7 @@ namespace swc {
 		return RegisterRawInputDevices(&rid, 1, sizeof(rid)) == TRUE;
 	}
 
-	bool Input::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
+	bool InputManager::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 		switch (msg)
 		{
@@ -71,14 +71,15 @@ namespace swc {
 		return false;
 	}
 
-	void Input::BeginFrame()
+	void InputManager::BeginFrame()
 	{
 		memcpy(prevKeys, keys, sizeof(keys));
+		memcpy(prevMouseButtons, mouseButtons, sizeof(mouseButtons));
 		mouseDeltaX = 0.0f;
 		mouseDeltaY = 0.0f;
 	}
 
-	void Input::SetCaptured(bool c)
+	void InputManager::SetCaptured(bool c)
 	{
 		if (captured == c) return;
 		captured = c;
@@ -98,15 +99,16 @@ namespace swc {
 		mouseDeltaY = 0.0f;
 	}
 
-	void Input::Clear()
+	void InputManager::Clear()
 	{
 		memset(keys, 0, sizeof(keys));
 		memset(mouseButtons, 0, sizeof(mouseButtons));
+		memset(prevMouseButtons, 0, sizeof(prevMouseButtons));
 		mouseDeltaX = 0.0f;
 		mouseDeltaY = 0.0f;
 	}
 
-	void Input::ClipToWindow()
+	void InputManager::ClipToWindow()
 	{
 		if (!hwnd) return;
 
