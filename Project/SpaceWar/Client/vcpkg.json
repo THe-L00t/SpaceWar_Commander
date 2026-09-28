@@ -1,0 +1,13 @@
+{
+  "builtin-baseline": "e03dc9b29710050cd1018bc5674688108658d327",
+  "dependencies": [
+    "assimp"
+  ],
+  "overrides": [
+    {
+      "name": "assimp",
+      "version": "6.0.4",
+      "port-version": 2
+    }
+  ]
+}

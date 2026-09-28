@@ -10,7 +10,7 @@ namespace swc {
 	class Scene;
 
 	// GPU 메시/재질은 한 번 만들고 인스턴스별로 Scene 노드만 추가한다.
-	// FBX SDK 객체나 ResourceManager 내부 데이터의 포인터를 보관하지 않는다.
+	// 모델 로더 객체나 ResourceManager 내부 데이터의 포인터를 보관하지 않는다.
 	class Model
 	{
 	public:

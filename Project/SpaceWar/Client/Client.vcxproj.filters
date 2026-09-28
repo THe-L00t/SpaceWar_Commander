@@ -60,7 +60,7 @@
     <Filter Include="클래스 목록\Model">
       <UniqueIdentifier>{d415aab4-efdf-48c7-9f19-fb61250262d1}</UniqueIdentifier>
     </Filter>
-    <Filter Include="클래스 목록\FbxModelLoader">
+    <Filter Include="클래스 목록\AssimpModelLoader">
       <UniqueIdentifier>{4ab7a9b8-cdb9-48ac-a597-4d871028d4aa}</UniqueIdentifier>
     </Filter>
     <Filter Include="클래스 목록\TextureLoader">
@@ -191,8 +191,8 @@
     <ClCompile Include="Model.cpp">
       <Filter>클래스 목록\Model</Filter>
     </ClCompile>
-    <ClCompile Include="Resource\FbxModelLoader.cpp">
-      <Filter>클래스 목록\FbxModelLoader</Filter>
+    <ClCompile Include="Resource\AssimpModelLoader.cpp">
+      <Filter>클래스 목록\AssimpModelLoader</Filter>
     </ClCompile>
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
@@ -202,8 +202,8 @@
     <ClInclude Include="Model.h">
       <Filter>클래스 목록\Model</Filter>
     </ClInclude>
-    <ClInclude Include="Resource\FbxModelLoader.h">
-      <Filter>클래스 목록\FbxModelLoader</Filter>
+    <ClInclude Include="Resource\AssimpModelLoader.h">
+      <Filter>클래스 목록\AssimpModelLoader</Filter>
     </ClInclude>
     <ClInclude Include="Resource\TextureLoader.h">
       <Filter>클래스 목록\TextureLoader</Filter>
@@ -216,13 +216,22 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="FbxSdk.props">
+    <None Include="Assimp.props">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="FbxSdk.local.props.example">
+    <None Include="Assimp.targets">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="FBX_SETUP.md">
+    <None Include="vcpkg.json">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="vcpkg-configuration.json">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="vcpkg-triplets\x64-windows.cmake">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="ASSIMP_SETUP.md">
       <Filter>설정 및 리소스</Filter>
     </None>
     <None Include="..\..\assets\model\*.fbx">

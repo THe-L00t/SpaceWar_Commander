@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Microsoft.Cpp.props보다 먼저 읽어 Client의 의존성 설정을 확정한다. -->
+  <PropertyGroup>
+    <VcpkgRoot Condition="'$(VCPKG_ROOT)' != ''">$(VCPKG_ROOT)</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == '' and Exists('$(VsInstallRoot)\VC\vcpkg\scripts\buildsystems\msbuild\vcpkg.props')">$(VsInstallRoot)\VC\vcpkg</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == '' and Exists('$(VSInstallDir)\VC\vcpkg\scripts\buildsystems\msbuild\vcpkg.props')">$(VSInstallDir)\VC\vcpkg</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == '' and Exists('$(VCInstallDir)\vcpkg\scripts\buildsystems\msbuild\vcpkg.props')">$(VCInstallDir)\vcpkg</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == '' and Exists('$(VCTargetsPath)\..\..\..\..\VC\vcpkg\scripts\buildsystems\msbuild\vcpkg.props')">$([System.IO.Path]::GetFullPath('$(VCTargetsPath)\..\..\..\..\VC\vcpkg'))</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' != '' and !HasTrailingSlash('$(VcpkgRoot)')">$(VcpkgRoot)\</VcpkgRoot>
+
+    <!-- C++ 공통 props/targets의 공식 확장 지점을 사용해 사용자 전역 연동과 중복 import하지 않는다. -->
+    <VCLibPackagePath Condition="'$(VcpkgRoot)' != ''">$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg</VCLibPackagePath>
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgManifestInstall>true</VcpkgManifestInstall>
+    <VcpkgManifestInstall Condition="'$(DesignTimeBuild)' == 'true'">false</VcpkgManifestInstall>
+    <VcpkgManifestRoot>$(MSBuildThisFileDirectory)</VcpkgManifestRoot>
+
+    <!-- 의존성 작업 경로는 OneDrive 밖에 두고, 프로젝트 경로별로 구분한다. -->
+    <AssimpDependencyRoot Condition="'$(AssimpDependencyRoot)' == ''">$(LOCALAPPDATA)\SpaceWar\vcpkg\$([MSBuild]::StableStringHash('$(MSBuildThisFileDirectory)'))</AssimpDependencyRoot>
+    <AssimpDependencyRoot>$([System.IO.Path]::GetFullPath('$(AssimpDependencyRoot)'))</AssimpDependencyRoot>
+    <VcpkgInstalledDir Condition="'$(VcpkgInstalledDir)' == ''">$(AssimpDependencyRoot)\installed\</VcpkgInstalledDir>
+    <VcpkgAdditionalInstallOptions>$(VcpkgAdditionalInstallOptions) &quot;--x-buildtrees-root=$(AssimpDependencyRoot)\buildtrees&quot; &quot;--x-packages-root=$(AssimpDependencyRoot)\packages&quot;</VcpkgAdditionalInstallOptions>
+
+    <VcpkgTriplet>x64-windows</VcpkgTriplet>
+    <VcpkgHostTriplet>x64-windows</VcpkgHostTriplet>
+    <VcpkgUseStatic>false</VcpkgUseStatic>
+    <VcpkgUseMD>true</VcpkgUseMD>
+    <VcpkgAutoLink>true</VcpkgAutoLink>
+    <VcpkgApplocalDeps>true</VcpkgApplocalDeps>
+    <!-- 설치가 BUILD_FAILED만 남기고 끝나는 경우 하위 프로세스의 종료 코드도 기록한다. -->
+    <AssimpDependencyDiagnostics Condition="'$(AssimpDependencyDiagnostics)' == ''">true</AssimpDependencyDiagnostics>
+    <VcpkgAdditionalInstallOptions Condition="'$(AssimpDependencyDiagnostics)' == 'true'">$(VcpkgAdditionalInstallOptions) --debug</VcpkgAdditionalInstallOptions>
+    <VcpkgConfiguration Condition="'$(Configuration)' == 'Debug'">Debug</VcpkgConfiguration>
+    <VcpkgConfiguration Condition="'$(Configuration)' == 'Release'">Release</VcpkgConfiguration>
+  </PropertyGroup>
+</Project>

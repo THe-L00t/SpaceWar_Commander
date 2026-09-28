@@ -1,2 +1,2 @@
-# PC마다 다른 Autodesk SDK 설치 경로
-FbxSdk.local.props
+# 첫 빌드에서 복원하는 모델 라이브러리와 전이 의존성
+vcpkg_installed/

@@ -1,6 +1,6 @@
 #include "ResourceManager.h"
 #include "HeightmapLoader.h"
-#include "FbxModelLoader.h"
+#include "AssimpModelLoader.h"
 #include <filesystem>
 #include <utility>
 
@@ -57,7 +57,7 @@ namespace swc {
 			return it->second;
 
 		auto data = std::make_unique<ModelData>();
-		FbxModelLoader loader;
+		AssimpModelLoader loader;
 		if (!loader.Load(key.c_str(), *data, lastError))
 			return {};
 

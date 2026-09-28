@@ -15,7 +15,7 @@ namespace swc {
 	inline constexpr size_t kMaterialTextureCount = static_cast<size_t>(TextureSlot::Count);
 	inline constexpr uint32_t kInvalidModelIndex = UINT32_MAX;
 
-	// WIC에서 읽은 RGBA8 픽셀. GPU 객체나 FBX SDK 객체를 소유하지 않는다.
+	// RGBA8 픽셀. GPU 객체나 외부 모델 라이브러리의 객체를 소유하지 않는다.
 	struct TextureData
 	{
 		std::wstring path;

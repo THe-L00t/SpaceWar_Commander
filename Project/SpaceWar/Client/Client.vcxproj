@@ -31,6 +31,7 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
+  <Import Project="Assimp.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
   </ImportGroup>
@@ -43,7 +44,6 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <Import Project="FbxSdk.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -93,7 +93,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Model.cpp" />
-    <ClCompile Include="Resource\FbxModelLoader.cpp" />
+    <ClCompile Include="Resource\AssimpModelLoader.cpp" />
     <ClCompile Include="Resource\TextureLoader.cpp" />
     <ClCompile Include="Scene.cpp" />
     <ClCompile Include="GRenderer.cpp" />
@@ -110,9 +110,12 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
-    <None Include="FbxSdk.props" />
-    <None Include="FbxSdk.local.props.example" />
-    <None Include="FBX_SETUP.md" />
+    <None Include="Assimp.props" />
+    <None Include="Assimp.targets" />
+    <None Include="vcpkg.json" />
+    <None Include="vcpkg-configuration.json" />
+    <None Include="vcpkg-triplets\x64-windows.cmake" />
+    <None Include="ASSIMP_SETUP.md" />
     <None Include="..\..\assets\model\*.fbx" />
   </ItemGroup>
   <ItemGroup>
@@ -125,7 +128,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="MeshData.h" />
     <ClInclude Include="Model.h" />
     <ClInclude Include="Resource\ModelData.h" />
-    <ClInclude Include="Resource\FbxModelLoader.h" />
+    <ClInclude Include="Resource\AssimpModelLoader.h" />
     <ClInclude Include="Resource\TextureLoader.h" />
     <ClInclude Include="RenderItem.h" />
     <ClInclude Include="Scene.h" />
@@ -151,6 +154,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="..\Shared\PlanetConst.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="Assimp.targets" />
   <Target Name="CopyModelAssets" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
     <ItemGroup>
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\**\*" />
