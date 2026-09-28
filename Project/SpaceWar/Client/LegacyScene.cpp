@@ -1,9 +1,9 @@
-#include "Scene.h"
+#include "LegacyScene.h"
 
 using namespace DirectX;
 
 namespace swc {
-	NodeHandle Scene::AddNode(NodeHandle parent, MeshHandle mesh, MaterialHandle material)
+	NodeHandle LegacyScene::AddNode(NodeHandle parent, MeshHandle mesh, MaterialHandle material)
 	{
 		const NodeHandle idx = static_cast<NodeHandle>(this->parent.size());
 
@@ -18,17 +18,17 @@ namespace swc {
 		return idx;
 	}
 
-	void Scene::SetLocalTransform(NodeHandle n, const XMMATRIX& local)
+	void LegacyScene::SetLocalTransform(NodeHandle n, const XMMATRIX& local)
 	{
 		XMStoreFloat4x4(&this->local[n], local);
 	}
 
-	void Scene::SetMesh(NodeHandle n, MeshHandle mesh)
+	void LegacyScene::SetMesh(NodeHandle n, MeshHandle mesh)
 	{
 		this->mesh[n] = mesh;
 	}
 
-	void Scene::UpdateWorldTransforms()
+	void LegacyScene::UpdateWorldTransforms()
 	{
 		const size_t count = parent.size();
 		for (size_t i = 0; i < count; ++i)
@@ -46,14 +46,14 @@ namespace swc {
 		}
 	}
 
-	void Scene::Extract(std::vector<RenderItem>& out) const
+	void LegacyScene::Extract(std::vector<InstanceData>& out) const
 	{
 		out.clear();
 		const size_t count = parent.size();
 		for (size_t i = 0; i < count; ++i)
 		{
 			if (mesh[i] == kInvalidMesh) continue;
-			RenderItem item;
+			InstanceData item;
 			item.node = static_cast<NodeHandle>(i);
 			item.mesh = mesh[i];
 			item.material = material[i];

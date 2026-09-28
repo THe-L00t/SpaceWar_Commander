@@ -1,5 +1,10 @@
 #include "ResourceManager.h"
-#include "HeightmapLoader.h"
+// ★ 하이트맵 로더는 Shared 로 옮겨졌다(09-18 `1621d64`). FBX 로더는 클라 전용이라 여기 남는다 —
+//   서버는 모델을 읽지 않고, FBX SDK 의존을 Shared 로 끌고 가지 않는다.
+#include "Shared/Terrain/HeightmapLoader.h"
+#include "FbxModelLoader.h"
+#include <filesystem>
+#include <utility>
 
 namespace swc {
 
@@ -12,7 +17,7 @@ namespace swc {
 			return it->second;                       // ★ 중복 로드 방지
 
 		Shared::HeightmapData data;
-		if (!LoadHeightmapPng(path, data, lastError))
+		if (!Shared::LoadHeightmapPng(path, data, lastError))
 			return {};
 
 		heightmaps.push_back(std::move(data));
@@ -31,5 +36,46 @@ namespace swc {
 		if (generations[handle.index - 1] != handle.generation)
 			return nullptr;                          // 이미 해제된 참조
 		return &heightmaps[handle.index - 1];
+	}
+
+	ModelHandle ResourceManager::LoadModel(const wchar_t* path)
+	{
+		lastError.clear();
+		if (!path || !*path)
+		{
+			lastError = L"모델 경로가 비어 있습니다.";
+			return {};
+		}
+
+		std::error_code ec;
+		const std::filesystem::path fullPath = std::filesystem::absolute(path, ec);
+		if (ec)
+		{
+			lastError = L"모델 절대 경로를 만들 수 없습니다.";
+			return {};
+		}
+		const std::wstring key = fullPath.lexically_normal().wstring();
+		if (auto it = modelPathCache.find(key); it != modelPathCache.end())
+			return it->second;
+
+		auto data = std::make_unique<ModelData>();
+		FbxModelLoader loader;
+		if (!loader.Load(key.c_str(), *data, lastError))
+			return {};
+
+		models.push_back(std::move(data));
+		modelGenerations.push_back(1);
+		const ModelHandle handle{ static_cast<uint32_t>(models.size()), 1 };
+		modelPathCache.emplace(key, handle);
+		return handle;
+	}
+
+	const ModelData* ResourceManager::Get(ModelHandle handle) const
+	{
+		if (!handle.Valid() || handle.index > models.size())
+			return nullptr;
+		if (modelGenerations[handle.index - 1] != handle.generation)
+			return nullptr;
+		return models[handle.index - 1].get();
 	}
 }

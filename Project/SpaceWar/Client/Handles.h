@@ -5,6 +5,7 @@
 namespace swc {
 	using MeshHandle = uint32_t;
 	using MaterialHandle = uint32_t;
+	using TextureHandle = uint32_t;
 	using NodeHandle = uint32_t;
 
 	inline constexpr NodeHandle kInvalidNode =
@@ -13,4 +14,6 @@ namespace swc {
 		(std::numeric_limits<MeshHandle>::max)();
 	inline constexpr MaterialHandle kInvalidMaterial =
 		(std::numeric_limits<MaterialHandle>::max)();
+	inline constexpr TextureHandle kInvalidTexture =
+		(std::numeric_limits<TextureHandle>::max)();
 }

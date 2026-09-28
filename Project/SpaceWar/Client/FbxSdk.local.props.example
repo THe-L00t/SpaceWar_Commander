@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <!-- FbxSdk.local.props로 복사한 뒤 실제 include/fbxsdk.h의 상위 SDK 경로를 지정한다. -->
+    <FbxSdkRoot>C:\Program Files\Autodesk\FBX\FBX SDK\2020.3.11</FbxSdkRoot>
+    <!-- SDK의 lib 폴더에 있는 compiler 이름을 자동 선택한다. 필요할 때만 직접 지정한다. -->
+    <!-- <FbxSdkCompiler>vs2022</FbxSdkCompiler> -->
+  </PropertyGroup>
+</Project>

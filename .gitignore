@@ -45,6 +45,12 @@ $RECYCLE.BIN/
 # ── AI 도구 작업 로그 (claude-gate 훅이 턴마다 쌓는다. 저장소에 올릴 물건 아님) ──
 .claude-gate/
 
+# ── 서드파티 SDK 배치 위치 (저장소에 올리지 않는다) ──
+#  FBX SDK 는 Autodesk 배포물이라 커밋하지 않는다. 각 PC 에서 설치하거나
+#  설치 파일을 풀어 여기에 둔다 — FbxSdk.props 가 이 경로를 자동으로 찾는다.
+#  (2026-09-27: 2020.3.7 의 include + lib/x64/{debug,release} 만 35MB 로 배치했다)
+Project/SpaceWar/external/
+
 # ==========================================================
 #  참고: 서드파티 SDK(FMOD·Assimp 등)를 저장소에 커밋한다면,
 #  그 안의  x64/ · bin/ · lib/  폴더가 위 규칙에 걸려 무시될 수 있음.

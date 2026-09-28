@@ -14,13 +14,16 @@ namespace Shared {
 enum class PacketType : uint16_t {
     None = 0,
     PlayerMove,
-    PlayerFire,
-    PlayerNeutralized,
+    PlayerFire,          // 클라 -> 서버 : 쐈다. 판정은 서버가 한다
+    PlayerNeutralized,   // 서버 -> 클라 : 체력이 0 이 됐다 + 되살아날 자리
 
     Welcome,        // 서버 -> 클라 : 접속 직후 1회. 네 번호는 이것이다
     PlayerLeave,    // 서버 -> 클라 : 이 번호가 나갔다
 
     NpcState,       // 서버 -> 클라 : NPC 한 마리의 현재 위치
+
+    PlayerHealth,   // 서버 -> 클라 : 이 플레이어의 남은 체력
+    NpcDespawn,     // 서버 -> 클라 : 이 NPC 가 사라졌다 (쓰러짐)
 };
 
 // 모든 패킷 공통 헤더
@@ -71,6 +74,53 @@ struct NpcStatePacket {
     float        pos[3];
 };
 
+// 클라 -> 서버 : 좌클릭으로 한 발 쐈다.
+//
+// ★ 판정은 서버가 한다 (아키텍처 명세서 18절 원칙 4)
+//   클라는 «어디서 어디로 쐈는지» 만 보내고, 누가 맞았는지는 말하지 않는다.
+//   서버가 저장해 둔 위치와 origin 이 너무 벌어지면 서버 위치로 바꿔 쏜다.
+// ★ playerId 는 0 으로 두고 보낸다. 번호는 서버가 안다.
+struct PlayerFirePacket {
+    PacketHeader header;
+    uint32_t     playerId;
+    float        origin[3];     // 총구 위치 (지금은 몸통 중심)
+    float        direction[3];  // 단위 방향 벡터
+};
+
+// 서버 -> 클라 : 이 플레이어의 남은 체력.
+//
+// 맞은 사람과 쏜 사람 양쪽이 알아야 하므로 전원에게 뿌린다.
+// 접속 직후에도 한 번 보내 클라가 시작 체력을 알게 한다.
+struct PlayerHealthPacket {
+    PacketHeader header;
+    uint32_t     playerId;
+    uint32_t     attackerId;    // 0 = 피해가 아닌 알림(접속 직후 등)
+    float        health;
+};
+
+// 서버 -> 클라 : 체력이 0 이 됐다.
+//
+// ★ 되살아날 자리를 같이 싣는다
+//   교수님 지시가 «HP 0 이면 시작 위치로 텔레포트 + HP 만땅» 이라 쓰러진 상태가 따로 없다.
+//   당사자는 이 좌표로 즉시 옮겨가고, 나머지는 그 자리에 그린다.
+struct PlayerNeutralizedPacket {
+    PacketHeader header;
+    uint32_t     playerId;
+    uint32_t     attackerId;
+    float        pos[3];        // 되살아나는 위치 (서버가 정한다)
+    float        health;        // 회복된 체력
+};
+
+// 서버 -> 클라 : 이 NPC 가 사라졌다.
+//
+// ★ 이 패킷이 없으면 쓰러진 NPC 가 화면에 영원히 서 있는다
+//   클라는 마지막으로 받은 좌표를 계속 그리기 때문이다. PlayerLeave 와 같은 이유다.
+//   다시 살아나면 서버가 NpcState 를 다시 보내고, 클라는 처음 보는 번호처럼 만든다.
+struct NpcDespawnPacket {
+    PacketHeader header;
+    uint32_t     npcId;
+};
+
 // ── 크기 확인 ────────────────────────────────────────────────
 //  구조체를 그대로 바이트로 보내므로 크기가 어긋나면 좌표가 통째로 깨진다.
 //  런타임에 이상한 값이 나오는 것보다 컴파일이 실패하는 편이 낫다.
@@ -79,5 +129,9 @@ static_assert(sizeof(PlayerMovePacket)  == 32, "PlayerMovePacket 크기 변경�
 static_assert(sizeof(WelcomePacket)     ==  8, "WelcomePacket 크기 변경됨");
 static_assert(sizeof(PlayerLeavePacket) ==  8, "PlayerLeavePacket 크기 변경됨");
 static_assert(sizeof(NpcStatePacket)    == 20, "NpcStatePacket 크기 변경됨");
+static_assert(sizeof(PlayerFirePacket)        == 32, "PlayerFirePacket 크기 변경됨");
+static_assert(sizeof(PlayerHealthPacket)      == 16, "PlayerHealthPacket 크기 변경됨");
+static_assert(sizeof(PlayerNeutralizedPacket) == 28, "PlayerNeutralizedPacket 크기 변경됨");
+static_assert(sizeof(NpcDespawnPacket)        ==  8, "NpcDespawnPacket 크기 변경됨");
 
 } // namespace Shared

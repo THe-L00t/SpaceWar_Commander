@@ -7,9 +7,9 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace swc {
+namespace Shared {
 
-	bool LoadHeightmapPng(const wchar_t* path, Shared::HeightmapData& out, std::wstring& error)
+	bool LoadHeightmapPng(const wchar_t* path, HeightmapData& out, std::wstring& error)
 	{
 		ComPtr<IWICImagingFactory> factory;
 		HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,

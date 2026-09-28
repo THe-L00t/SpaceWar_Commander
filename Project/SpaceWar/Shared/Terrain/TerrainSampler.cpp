@@ -14,9 +14,9 @@ namespace {
 	}
 }
 
-namespace swc {
+namespace Shared {
 
-	void TerrainSampler::Configure(const Shared::HeightmapData* heightmap,
+	void TerrainSampler::Configure(const HeightmapData* heightmap,
 		double planetRadius, const TerrainConfig& cfg)
 	{
 		data = (heightmap && heightmap->Valid()) ? heightmap : nullptr;
@@ -24,18 +24,18 @@ namespace swc {
 		config = cfg;
 	}
 
-	double TerrainSampler::Height(const Vec3d& upDirection) const
+	double TerrainSampler::Height(double upX, double upY, double upZ) const
 	{
 		if (!data) return 0.0;
 
 		// 지면이 구 전체 메시라 반대편 반구도 그려진다. x,z 만 보면 대척점에
 		// 같은 조각이 거울상으로 다시 나타나므로 스폰 반구(up.y > 0)에만 적용한다.
-		if (upDirection.y <= 0.0) return 0.0;
+		if (upY <= 0.0) return 0.0;
 
 		// 구 표면 위치는 P = center + up*R, center = (0,-R,0) 이므로
 		// 스폰 기준 접평면 좌표는 (up.x*R, up.z*R) 이다.
-		const double x = upDirection.x * radius;
-		const double z = upDirection.z * radius;
+		const double x = upX * radius;
+		const double z = upZ * radius;
 
 		const double u = x / config.tileSize + 0.5;
 		const double v = z / config.tileSize + 0.5;
