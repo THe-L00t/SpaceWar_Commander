@@ -31,12 +31,18 @@ namespace swc {
 		float MouseDeltaX() const { return mouseDeltaX; }
 		float MouseDeltaY() const { return mouseDeltaY; }
 
-		void SetCaptured(bool);                     // 커서 숨김 + 창 안에 가두기
+		void SetCaptured(bool);                     // 커서 숨김 + 창 중앙 고정 + 창 안에 가두기
 		bool Captured() const { return captured; }
 
 	private:
 		void Clear();
 		void ClipToWindow();
+
+		// ★ 캡처 중에는 커서를 창 중앙으로 되돌린다
+		//   숨기고 가두기만 하면 보이지 않는 커서가 창 안에서 계속 움직인다. 그 커서가
+		//   가장자리에 가 있으면 클릭이 엉뚱한 곳(창 테두리·다른 창)으로 들어가 사격이 먹지 않는다.
+		//   시점은 Raw Input 델타로만 돌리므로 커서를 되돌려도 조작에는 영향이 없다.
+		void CenterCursor();
 
 		HWND  hwnd = nullptr;
 		bool  keys[256] = {};
