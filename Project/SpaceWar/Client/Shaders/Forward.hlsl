@@ -9,7 +9,12 @@
 //
 //  레이 발사는 임계값이 아니라 확률(러시안 룰렛)로 한다 → 화면에 경계선이 없다.
 //
-//  FBX 재질과 텍스처를 사용하며, 지형/더미는 기본 재질과 정점 색을 사용한다.
+//  ★ 2026-09-26 재질 도입 (client2 `46567fd` 이식)
+//    roughness/metallic 이 더 이상 자리표시자 상수가 아니다. 재질 상수(b2)와
+//    텍스처 5장(t1~t5)에서 온다. 텍스처가 없는 재질에는 렌더러가 흰색·평면 노멀
+//    폴백을 묶어 주므로, 셰이더는 항상 샘플해도 된다(분기 없음).
+//    지형·더미 메시는 0번 기본 재질(roughness 0.10, 흰 폴백)을 쓰므로
+//    이 변경 전과 같은 화면이 나와야 한다 — 회귀 확인 기준이다.
 // ============================================================
 
 #ifndef RT_SUPPORTED
@@ -35,20 +40,22 @@ cbuffer ObjectCB : register(b1)
 	float4x4 gNormalWorld;
 };
 
-// GRenderer.cpp의 MaterialConstants와 순서/크기를 맞춘다.
+// ── 재질 (GRenderer 의 MaterialConstants 와 16바이트 단위로 같아야 한다) ──
 cbuffer MaterialCB : register(b2)
 {
 	float4 gBaseColor;
-	float3 gEmissive; float gRoughness;
-	float gMetallic; uint gHasNormalMap; float2 _materialPad;
+	float3 gEmissive;      float gRoughness;
+	float  gMetallic;      uint  gHasNormalMap;   float2 _pad3;
 };
 
-Texture2D<float4> gBaseColorTexture : register(t1);
-Texture2D<float4> gNormalTexture : register(t2);
-Texture2D<float4> gRoughnessTexture : register(t3);
-Texture2D<float4> gMetallicTexture : register(t4);
-Texture2D<float4> gEmissiveTexture : register(t5);
-SamplerState gMaterialSampler : register(s0);
+// 슬롯 순서는 ModelData.h 의 TextureSlot 과 같다.
+Texture2D gBaseColorMap : register(t1);
+Texture2D gNormalMap    : register(t2);
+Texture2D gRoughnessMap : register(t3);
+Texture2D gMetallicMap  : register(t4);
+Texture2D gEmissiveMap  : register(t5);
+
+SamplerState gSampler : register(s0);   // 루트 시그니처의 정적 샘플러 (선형 · WRAP)
 
 #if RT_SUPPORTED
 RaytracingAccelerationStructure gScene : register(t0);
@@ -59,6 +66,9 @@ RaytracingAccelerationStructure gScene : register(t0);
 static const float3 kSunColor = float3(0.85, 0.85, 0.85);
 static const float  kAmbient  = 0.15;
 
+// GGX 는 rough 0 에서 분모가 터진다. 거울도 이 바닥값으로 둔다.
+static const float kMinRoughness = 0.02;
+
 static const float kPi = 3.14159265;
 
 struct VIn
@@ -66,8 +76,8 @@ struct VIn
 	float3 pos : POSITION;
 	float3 nrm : NORMAL;
 	float3 col : COLOR;
-	float2 uv  : TEXCOORD0;
-	float4 tan : TANGENT;
+	float2 uv  : TEXCOORD;
+	float4 tan : TANGENT;      // xyz = 접선, w = 종법선 부호
 };
 
 struct VOut
@@ -76,7 +86,7 @@ struct VOut
 	float3 world : WORLDPOS;
 	float3 nrm   : NORMAL;
 	float3 col   : COLOR;
-	float2 uv    : TEXCOORD0;
+	float2 uv    : TEXCOORD;
 	float4 tan   : TANGENT;
 };
 
@@ -89,9 +99,8 @@ VOut VSMain(VIn i)
 	o.nrm   = mul(float4(i.nrm, 0.0), gNormalWorld).xyz;
 	o.col   = i.col;
 	o.uv    = i.uv;
-	o.tan.xyz = mul(float4(i.tan.xyz, 0.0), gWorld).xyz;
-	// 반전 스케일이 있는 노드도 탄젠트 공간의 방향을 유지한다.
-	o.tan.w = i.tan.w * (determinant((float3x3)gWorld) < 0.0 ? -1.0 : 1.0);
+	// 반전 스케일의 방향까지 반영해 접선을 월드로 옮긴다.
+	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), gWorld).xyz, i.tan.w * (determinant((float3x3)gWorld) < 0.0 ? -1.0 : 1.0));
 	return o;
 }
 
@@ -137,6 +146,22 @@ float3 SpecularGGX(float NdotL, float NdotV, float NdotH, float rough, float3 F)
 	return F * D * G / max(4.0 * NdotV * NdotL, 1e-4);
 }
 
+// 노멀맵을 월드 법선으로 바꾼다.
+//
+// Assimp 로더가 UV의 V와 노멀맵 녹색 채널을 이미 보정하므로 여기서는 다시 뒤집지 않는다.
+float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
+{
+	float3 T = tangent.xyz - N * dot(N, tangent.xyz);   // 그람-슈미트 직교화
+	if (dot(T, T) < 1e-8) return N;                     // 접선이 퇴화했다 — 기하 법선을 쓴다
+
+	T = normalize(T);
+	float3 B = normalize(cross(N, T) * tangent.w);
+
+	float3 nTex = gNormalMap.Sample(gSampler, uv).rgb * 2.0 - 1.0;
+
+	return normalize(T * nTex.x + B * nTex.y + N * nTex.z);
+}
+
 #if RT_SUPPORTED
 // 반사 레이 1개. 재귀 없음, 히트 셰이딩 없음 — 구조 검증용.
 float3 TraceReflection(float3 P, float3 N, float3 V)
@@ -153,7 +178,7 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 
 	if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
 	{
-		// 히트 지점의 재질 조회는 아직 없으므로 거리 감쇠만 돌려준다.
+		// 히트 지점의 재질을 모르므로(히트 셰이딩 없음) 거리 감쇠만 돌려준다.
 		float d = saturate(q.CommittedRayT() / 60.0);
 		return lerp(float3(0.32, 0.32, 0.36), float3(0.02, 0.02, 0.03), d);
 	}
@@ -163,22 +188,18 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 
 float4 PSMain(VOut i) : SV_TARGET
 {
-	float4 baseColor = float4(i.col, 1.0) * gBaseColor * gBaseColorTexture.Sample(gMaterialSampler, i.uv);
-	float3 albedo = baseColor.rgb;
-	float roughness = clamp(gRoughness * gRoughnessTexture.Sample(gMaterialSampler, i.uv).r, 0.045, 1.0);
-	float metallic = saturate(gMetallic * gMetallicTexture.Sample(gMaterialSampler, i.uv).r);
-	float3 emissive = gEmissive * gEmissiveTexture.Sample(gMaterialSampler, i.uv).rgb;
+	// ── 재질 ────────────────────────────────────────────────
+	//  텍스처가 없는 재질에는 흰색·평면 노멀 폴백이 묶여 있어 분기 없이 곱해도 된다.
+	float4 baseTex  = gBaseColorMap.Sample(gSampler, i.uv);
+	float3 albedo   = baseTex.rgb * gBaseColor.rgb * i.col;
+	float  rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).r, kMinRoughness, 1.0);
+	float  metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).r);
+	float3 emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
+
 	float3 N = normalize(i.nrm);
 	if (gHasNormalMap != 0)
-	{
-		float3 T = i.tan.xyz - N * dot(N, i.tan.xyz);
-		if (dot(T, T) < 1e-8)
-			T = cross(abs(N.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0), N);
-		T = normalize(T);
-		float3 B = cross(N, T) * (i.tan.w < 0.0 ? -1.0 : 1.0);
-		float3 sampledNormal = gNormalTexture.Sample(gMaterialSampler, i.uv).xyz * 2.0 - 1.0;
-		N = normalize(T * sampledNormal.x + B * sampledNormal.y + N * sampledNormal.z);
-	}
+		N = ApplyNormalMap(N, i.tan, i.uv);
+
 	float3 V = normalize(gEyePos - i.world);
 	float  NdotV = saturate(dot(N, V));
 	float  grazing = pow(1.0 - NdotV, 5.0);
@@ -193,7 +214,7 @@ float4 PSMain(VOut i) : SV_TARGET
 	float  VdotH = saturate(dot(V, H));
 
 	float3 F_dir   = FresnelSchlick(F0, VdotH);          // ★ 반각 기준
-	float3 specSun = SpecularGGX(NdotL, NdotV, NdotH, roughness, F_dir) * NdotL * kSunColor;
+	float3 specSun = SpecularGGX(NdotL, NdotV, NdotH, rough, F_dir) * NdotL * kSunColor;
 	float3 diffSun = (1.0 - F_dir) * (1.0 - metallic) * albedo * NdotL * kSunColor;
 
 	// ② 환경 프레넬 — 완전 거울이므로 반각 H = N, 즉 N·V 기준
@@ -206,7 +227,7 @@ float4 PSMain(VOut i) : SV_TARGET
 	float3 diffAmb = (1.0 - F_avg) * (1.0 - metallic) * albedo * kAmbient;
 
 	// ③ FGPS F(p) — 예산 신호. 그려지는 값은 건드리지 않고 확률만 밀어올린다.
-	float fp = grazing * saturate(1.0 - roughness) * metallic;
+	float fp = grazing * saturate(1.0 - rough) * saturate(metallic);
 
 	// ④ 러시안 룰렛 — 임계값 대신 확률로 발사하므로 화면에 경계선이 생기지 않는다.
 	//    w >= knee 구간은 p=1 (확정 발사, 노이즈 0).
@@ -234,12 +255,12 @@ float4 PSMain(VOut i) : SV_TARGET
 	//    ★ 확산 몫(kd)이 정반사에 곱해지지 않는다. 곱하면 프레넬 분배를 두 번 적용하는 셈이다.
 	float3 specEnv = F * reflection;
 	float3 color = diffSun + specSun + diffAmb + specEnv + emissive;
-	//             └─ 확산 ─┘  └──── 정반사 (둘 다 F 를 품음) ────┘
+	//             └─ 확산 ─┘  └──── 정반사 (둘 다 F 를 품음) ────┘  └ 자체발광 ┘
 
 	switch (gDebugMode)
 	{
-	case 1: color = albedo;              break;   // albedo
-	case 2: color = N * 0.5 + 0.5;       break;   // world normal
+	case 1: color = albedo;              break;   // albedo (기본 색상 텍스처 포함)
+	case 2: color = N * 0.5 + 0.5;       break;   // world normal (노멀맵 적용 후)
 	case 3: color = fp.xxx;              break;   // F(p) 예산 신호
 	case 4: color = F;                   break;   // 환경 프레넬 F_env (반사 배분 비율)
 	case 5: color = reflection;          break;   // 반사 원본 (F 곱하기 전)
@@ -249,7 +270,8 @@ float4 PSMain(VOut i) : SV_TARGET
 		break;
 	case 8: color = specSun;             break;   // 태양 하이라이트만
 	case 9: color = specEnv;             break;   // 환경 반사 몫만 (F 곱한 뒤)
+	case 10: color = float3(rough, metallic, 0.0); break;   // 거칠기(R) · 금속성(G) — 재질 확인용
 	}
 
-	return float4(color, baseColor.a);
+	return float4(color, 1.0);
 }

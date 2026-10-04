@@ -142,7 +142,7 @@ namespace swc {
 				for (int i = 0; i < N; ++i)
 				{
 					const Vec3d d = DirAt(face, i, j);
-					Vertex v{};
+					Vertex v;
 					v.position = SurfaceAt(d).ToFloat3();
 					v.normal = NormalAt(d).ToFloat3();
 					v.color = color;

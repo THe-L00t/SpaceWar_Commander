@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -69,6 +69,10 @@
     <ClInclude Include="HeightmapData.h" />
     <ClInclude Include="Vec3.h" />
     <ClInclude Include="PlanetConst.h" />
+    <ClInclude Include="Terrain\TerrainSampler.h" />
+    <ClInclude Include="Terrain\HeightmapLoader.h" />
+    <ClInclude Include="GameLogic\GameLogic.h" />
+    <ClInclude Include="Physics\PhysicsCalculator.h" />
     <ClInclude Include="GameObject\Object.h" />
     <ClInclude Include="GameObject\DynamicObject.h" />
     <ClInclude Include="GameObject\StaticObject.h" />
@@ -90,6 +94,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
+    <ClCompile Include="Terrain\TerrainSampler.cpp" />
+    <ClCompile Include="Terrain\HeightmapLoader.cpp" />
+    <ClCompile Include="GameLogic\GameLogic.cpp" />
+    <ClCompile Include="Physics\PhysicsCalculator.cpp" />
     <ClCompile Include="GameObject\Object.cpp" />
     <ClCompile Include="GameObject\DynamicObject.cpp" />
     <ClCompile Include="GameObject\StaticObject.cpp" />

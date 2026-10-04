@@ -1,5 +1,6 @@
 #include "ResourceManager.h"
-#include "HeightmapLoader.h"
+// 하이트맵 로더는 서버와 공유하고, Assimp 모델 로더는 클라이언트에서만 사용한다.
+#include "Shared/Terrain/HeightmapLoader.h"
 #include "AssimpModelLoader.h"
 #include <filesystem>
 #include <utility>
@@ -15,7 +16,7 @@ namespace swc {
 			return it->second;                       // ★ 중복 로드 방지
 
 		Shared::HeightmapData data;
-		if (!LoadHeightmapPng(path, data, lastError))
+		if (!Shared::LoadHeightmapPng(path, data, lastError))
 			return {};
 
 		heightmaps.push_back(std::move(data));

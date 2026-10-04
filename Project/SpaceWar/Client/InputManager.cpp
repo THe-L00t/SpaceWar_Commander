@@ -1,9 +1,9 @@
-#include "Input.h"
+#include "InputManager.h"
 #include <cstring>
 
 namespace swc {
 
-	bool Input::Initialize(HWND h)
+	bool InputManager::Initialize(HWND h)
 	{
 		hwnd = h;
 
@@ -15,7 +15,7 @@ namespace swc {
 		return RegisterRawInputDevices(&rid, 1, sizeof(rid)) == TRUE;
 	}
 
-	bool Input::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
+	bool InputManager::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 		switch (msg)
 		{
@@ -71,14 +71,21 @@ namespace swc {
 		return false;
 	}
 
-	void Input::BeginFrame()
+	void InputManager::BeginFrame()
 	{
 		memcpy(prevKeys, keys, sizeof(keys));
+		memcpy(prevMouseButtons, mouseButtons, sizeof(mouseButtons));
 		mouseDeltaX = 0.0f;
 		mouseDeltaY = 0.0f;
+
+		// ★ 우리 창이 앞에 있을 때만 되돌린다.
+		//   다른 창을 보고 있는데 커서를 끌어오면 작업을 방해한다.
+		//   (포커스를 잃으면 WM_KILLFOCUS 에서 캡처가 풀리지만, 그 사이 프레임을 위한 방어다)
+		if (captured && GetForegroundWindow() == hwnd)
+			CenterCursor();
 	}
 
-	void Input::SetCaptured(bool c)
+	void InputManager::SetCaptured(bool c)
 	{
 		if (captured == c) return;
 		captured = c;
@@ -87,6 +94,7 @@ namespace swc {
 		{
 			ShowCursor(FALSE);
 			ClipToWindow();
+			CenterCursor();   // 잡는 순간 가운데로. 누른 자리에 커서가 남아 있으면 첫 클릭이 엉뚱하게 들어간다
 		}
 		else
 		{
@@ -98,15 +106,34 @@ namespace swc {
 		mouseDeltaY = 0.0f;
 	}
 
-	void Input::Clear()
+	void InputManager::Clear()
 	{
 		memset(keys, 0, sizeof(keys));
 		memset(mouseButtons, 0, sizeof(mouseButtons));
+		memset(prevMouseButtons, 0, sizeof(prevMouseButtons));
 		mouseDeltaX = 0.0f;
 		mouseDeltaY = 0.0f;
 	}
 
-	void Input::ClipToWindow()
+	// 창 중앙(클라이언트 영역 기준)으로 커서를 옮긴다.
+	//
+	// ★ SetCursorPos 는 Raw Input 이벤트를 만들지 않는다
+	//   장치가 실제로 움직인 것이 아니므로 델타가 오염되지 않는다. 그래서 매 프레임 불러도
+	//   시점이 미끄러지거나 되돌아가지 않는다. (WM_MOUSEMOVE 는 생기지만 쓰지 않는다)
+	void InputManager::CenterCursor()
+	{
+		if (!hwnd) return;
+
+		RECT rc;
+		if (!GetClientRect(hwnd, &rc)) return;
+		if (rc.right <= rc.left || rc.bottom <= rc.top) return;   // 최소화 중이면 0 이 된다
+
+		POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
+		ClientToScreen(hwnd, &center);
+		SetCursorPos(center.x, center.y);
+	}
+
+	void InputManager::ClipToWindow()
 	{
 		if (!hwnd) return;
 

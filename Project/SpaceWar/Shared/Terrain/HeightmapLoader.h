@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-#include "Shared/HeightmapData.h"
+#include "../HeightmapData.h"
 
 // 16비트 그레이스케일 PNG 로더 (WIC 사용).
 //
@@ -14,8 +14,10 @@
 // ★ 로드 시 min-max 정규화한다 (2026-09-05).
 //   샘플을 0~65535 전체로 늘려서 TerrainConfig::relief 가 조각의 실제 봉우리-골 높이가 되게 한다.
 //   평평한 조각(min == max)은 그대로 둔다.
-namespace swc {
+//
+// ★ 서버도 이 로더를 쓴다. 클라와 같은 정규화를 거쳐야 같은 높이가 나온다.
+namespace Shared {
 
 	// 실패 시 false, 사유는 error 에 담긴다.
-	bool LoadHeightmapPng(const wchar_t* path, Shared::HeightmapData& out, std::wstring& error);
+	bool LoadHeightmapPng(const wchar_t* path, HeightmapData& out, std::wstring& error);
 }

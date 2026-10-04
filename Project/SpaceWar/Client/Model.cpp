@@ -1,6 +1,8 @@
 #include "Model.h"
 #include "GRenderer.h"
-#include "Scene.h"
+// ★ client2 의 `Scene` 은 우리 쪽에서 `LegacyScene` 이다 (09-18 `df71fc9`).
+//   게임 소유 Scene 과 렌더 소유 Render World 로 나뉘기 전의 임시 클래스다.
+#include "LegacyScene.h"
 #include <cmath>
 #include <utility>
 
@@ -41,7 +43,7 @@ namespace swc {
 			return false;
 		}
 
-		// Scene은 배열 앞쪽의 부모부터 월드 행렬을 계산한다.
+		// LegacyScene 은 배열 앞쪽의 부모부터 월드 행렬을 계산한다.
 		for (size_t i = 0; i < data.nodes.size(); ++i)
 		{
 			const ModelNodeData& node = data.nodes[i];
@@ -148,7 +150,7 @@ namespace swc {
 		return true;
 	}
 
-	NodeHandle Model::Instantiate(Scene& scene, NodeHandle parent) const
+	NodeHandle Model::Instantiate(LegacyScene& scene, NodeHandle parent) const
 	{
 		if (!initialized) return kInvalidNode;
 

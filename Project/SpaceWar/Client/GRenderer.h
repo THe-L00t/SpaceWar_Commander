@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 #include <DirectXMath.h>
-#include "RenderItem.h"
+#include "InstanceData.h"
 #include "Vertex.h"
 #include "RayTracingParams.h"
 #include "Resource/ModelData.h"
@@ -25,7 +25,7 @@ namespace swc {
 		TextureHandle CreateTexture(const TextureData&);
 		MaterialHandle CreateMaterial(const MaterialData&, const std::array<TextureHandle, kMaterialTextureCount>&);
 		void BeginFrame();
-		void Render(const RenderView&, const std::vector<RenderItem>&, const DirectX::XMFLOAT4X4*);
+		void Render(const RenderView&, const std::vector<InstanceData>&, const DirectX::XMFLOAT4X4*);
 		void EndFrame();
 
 		// ── 하이브리드 제어 (DX 타입 노출 없음) ──
