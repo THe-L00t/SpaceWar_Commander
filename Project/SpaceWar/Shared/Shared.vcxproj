@@ -91,9 +91,15 @@
     <ClInclude Include="AI\Node\LeafNode.h" />
     <ClInclude Include="AI\Node\ActionNode.h" />
     <ClInclude Include="AI\Node\ConditionNode.h" />
+    <ClInclude Include="Model\ModelFormat.h" />
+    <ClInclude Include="Model\ModelSource.h" />
+    <ClInclude Include="Model\ModelReader.h" />
+    <ClInclude Include="Model\MeshPostProcess.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
+    <ClCompile Include="Model\ModelReader.cpp" />
+    <ClCompile Include="Model\MeshPostProcess.cpp" />
     <ClCompile Include="Terrain\TerrainSampler.cpp" />
     <ClCompile Include="Terrain\HeightmapLoader.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />
