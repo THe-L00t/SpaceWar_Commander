@@ -1,7 +1,6 @@
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32")
 #include <windows.h>
-#include <objbase.h>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -12,7 +11,7 @@
 #include "Shared/PlanetConst.h"
 #include "Shared/GameLogic/GameLogic.h"
 #include "Shared/Physics/PhysicsCalculator.h"
-#include "Shared/Terrain/HeightmapLoader.h"
+#include "Shared/Terrain/PlanetSurface.h"
 #include "Shared/Terrain/TerrainSampler.h"
 #include "AI/NpcWorld.h"
 
@@ -316,16 +315,15 @@ std::vector<FireRequest>	g_fireQueue;
 volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
 
 //지형. 시작할 때 한 번 읽고 그 뒤로는 읽기만 하므로 스레드 간에 락이 필요 없다.
-Shared::HeightmapData	g_heightmap;
+Shared::PlanetSurface	g_planetSurface;
 Shared::TerrainSampler	g_terrain;
 
 /////////////////////////////////////////////////////////////////////////
-//  지형을 읽는다. 클라와 같은 파일(Shared::kTerrainTileAsset)을 같은 설정으로.
+//  행성 지표면을 읽는다. 클라와 같은 OBJ(Shared::kPlanetModelAsset)를 같은 배율로.
 //
-//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 이벤트가 png 를 복사해 둔다.
+//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 대상이 OBJ를 복사해 둔다.
 //    작업 디렉터리 기준으로 찾으면 VS 에서 켤 때와 exe 를 직접 켤 때가 갈린다.
-//  ★ WIC 로더가 COM 객체라 CoInitializeEx 가 먼저 있어야 한다.
-//    읽고 나면 COM 은 더 쓰지 않으므로 바로 해제한다.
+//  ★ 서버는 Shared에서 접지 삼각형만 읽으며 렌더 재질·텍스처를 불러오지 않는다.
 bool LoadTerrain()
 {
 	wchar_t szExe[MAX_PATH] = { 0 };
@@ -335,17 +333,10 @@ bool LoadTerrain()
 	const size_t nSlash = path.find_last_of(L"\\/");
 	path = (nSlash == std::wstring::npos) ? std::wstring() : path.substr(0, nSlash + 1);
 	path += L"assets\\";
-	path += Shared::kTerrainTileAsset;
-
-	if (FAILED(::CoInitializeEx(NULL, COINIT_MULTITHREADED)))
-	{
-		puts("ERROR: COM 을 초기화할 수 없습니다.");
-		return false;
-	}
+	path += Shared::kPlanetModelAsset;
 
 	std::wstring error;
-	const bool bLoaded = Shared::LoadHeightmapPng(path.c_str(), g_heightmap, error);
-	::CoUninitialize();
+	const bool bLoaded = g_planetSurface.Load(path.c_str(), error);
 
 	if (!bLoaded)
 	{
@@ -357,9 +348,9 @@ bool LoadTerrain()
 		return false;
 	}
 
-	g_terrain.Configure(&g_heightmap, Shared::kPlanetRadius, Shared::TerrainConfig{});
-	printf("지형 %ux%u (mean %.3f) 을 읽었습니다.\n",
-		g_heightmap.size, g_heightmap.size, g_heightmap.mean);
+	g_terrain.Configure(&g_planetSurface, Shared::kPlanetRadius);
+	printf("행성 접지 삼각형 %zu개를 읽었습니다. (반지름 %.0fm)\n",
+		g_planetSurface.TriangleCount(), Shared::kPlanetRadius);
 	return true;
 }
 

@@ -89,36 +89,4 @@ namespace swc {
 		return DecodeTexture(factory.Get(), decoder.Get(), path, srgb, out, error);
 	}
 
-	bool LoadTextureImageFromMemory(const void* bytes, size_t byteCount, const wchar_t* sourceName,
-		bool srgb, TextureData& out, std::wstring& error)
-	{
-		error.clear();
-		const wchar_t* label = sourceName ? sourceName : L"내장 텍스처";
-		if (!bytes || byteCount == 0 || byteCount > (std::numeric_limits<DWORD>::max)())
-		{
-			error = std::wstring(L"내장 텍스처의 압축 데이터 크기가 유효하지 않습니다.\n") + label;
-			return false;
-		}
-
-		ComPtr<IWICImagingFactory> factory;
-		if (!CreateFactory(factory, error)) return false;
-		ComPtr<IWICStream> stream;
-		if (FAILED(factory->CreateStream(&stream)) ||
-			FAILED(stream->InitializeFromMemory(
-				static_cast<BYTE*>(const_cast<void*>(bytes)), static_cast<DWORD>(byteCount))))
-		{
-			error = std::wstring(L"내장 텍스처 스트림 생성 실패.\n") + label;
-			return false;
-		}
-
-		ComPtr<IWICBitmapDecoder> decoder;
-		if (FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr,
-			WICDecodeMetadataCacheOnDemand, &decoder)))
-		{
-			error = std::wstring(L"내장 텍스처 이미지 읽기 실패.\n") + label;
-			return false;
-		}
-		// WIC가 참조하는 입력 버퍼가 살아 있는 동안 RGBA8 픽셀 복사를 마친다.
-		return DecodeTexture(factory.Get(), decoder.Get(), label, srgb, out, error);
-	}
 }

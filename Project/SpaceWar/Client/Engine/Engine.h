@@ -25,6 +25,7 @@
 #include "Client/PlayerController.h"
 #include "Client/Planet.h"
 #include "Shared/Terrain/TerrainSampler.h"
+#include "Shared/Terrain/PlanetSurface.h"
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -88,6 +89,7 @@ namespace swc {
 
 		// ── 아직 자리로 옮기지 않은 것 ──────────────────────────
 		Planet                 planet;            // 맵 정보 → Scene 이 가진다 (2026-09-18 결정)
+		Shared::PlanetSurface  planetSurface;     // OBJ 지표면. 렌더와 서버가 같은 좌표/배율을 사용한다.
 		Shared::TerrainSampler terrain;
 		std::wstring           terrainStatus;
 		LegacyScene            scene;             // → Scene 노드 + Render World 로 나뉜다 (LegacyScene.h)
@@ -98,6 +100,7 @@ namespace swc {
 		// FBX 캐릭터 모델 (client2 `46567fd` 이식). 플레이어·원격 플레이어·NPC 가 공유한다.
 		// 명세 1절에 Model 자리가 없다 — 리소스(ModelData)를 GPU 자원 + Scene 노드로 펼치는 어댑터다.
 		Model                  characterModel;
+		Model                  planetModel;       // 정적 맵 메시/재질. 행성 중심에 한 번 배치한다.
 
 		// 원격 플레이어 · NPC 노드 → Scene 의 OtherPlayer · NPC (6.10)
 		std::unordered_map<uint32_t, NodeHandle> remoteNodes;

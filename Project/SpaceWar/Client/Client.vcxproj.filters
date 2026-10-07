@@ -78,7 +78,7 @@
     <Filter Include="클래스 목록\Model">
       <UniqueIdentifier>{0b5e9a41-7c62-4d38-9a15-3f8ed2c47b60}</UniqueIdentifier>
     </Filter>
-    <Filter Include="클래스 목록\AssimpModelLoader">
+    <Filter Include="클래스 목록\ObjModelLoader">
       <UniqueIdentifier>{5c3a7d18-94b6-42ef-8207-6be1d4a9f735}</UniqueIdentifier>
     </Filter>
     <Filter Include="클래스 목록\TextureLoader">
@@ -155,8 +155,8 @@
     <ClCompile Include="Model.cpp">
       <Filter>클래스 목록\Model</Filter>
     </ClCompile>
-    <ClCompile Include="Resource\AssimpModelLoader.cpp">
-      <Filter>클래스 목록\AssimpModelLoader</Filter>
+    <ClCompile Include="Resource\ObjModelLoader.cpp">
+      <Filter>클래스 목록\ObjModelLoader</Filter>
     </ClCompile>
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
@@ -226,8 +226,8 @@
     <ClInclude Include="Model.h">
       <Filter>클래스 목록\Model</Filter>
     </ClInclude>
-    <ClInclude Include="Resource\AssimpModelLoader.h">
-      <Filter>클래스 목록\AssimpModelLoader</Filter>
+    <ClInclude Include="Resource\ObjModelLoader.h">
+      <Filter>클래스 목록\ObjModelLoader</Filter>
     </ClInclude>
     <ClInclude Include="Resource\TextureLoader.h">
       <Filter>클래스 목록\TextureLoader</Filter>
@@ -273,25 +273,25 @@
     <None Include="Shaders\Forward.hlsl">
       <Filter>셰이더</Filter>
     </None>
-    <None Include="Assimp.props">
+    <None Include="..\..\assets\model\character\*.obj">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="Assimp.targets">
+    <None Include="..\..\assets\model\character\*.mtl">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="vcpkg.json">
+    <None Include="..\..\assets\model\character\*.png">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="vcpkg-configuration.json">
+    <None Include="..\..\assets\model\planet\*.obj">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="vcpkg-triplets\x64-windows.cmake">
+    <None Include="..\..\assets\model\planet\*.mtl">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="ASSIMP_SETUP.md">
+    <None Include="PLANET_MODEL.md">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="..\..\assets\model\*.fbx">
+    <None Include="OBJ_MODEL.md">
       <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>

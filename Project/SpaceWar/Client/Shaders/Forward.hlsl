@@ -148,7 +148,7 @@ float3 SpecularGGX(float NdotL, float NdotV, float NdotH, float rough, float3 F)
 
 // 노멀맵을 월드 법선으로 바꾼다.
 //
-// Assimp 로더가 UV의 V와 노멀맵 녹색 채널을 이미 보정하므로 여기서는 다시 뒤집지 않는다.
+// OBJ 로더가 UV의 V와 노멀맵 녹색 채널을 이미 보정하므로 여기서는 다시 뒤집지 않는다.
 float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
 {
 	float3 T = tangent.xyz - N * dot(N, tangent.xyz);   // 그람-슈미트 직교화

@@ -17,6 +17,14 @@ namespace Shared {
 	// 2026-08-05 회의: 120km -> 1.6km (교수님 프로토타입 1,650m 와 같은 급)
 	inline constexpr double kPlanetRadius = 1600.0;   // m
 
+	// 클라이언트 렌더 모델과 서버 접지 계산이 같은 파일·배율을 사용한다.
+	// 모델의 원점은 행성 중심이다. Planet_Core 정점의 평균 반지름을 기준구에 맞춘다.
+	inline constexpr const wchar_t* kPlanetModelAsset =
+		L"model\\planet\\future_ruins_realistic.obj";
+	// 접지 보정 OBJ는 미터 단위이며 Planet_Core의 평균 반경이 1,600m다.
+	// 표시 배율을 1로 유지해 건물·차량·엄폐물의 FPS 크기를 보존한다.
+	inline constexpr double kPlanetModelReferenceRadius = 1600.0;
+
 	// 행성 중심. 원점이 표면이므로 중심은 반지름만큼 아래에 있다.
 	inline constexpr double kPlanetCenterX = 0.0;
 	inline constexpr double kPlanetCenterY = -kPlanetRadius;

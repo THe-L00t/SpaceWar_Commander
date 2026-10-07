@@ -47,6 +47,9 @@ namespace swc {
 		// 경로는 와이드 문자열 — 윈도우 경로는 원래 UTF-16 이다.
 		HeightmapHandle LoadHeightmap(const wchar_t* path);
 		ModelHandle LoadModel(const wchar_t* path);
+		// GPU 업로드가 끝나면 CPU 모델과 경로 캐시를 해제한다.
+		// 기존 핸들/Get() 포인터는 무효가 되며 같은 경로는 다음 요청 때 다시 읽는다.
+		void ReleaseModel(ModelHandle);
 
 		// 무효 핸들이면 nullptr
 		const Shared::HeightmapData* Get(HeightmapHandle) const;
@@ -54,7 +57,7 @@ namespace swc {
 
 		const std::wstring& LastError() const { return lastError; }
 		size_t HeightmapCount() const { return heightmaps.size(); }
-		size_t ModelCount() const { return models.size(); }
+		size_t ModelCount() const { return modelPathCache.size(); }
 
 	private:
 		std::unordered_map<std::wstring, HeightmapHandle> pathCache;

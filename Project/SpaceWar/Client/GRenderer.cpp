@@ -160,8 +160,8 @@ namespace swc {
 
 		struct MeshGpu
 		{
-			ComPtr<ID3D12Resource> vertexBuffer;
-			ComPtr<ID3D12Resource> indexBuffer;
+			// 정점과 인덱스는 하나의 DEFAULT 버퍼를 나눠 써서 힙 정렬 낭비를 줄인다.
+			ComPtr<ID3D12Resource> buffer;
 			D3D12_VERTEX_BUFFER_VIEW vbv = {};
 			D3D12_INDEX_BUFFER_VIEW ibv = {};
 			UINT indexCount = 0;
@@ -219,6 +219,9 @@ namespace swc {
 		ComPtr<ID3D12Fence> fence;
 		UINT64 fenceValue = 0;
 		HANDLE fenceEvent = nullptr;
+		// 명령 제출 후 펜스 대기가 실패해도 GPU가 참조하는 리소스는 유지한다.
+		ComPtr<ID3D12Resource> pendingUpload;
+		ComPtr<ID3D12Resource> pendingDestination;
 
 		uint32_t width = 0;
 		uint32_t height = 0;
@@ -231,7 +234,13 @@ namespace swc {
 				status = L"GPU 펜스 신호 전송 실패.";
 				return false;
 			}
-			if (fence->GetCompletedValue() < target)
+			UINT64 completed = fence->GetCompletedValue();
+			if (completed == (std::numeric_limits<UINT64>::max)())
+			{
+				status = L"GPU 디바이스가 제거되었습니다.";
+				return false;
+			}
+			while (completed < target)
 			{
 				if (FAILED(fence->SetEventOnCompletion(target, fenceEvent)) ||
 					WaitForSingleObject(fenceEvent, INFINITE) != WAIT_OBJECT_0)
@@ -239,19 +248,29 @@ namespace swc {
 					status = L"GPU 펜스 완료 대기 실패.";
 					return false;
 				}
+				completed = fence->GetCompletedValue();
+				if (completed == (std::numeric_limits<UINT64>::max)())
+				{
+					status = L"GPU 디바이스가 제거되었습니다.";
+					return false;
+				}
 			}
+			pendingUpload.Reset();
+			pendingDestination.Reset();
 			frameIndex = swapChain->GetCurrentBackBufferIndex();
 			return true;
 		}
 
 		// 초기화 중 커맨드를 한 번 기록·실행하고 완료까지 기다린다.
-		bool FlushCommands()
+		bool FlushCommands(const ComPtr<ID3D12Resource>& upload, const ComPtr<ID3D12Resource>& destination)
 		{
 			if (FAILED(commandList->Close()))
 			{
 				status = L"리소스 업로드 명령 기록 종료 실패.";
 				return false;
 			}
+			pendingUpload = upload;
+			pendingDestination = destination;
 			ID3D12CommandList* lists[] = { commandList.Get() };
 			commandQueue->ExecuteCommandLists(1, lists);
 			return WaitForGpu();
@@ -573,7 +592,7 @@ namespace swc {
 
 	MeshHandle GRenderer::CreateMesh(const Vertex* verts, size_t vcount, const uint32_t* indices, size_t icount)
 	{
-		if (!impl->device || impl->frameOpen || !verts || !indices || vcount == 0 || icount == 0 ||
+		if (!impl->device || !impl->fenceEvent || impl->frameOpen || !verts || !indices || vcount == 0 || icount == 0 ||
 			icount % 3 != 0 || vcount > UINT_MAX / sizeof(Vertex) || icount > UINT_MAX / sizeof(uint32_t) ||
 			impl->meshes.size() >= kInvalidMesh)
 		{
@@ -589,50 +608,68 @@ namespace swc {
 			}
 		}
 		Impl::MeshGpu m;
-		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-		D3D12_RANGE noRead = { 0, 0 };
-
 		const UINT vbSize = UINT(vcount * sizeof(Vertex));
-		D3D12_RESOURCE_DESC vbDesc = BufferDesc(vbSize);
-		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vbDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.vertexBuffer))))
+		const UINT ibSize = UINT(icount * sizeof(uint32_t));
+		const UINT64 indexOffset = (UINT64(vbSize) + sizeof(uint32_t) - 1) & ~(UINT64(sizeof(uint32_t)) - 1);
+		const UINT64 bufferBytes = indexOffset + ibSize;
+		if (bufferBytes > (std::numeric_limits<size_t>::max)())
 		{
-			impl->status = L"메시 정점 버퍼 생성 실패.";
+			impl->status = L"메시 버퍼 크기가 주소 범위를 벗어났습니다.";
 			return kInvalidMesh;
 		}
-		void* vp = nullptr;
-		if (FAILED(m.vertexBuffer->Map(0, &noRead, &vp)))
+		D3D12_RESOURCE_DESC desc = BufferDesc(bufferBytes);
+		D3D12_HEAP_PROPERTIES defaultHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		if (FAILED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m.buffer))))
 		{
-			impl->status = L"메시 정점 버퍼 매핑 실패.";
+			impl->status = L"GPU 메시 버퍼 생성 실패.";
 			return kInvalidMesh;
 		}
-		memcpy(vp, verts, vbSize);
-		m.vertexBuffer->Unmap(0, nullptr);
-		m.vbv.BufferLocation = m.vertexBuffer->GetGPUVirtualAddress();
+		m.vbv.BufferLocation = m.buffer->GetGPUVirtualAddress();
 		m.vbv.StrideInBytes = sizeof(Vertex);
 		m.vbv.SizeInBytes = vbSize;
-
-		const UINT ibSize = UINT(icount * sizeof(uint32_t));
-		D3D12_RESOURCE_DESC ibDesc = BufferDesc(ibSize);
-		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ibDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.indexBuffer))))
-		{
-			impl->status = L"메시 인덱스 버퍼 생성 실패.";
-			return kInvalidMesh;
-		}
-		void* ip = nullptr;
-		if (FAILED(m.indexBuffer->Map(0, &noRead, &ip)))
-		{
-			impl->status = L"메시 인덱스 버퍼 매핑 실패.";
-			return kInvalidMesh;
-		}
-		memcpy(ip, indices, ibSize);
-		m.indexBuffer->Unmap(0, nullptr);
-		m.ibv.BufferLocation = m.indexBuffer->GetGPUVirtualAddress();
+		m.ibv.BufferLocation = m.buffer->GetGPUVirtualAddress() + indexOffset;
 		m.ibv.Format = DXGI_FORMAT_R32_UINT;
 		m.ibv.SizeInBytes = ibSize;
-
 		m.indexCount = UINT(icount);
+
+		// CPU 사본은 업로드 중에만 필요하며, 정적 메시를 UPLOAD 힙에 계속 두지 않는다.
+		ComPtr<ID3D12Resource> upload;
+		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))))
+		{
+			impl->status = L"메시 업로드 버퍼 생성 실패.";
+			return kInvalidMesh;
+		}
+		uint8_t* mapped = nullptr;
+		D3D12_RANGE noRead = { 0, 0 };
+		if (FAILED(upload->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		{
+			impl->status = L"메시 업로드 버퍼 매핑 실패.";
+			return kInvalidMesh;
+		}
+		memcpy(mapped, verts, vbSize);
+		memcpy(mapped + static_cast<size_t>(indexOffset), indices, ibSize);
+		upload->Unmap(0, nullptr);
+
+		if (!impl->WaitForGpu()) return kInvalidMesh;
+		if (FAILED(impl->commandAllocator->Reset()) ||
+			FAILED(impl->commandList->Reset(impl->commandAllocator.Get(), nullptr)))
+		{
+			impl->status = L"메시 업로드 명령 초기화 실패.";
+			return kInvalidMesh;
+		}
+		impl->commandList->CopyBufferRegion(m.buffer.Get(), 0, upload.Get(), 0, bufferBytes);
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = m.buffer.Get();
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
+		if (impl->rtSupported)
+			barrier.Transition.StateAfter |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		impl->commandList->ResourceBarrier(1, &barrier);
 
 		// BLAS 는 메쉬가 만들어질 때 한 번만 빌드한다 (정적 지오메트리).
 		if (impl->rtSupported)
@@ -640,21 +677,14 @@ namespace swc {
 			D3D12_RAYTRACING_GEOMETRY_DESC geo = {};
 			geo.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
 			geo.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-			geo.Triangles.VertexBuffer.StartAddress = m.vertexBuffer->GetGPUVirtualAddress() + offsetof(Vertex, position);
+			geo.Triangles.VertexBuffer.StartAddress = m.vbv.BufferLocation + offsetof(Vertex, position);
 			geo.Triangles.VertexBuffer.StrideInBytes = sizeof(Vertex);
 			geo.Triangles.VertexCount = UINT(vcount);
 			geo.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-			geo.Triangles.IndexBuffer = m.indexBuffer->GetGPUVirtualAddress();
+			geo.Triangles.IndexBuffer = m.ibv.BufferLocation;
 			geo.Triangles.IndexCount = UINT(icount);
 			geo.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
 
-			if (!impl->WaitForGpu()) return kInvalidMesh;
-			if (FAILED(impl->commandAllocator->Reset()) ||
-				FAILED(impl->commandList->Reset(impl->commandAllocator.Get(), nullptr)))
-			{
-				impl->status = L"메시 가속 구조 명령 초기화 실패.";
-				return kInvalidMesh;
-			}
 			m.blasIndex = impl->accel.AddMesh(impl->device.Get(), impl->commandList.Get(), geo);
 			if (m.blasIndex == AccelStructure::kInvalidBlas)
 			{
@@ -662,8 +692,9 @@ namespace swc {
 				impl->status = L"메시 가속 구조 생성 실패.";
 				return kInvalidMesh;
 			}
-			if (!impl->FlushCommands()) return kInvalidMesh;
 		}
+		// 정점/인덱스 복사와 선택적 BLAS 빌드가 모두 끝난 뒤 임시 upload를 해제한다.
+		if (!impl->FlushCommands(upload, m.buffer)) return kInvalidMesh;
 
 		impl->meshes.push_back(std::move(m));
 		return MeshHandle(impl->meshes.size() - 1);
@@ -754,7 +785,7 @@ namespace swc {
 		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 		impl->commandList->ResourceBarrier(1, &barrier);
 		// 복사가 끝날 때까지 upload를 유지한다. 디스크립터는 CreateMaterial에서 만든다.
-		if (!impl->FlushCommands()) return kInvalidTexture;
+		if (!impl->FlushCommands(upload, texture.resource)) return kInvalidTexture;
 		impl->textures.push_back(std::move(texture));
 		return static_cast<TextureHandle>(impl->textures.size() - 1);
 	}

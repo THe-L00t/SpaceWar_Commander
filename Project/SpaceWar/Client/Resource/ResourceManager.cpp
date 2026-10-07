@@ -1,7 +1,7 @@
 #include "ResourceManager.h"
-// 하이트맵 로더는 서버와 공유하고, Assimp 모델 로더는 클라이언트에서만 사용한다.
+// 하이트맵 로더는 서버와 공유하고, OBJ 렌더링 로더는 클라이언트에서만 사용한다.
 #include "Shared/Terrain/HeightmapLoader.h"
-#include "AssimpModelLoader.h"
+#include "ObjModelLoader.h"
 #include <filesystem>
 #include <utility>
 
@@ -58,15 +58,40 @@ namespace swc {
 			return it->second;
 
 		auto data = std::make_unique<ModelData>();
-		AssimpModelLoader loader;
+		ObjModelLoader loader;
 		if (!loader.Load(key.c_str(), *data, lastError))
 			return {};
 
-		models.push_back(std::move(data));
-		modelGenerations.push_back(1);
-		const ModelHandle handle{ static_cast<uint32_t>(models.size()), 1 };
+		// 해제한 슬롯을 재사용하고 generation으로 이전 핸들을 구분한다.
+		size_t index = 0;
+		while (index < models.size() && models[index]) ++index;
+		if (index == models.size())
+		{
+			models.push_back(std::move(data));
+			modelGenerations.push_back(1);
+		}
+		else
+			models[index] = std::move(data);
+		const ModelHandle handle{ static_cast<uint32_t>(index + 1), modelGenerations[index] };
 		modelPathCache.emplace(key, handle);
 		return handle;
+	}
+
+	void ResourceManager::ReleaseModel(ModelHandle handle)
+	{
+		if (!Get(handle)) return;
+		for (auto it = modelPathCache.begin(); it != modelPathCache.end(); ++it)
+		{
+			if (it->second.index == handle.index && it->second.generation == handle.generation)
+			{
+				modelPathCache.erase(it);
+				break;
+			}
+		}
+		const size_t index = handle.index - 1;
+		models[index].reset();
+		// 0은 기본 생성 핸들의 generation이므로 재사용하지 않는다.
+		if (++modelGenerations[index] == 0) ++modelGenerations[index];
 	}
 
 	const ModelData* ResourceManager::Get(ModelHandle handle) const
