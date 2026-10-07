@@ -205,8 +205,7 @@ namespace swc {
 					return false;
 				}
 				const bool srgb = slot == TextureSlot::BaseColor || slot == TextureSlot::Emissive;
-				const bool normal = slot == TextureSlot::Normal;
-				const std::wstring key = path.wstring() + (srgb ? L"|srgb" : normal ? L"|normal" : L"|linear");
+				const std::wstring key = path.wstring() + (srgb ? L"|srgb" : L"|linear");
 				if (auto it = textureIndices.find(key); it != textureIndices.end())
 				{
 					material.textures[size_t(slot)] = it->second;
@@ -214,14 +213,13 @@ namespace swc {
 				}
 				TextureData image;
 				if (!LoadTextureImage(path.c_str(), srgb, image, error)) return false;
-				if (normal)
-				{
-					// Meshy/Blender의 +Y(OpenGL) 노멀 맵. 아래의 V 반전과 같이 처리한다.
-					// 접선은 반전 후 UV로 계산하므로 녹색도 반전하며 셰이더는 다시 뒤집지 않는다.
-					// 추후 -Y(DirectX) 원본을 받으면 이 변환을 로드 옵션으로 분리한다.
-					for (size_t i = 1; i < image.pixels.size(); i += 4)
-						image.pixels[i] = uint8_t(255 - image.pixels[i]);
-				}
+
+				// ★ 노멀맵의 녹색을 여기서 뒤집지 않는다 (2026-10-07 수정)
+				//   Meshy/Blender 는 +Y(OpenGL) 로 노멀맵을 굽고, 이 로더는 UV 의 V 를 뒤집어 읽는다.
+				//   V 를 뒤집으면 접선 공간의 Y 축도 뒤집히므로 녹색 반전이 «한 번» 필요하다.
+				//   그 한 번을 셰이더가 한다 — Forward.hlsl 의 ApplyNormalMap 에 nTex.y = -nTex.y 가 있다.
+				//   여기서 픽셀까지 뒤집으면 두 번이 되어 요철이 원래대로 돌아간다(그동안 그 상태였다).
+				//   자체 파서 경로(Resource/ModelBuilder)도 픽셀을 건드리지 않는다 — 반전 지점은 셰이더 한 곳이다.
 				const uint32_t index = uint32_t(data.textures.size());
 				data.textures.push_back(std::move(image));
 				textureIndices.emplace(key, index);

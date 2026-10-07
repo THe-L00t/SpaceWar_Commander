@@ -150,6 +150,12 @@ float3 SpecularGGX(float NdotL, float NdotV, float NdotH, float rough, float3 F)
 // ★ 녹색 채널을 뒤집는 이유
 //   Meshy/Blender 는 +Y(OpenGL) 규약으로 노멀맵을 굽고, 로더는 UV 의 V 를 뒤집어 읽는다.
 //   V 를 뒤집으면 접선 공간의 Y 축도 뒤집히므로 녹색을 그대로 쓰면 요철이 반대로 보인다.
+//
+// ★★ 반전은 여기 한 곳에서만 한다 (2026-10-07)
+//   로더에서 픽셀의 녹색을 또 뒤집으면 두 번이 되어 반전이 상쇄된다. 실제로 그랬다 —
+//   FbxModelLoader 가 로드 때 255-G 를 하고 있었고, 그래서 FBX 모델의 요철이 반대로 보였다.
+//   지금은 FBX 경로와 자체 파서 경로(ModelBuilder) 둘 다 픽셀을 건드리지 않는다.
+//   ※ -Y(DirectX) 규약 원본을 받게 되면 이 줄을 지우는 대신 재질 플래그로 가려야 한다.
 float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
 {
 	float3 T = tangent.xyz - N * dot(N, tangent.xyz);   // 그람-슈미트 직교화
