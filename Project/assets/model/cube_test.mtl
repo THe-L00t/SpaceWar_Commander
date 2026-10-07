@@ -1,0 +1,18 @@
+# cube_test.mtl — cube_test.obj 의 재질 (파서 점검용)
+#
+#  일부러 두 가지 방식을 섞었다:
+#    CubeBody — 옛 방식(Ns). 파서가 sqrt(2/(Ns+2)) 로 roughness 를 환산한다
+#               (FbxModelLoader.cpp 와 같은 식)
+#    CubeCap  — PBR 확장(Pr·Pm·Ke). 있으면 Ns 환산보다 이쪽을 믿는다
+#  map_* 는 없다. 텍스처 파일 없이도 그려져야 한다.
+
+newmtl CubeBody
+Kd 0.85 0.35 0.20
+Ns 48.0
+d 1.0
+
+newmtl CubeCap
+Kd 0.20 0.45 0.85
+Pr 0.25
+Pm 0.60
+Ke 0.03 0.03 0.08
