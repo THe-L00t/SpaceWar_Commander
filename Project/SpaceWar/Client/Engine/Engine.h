@@ -99,6 +99,14 @@ namespace swc {
 		// 명세 1절에 Model 자리가 없다 — 리소스(ModelData)를 GPU 자원 + Scene 노드로 펼치는 어댑터다.
 		Model                  characterModel;
 
+		// 플레이어 캐릭터의 재생 인스턴스 (명세 §14). 스킨 있는 모델(.glb)일 때만 유효하다.
+		// 원격 플레이어·NPC 도 각자 인스턴스를 갖게 되지만, 그건 GPU 스키닝을 올린 뒤다.
+		AnimationInstance      playerAnimation = kInvalidAnimationInstance;
+
+		// 자체 OBJ 파서 점검용 소품 (2026-10-06, 파서 2단계). Engine.cpp 의 kShowObjProbe 로 끈다.
+		// 파서가 서는 것을 눈으로 확인하는 임시 물건이다 — .swm 이 들어오면 지운다.
+		Model                  objProbeModel;
+
 		// 원격 플레이어 · NPC 노드 → Scene 의 OtherPlayer · NPC (6.10)
 		std::unordered_map<uint32_t, NodeHandle> remoteNodes;
 		std::vector<NodeHandle>                  freeRemoteNodes;

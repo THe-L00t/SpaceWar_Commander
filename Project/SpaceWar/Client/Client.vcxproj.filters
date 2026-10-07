@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
     필터 규칙 (클래스 기준)
@@ -45,6 +45,9 @@
     <Filter Include="클래스 목록\Animator">
       <UniqueIdentifier>{6d0e28f5-b34a-4c91-857d-90fc2b6e4315}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\AnimationBlender">
+      <UniqueIdentifier>{c58d0a73-2b14-49e6-8f05-36ab7e92d140}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\SoundManager">
       <UniqueIdentifier>{48f1a9c6-27d3-4e50-b16a-8c05d37e92b1}</UniqueIdentifier>
     </Filter>
@@ -84,6 +87,9 @@
     <Filter Include="클래스 목록\TextureLoader">
       <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\ModelBuilder">
+      <UniqueIdentifier>{9c74e1b3-5a02-4d8f-91e6-47b0d2c85a31}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
     </Filter>
@@ -118,6 +124,9 @@
     </ClCompile>
     <ClCompile Include="Animation\Animator.cpp">
       <Filter>클래스 목록\Animator</Filter>
+    </ClCompile>
+    <ClCompile Include="Animation\AnimationBlender.cpp">
+      <Filter>클래스 목록\AnimationBlender</Filter>
     </ClCompile>
     <ClCompile Include="Sound\SoundManager.cpp">
       <Filter>클래스 목록\SoundManager</Filter>
@@ -161,6 +170,9 @@
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
     </ClCompile>
+    <ClCompile Include="Resource\ModelBuilder.cpp">
+      <Filter>클래스 목록\ModelBuilder</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="LegacyScene.h">
@@ -186,6 +198,12 @@
     </ClInclude>
     <ClInclude Include="Animation\Animator.h">
       <Filter>클래스 목록\Animator</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\AnimationBlender.h">
+      <Filter>클래스 목록\AnimationBlender</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\AnimationObject.h">
+      <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="Sound\SoundManager.h">
       <Filter>클래스 목록\SoundManager</Filter>
@@ -231,6 +249,12 @@
     </ClInclude>
     <ClInclude Include="Resource\TextureLoader.h">
       <Filter>클래스 목록\TextureLoader</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ModelBuilder.h">
+      <Filter>클래스 목록\ModelBuilder</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\AnimationData.h">
+      <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="MeshData.h">
       <Filter>헤더파일</Filter>
@@ -283,6 +307,12 @@
       <Filter>설정 및 리소스</Filter>
     </None>
     <None Include="..\..\assets\model\*.fbx">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\cube_test.obj">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\cube_test.mtl">
       <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>

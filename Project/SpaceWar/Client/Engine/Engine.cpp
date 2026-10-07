@@ -23,6 +23,14 @@ namespace
 	constexpr const wchar_t* kCharacterModelAsset =
 		L"model\\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx";
 
+	// ── 자체 OBJ 파서 점검용 소품 (2026-10-06, 파서 2단계) ──
+	//  외부 SDK 없이 만든 파서가 «파일 → ModelSource → ModelData → 화면» 까지 닿는지 본다.
+	//  ★ 실행 인자가 아니라 코드 상수다. 끄려면 false 로 바꾸고 다시 빌드한다.
+	//  ★ 실패해도 게임은 뜬다 — 점검용이라 경고만 띄운다(캐릭터 모델은 없으면 중단한다).
+	constexpr bool           kShowObjProbe = true;
+	constexpr const wchar_t* kObjProbeAsset = L"model\\cube_test.obj";
+	constexpr float          kObjProbeForward = 6.0f;   // 스폰 앞 (m)
+
 	// ── 사격 효과 (임시) ───────────────────────────────────
 	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
 	//  맞은 표시·총구 화염·소리는 없다.
@@ -170,17 +178,29 @@ namespace swc {
 		//    (그래서 BLAS 도 하나다). 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
 		//    «모델이 안 나온다» 를 빌드 문제로 착각한다.
 		//  ★ 렌더러 초기화 뒤에 와야 한다. GPU 메시·텍스처·재질을 만들기 때문이다.
-		const ModelHandle modelHandle = resources.LoadModel(AssetPath(kCharacterModelAsset).c_str());
-		const ModelData* modelData = resources.Get(modelHandle);
+		//  ★ 파일 하나에서 메시·스켈레톤·클립이 함께 나온다 (명세 §4 — 종류별로 다른 핸들).
+		//    지금 에셋은 .fbx 라 메시만 나오고, .glb 로 바꾸면 스켈레톤·클립도 같이 채워진다.
+		const ModelFileResources characterResources =
+			resources.LoadModelFile(AssetPath(kCharacterModelAsset).c_str());
+		const ModelData* modelData = resources.Get(characterResources.model);
 		if (!modelData)
 		{
-			MessageBox(hwnd, resources.LastError().c_str(), L"FBX 모델 로드 실패", MB_OK | MB_ICONERROR);
+			MessageBox(hwnd, resources.LastError().c_str(), L"캐릭터 모델 로드 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
 		if (!characterModel.Initialize(*modelData, renderer))
 		{
 			MessageBox(hwnd, characterModel.LastError().c_str(), L"모델 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
+		}
+
+		// 스킨이 있는 모델이면 재생 인스턴스를 만들고 첫 클립을 돌린다 (명세 §14).
+		// 스킨이 없으면(지금 FBX 가 그렇다) 아무 일도 하지 않는다 — 정적 모델로 그려진다.
+		if (characterResources.skeleton.Valid())
+		{
+			playerAnimation = animator.Create(characterResources.skeleton);
+			if (!characterResources.animations.empty())
+				animator.Play(playerAnimation, characterResources.animations.front());
 		}
 
 		// 지면 = 큐브 구 6면 전체 메시 (파일 없이 코드로 생성)
@@ -209,6 +229,33 @@ namespace swc {
 		// 모델은 루트(이동) + 표시 보정 + FBX 노드 계층으로 펼쳐진다. 반환값이 이동 루트다.
 		// 화면 밖으로 치울 때도 이 루트만 옮기면 자식이 따라온다.
 		player = characterModel.Instantiate(scene);
+
+		// 자체 파서 점검용 OBJ 소품. 스폰 앞 6m 에 세워 둔다.
+		//  ★ LoadModel 은 포맷을 보고 길을 고른다 — 여기서는 .obj 라 Shared 의 자체 파서가 돈다.
+		//    같은 호출로 .fbx 도 그대로 열린다(캐릭터 모델이 그 경우다).
+		if (kShowObjProbe)
+		{
+			const ModelHandle probeHandle = resources.LoadModel(AssetPath(kObjProbeAsset).c_str());
+			const ModelData* probeData = resources.Get(probeHandle);
+			if (!probeData)
+			{
+				MessageBox(hwnd, resources.LastError().c_str(),
+					L"OBJ 점검 모델 로드 실패 (게임은 계속 뜬다)", MB_OK | MB_ICONWARNING);
+			}
+			else if (!objProbeModel.Initialize(*probeData, renderer))
+			{
+				MessageBox(hwnd, objProbeModel.LastError().c_str(),
+					L"OBJ 점검 모델 초기화 실패 (게임은 계속 뜬다)", MB_OK | MB_ICONWARNING);
+			}
+			else
+			{
+				// 스폰과 같은 지점(북극, 표면 +1m)에서 +Z 로 6m. 스폰 시선이 +Z 라 정면에 보인다.
+				const Vec3d spawn = planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0);
+				const NodeHandle probe = objProbeModel.Instantiate(scene);
+				scene.SetLocalTransform(probe, DirectX::XMMatrixTranslation(
+					float(spawn.x), float(spawn.y), float(spawn.z) + kObjProbeForward));
+			}
+		}
 
 		// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
 		freeTracerNodes.reserve(kTracerPool);
@@ -264,6 +311,12 @@ namespace swc {
 			UpdatePlayer(dt);
 			UpdateFire(dt);
 			UpdateNetwork(dt);
+
+			// 애니메이션 포즈 — 게임 단계의 «출력» 이다 (멀티스레딩 명세 3.2 ③).
+			//  총구 위치·히트박스가 포즈를 쓰므로 렌더보다 먼저, 상태가 다 정해진 뒤에 돌린다.
+			//  나중에 캐릭터 범위 단위 잡으로 쪼갠다(M5).
+			animator.Update(resources, dt);
+
 			RenderFrame();
 			UpdateTitle(dt);
 		}

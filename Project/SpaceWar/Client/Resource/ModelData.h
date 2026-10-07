@@ -37,10 +37,22 @@ namespace swc {
 			kInvalidModelIndex, kInvalidModelIndex };
 	};
 
+	// 스키닝 속성. ★ Vertex 에 넣지 않고 따로 둔다 —
+	//   같은 Vertex 를 절차적 지형(정점 60만 개)이 쓰므로 24바이트를 더하면 그쪽이 통째로 무거워진다.
+	//   GPU 스키닝을 붙일 때 두 번째 정점 스트림으로 올린다(명세 §7 의 연속 배열 방식).
+	struct SkinVertex
+	{
+		uint16_t joints[4]{};
+		float    weights[4]{};
+	};
+
 	struct ModelMeshData
 	{
 		MeshData mesh;
 		uint32_t material = kInvalidModelIndex;
+
+		// 스킨 메시면 mesh.vertices 와 같은 길이다. 아니면 비어 있다.
+		std::vector<SkinVertex> skin;
 	};
 
 	struct ModelNodeData

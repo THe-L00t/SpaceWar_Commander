@@ -8,11 +8,8 @@
 #include <string>
 
 #include "MeshPostProcess.h"
-
-// 포맷별 리더는 여기에 추가한다 (설계안 8장 올리기 순서: OBJ → .swm → glTF).
-// #include "Readers/ObjReader.h"
-// #include "Readers/SwmReader.h"
-// #include "Readers/GltfReader.h"
+#include "Readers/GltfReader.h"
+#include "Readers/ObjReader.h"
 
 namespace Shared {
 
@@ -21,7 +18,7 @@ namespace Shared {
 		namespace fs = std::filesystem;
 
 		// 파일 앞부분과 확장자를 읽어 둔다. 판별에 두 가지를 같이 쓴다 —
-		// .swm·glb 는 매직이 있지만 obj·gltf(텍스트)는 확장자로 가려야 한다.
+		// .glb 는 매직이 있지만 .gltf·.obj(텍스트)는 확장자로 가려야 한다.
 		struct Probe
 		{
 			uint8_t     head[ModelReader::kProbeBytes] = {};
@@ -58,7 +55,6 @@ namespace Shared {
 		{
 			switch (format)
 			{
-			case ModelFormat::Swm:  return L".swm";
 			case ModelFormat::Gltf: return L"glTF";
 			case ModelFormat::Obj:  return L"OBJ";
 			default:                return L"알 수 없음";
@@ -71,9 +67,8 @@ namespace Shared {
 	{
 		// ★ 등록 순서 = 판별 우선순위
 		//   매직이 뚜렷한 포맷을 앞에 둔다. 확장자로만 가리는 포맷이 뒤에 온다.
-		// readers.push_back(std::make_unique<SwmReader>());
-		// readers.push_back(std::make_unique<GltfReader>());
-		// readers.push_back(std::make_unique<ObjReader>());
+		readers.push_back(std::make_unique<GltfReader>());
+		readers.push_back(std::make_unique<ObjReader>());
 	}
 
 	ModelReader::~ModelReader() = default;
@@ -83,21 +78,12 @@ namespace Shared {
 		const Probe probe = ReadProbe(path);
 		if (!probe.ok) return ModelFormat::Unknown;
 
-		// .swm — 매직 4바이트
-		if (probe.headSize >= sizeof(uint32_t))
-		{
-			uint32_t magic = 0;
-			::memcpy(&magic, probe.head, sizeof(magic));
-			if (magic == swm::kMagic) return ModelFormat::Swm;
-		}
-
 		// .glb — 'glTF' 매직
 		if (probe.headSize >= 4 &&
 			probe.head[0] == 'g' && probe.head[1] == 'l' &&
 			probe.head[2] == 'T' && probe.head[3] == 'F')
 			return ModelFormat::Gltf;
 
-		if (probe.extension == ".swm")  return ModelFormat::Swm;
 		if (probe.extension == ".glb" || probe.extension == ".gltf") return ModelFormat::Gltf;
 		if (probe.extension == ".obj")  return ModelFormat::Obj;
 
@@ -125,7 +111,7 @@ namespace Shared {
 		}
 
 		std::error_code ec;
-		out.sourceDirectory = fs::absolute(path, ec).parent_path().string();
+		out.sourceDirectory = fs::absolute(path, ec).parent_path().wstring();
 
 		// ── 1) 포맷에 맞는 리더 찾기 ────────────────────────
 		IModelReader* chosen = nullptr;
@@ -141,9 +127,9 @@ namespace Shared {
 		if (!chosen)
 		{
 			const ModelFormat detected = Detect(path);
-			error = L"아직 읽을 수 없는 모델 포맷입니다 (판별: ";
+			error = L"읽을 수 없는 모델 포맷입니다 (판별: ";
 			error += FormatName(detected);
-			error += L"). 지원 예정: .swm · glTF(.glb/.gltf) · OBJ";
+			error += L"). 지원: glTF 2.0(.glb/.gltf) · OBJ(.obj)";
 			return false;
 		}
 
@@ -156,6 +142,7 @@ namespace Shared {
 		out.format = chosen->Format();
 
 		// ── 3) 공통 검사와 후처리 ───────────────────────────
+		//  애니메이션 클립만 든 파일(메시 0개)도 있다 — 그때는 메시 후처리를 건너뛴다.
 		if (!ValidateModelSource(out, error))
 			return false;
 

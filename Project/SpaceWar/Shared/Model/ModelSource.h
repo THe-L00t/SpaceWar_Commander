@@ -10,25 +10,30 @@
 // ============================================================
 //  Shared/Model/ModelSource.h — 포맷 중립 중간 표현
 //
-//  세 포맷(.swm · glTF · OBJ)의 리더가 모두 이 구조를 채운다. 그 뒤 단계는 포맷을 모른다.
+//  리더(glTF·OBJ)가 모두 이 구조를 채운다. 그 뒤 단계는 포맷을 모른다.
 //
-//  ★ 왜 Shared 인가 — 서버가 읽어야 한다
+//  ★ 리소스가 세 종류로 갈라진다 (명세 §4 · §6.4.2)
+//    명세는 Resource Manager 의 관리 대상을 «Mesh · Texture · Animation …» 으로 적고,
+//    GameObject 는 «Mesh Index» 와 «Animation Index» 를 **따로** 들고 있다(6.4.2).
+//    즉 메시 / 스켈레톤(본) / 애니메이션 클립은 서로 다른 리소스다. 파일 한 개에서 셋이
+//    같이 나올 수도 있고(캐릭터), 클립만 든 파일이 따로 올 수도 있다(동작 하나당 한 파일).
+//    그래서 이 구조도 셋을 나란히 들고, Client 쪽에서 각각 다른 리소스로 적재한다.
+//
+//  ★ 왜 Shared 인가 — 서버가 충돌·높이를 읽어야 한다
 //    교수님 2026-09-29 지시: «높이 정보와 장애물 정보를 서버에서 가지고 NPC 이동에 활용».
-//    판정은 서버 권위(명세 18절 원칙 4)이므로 충돌 데이터는 서버가 직접 읽는다.
-//    지형을 TerrainSampler 로 클라·서버가 같이 보는 것과 같은 방식이다.
+//    판정은 서버 권위(명세 §18 원칙 4)다. 애니메이션은 클라 전용이므로(§14 Animator)
+//    서버는 ReadOptions 로 끄고 읽는다.
 //
 //  ★ DirectXMath 를 쓰지 않는다
-//    Shared 가 DirectX 를 물면 서버가 끌려온다(09-18 에 TerrainSampler 를 옮길 때 지킨 원칙).
-//    렌더용 변환은 Client/Resource/ModelBuilder 가 한다.
+//    Shared 가 DirectX 를 물면 서버가 끌려온다. 렌더용 변환은 Client/Resource/ModelBuilder 다.
 //
 //  ★ 텍스처 픽셀을 담지 않는다
 //    경로만 들고 있고, 읽기는 Client 의 TextureLoader(WIC) 가 한다.
-//    FBX SDK 시절의 «내장 텍스처를 임시폴더로 추출» 단계가 없어진다.
 // ============================================================
 
 namespace Shared {
 
-	// Client 의 swc::Vertex 와 필드가 1:1 로 대응한다 (ModelBuilder 가 그대로 올린다).
+	// Client 의 swc::Vertex + 스킨 속성. 스킨은 별도 배열로 올라간다(지형 정점이 무거워지지 않게).
 	struct SourceVertex
 	{
 		Vec3 position{};
@@ -36,6 +41,11 @@ namespace Shared {
 		Vec3 color{ 1.0f, 1.0f, 1.0f };
 		Vec2 uv{};
 		Vec4 tangent{ 1.0f, 0.0f, 0.0f, 1.0f };   // xyz = 접선, w = 종법선 부호
+
+		// 스키닝 — glTF JOINTS_0 / WEIGHTS_0. 스킨이 없는 메시는 전부 0 이다.
+		// weights 합은 리더에서 1 로 정규화한다.
+		std::array<uint16_t, kJointsPerVertex> joints{};
+		std::array<float, kJointsPerVertex>    weights{};
 	};
 
 	struct SourceMesh
@@ -43,6 +53,7 @@ namespace Shared {
 		std::vector<SourceVertex> vertices;
 		std::vector<uint32_t>     indices;        // 삼각형 목록 (후처리에서 보장)
 		uint32_t                  material = kInvalidIndex;
+		bool                      skinned = false;   // joints/weights 가 의미 있는가
 	};
 
 	// 텍스처 슬롯 순서는 셰이더의 t1~t5 와 같아야 한다 (Client 의 TextureSlot 과 동일).
@@ -61,7 +72,21 @@ namespace Shared {
 		float metallic = 0.0f;
 
 		// 모델 파일이 있는 폴더 기준 상대 경로. 빈 문자열이면 그 슬롯은 없다.
+		// glTF 의 내장 이미지(.glb buffer / base64)는 ModelBuilder 가 쓸 수 있도록
+		// 아래 embeddedImage 로 따로 들어온다.
 		std::array<std::string, kSourceTextureCount> texturePaths;
+
+		// 내장 이미지 인덱스 (ModelSource::images). 없으면 kInvalidIndex.
+		std::array<uint32_t, kSourceTextureCount> embeddedImages{
+			kInvalidIndex, kInvalidIndex, kInvalidIndex, kInvalidIndex, kInvalidIndex };
+	};
+
+	// .glb 안에 들어 있던 이미지 바이트. 디코딩(PNG/JPG → RGBA8)은 Client 의 WIC 가 한다.
+	struct SourceImage
+	{
+		std::string          name;
+		std::string          mimeType;   // "image/png" 등
+		std::vector<uint8_t> bytes;
 	};
 
 	struct SourceNode
@@ -72,8 +97,48 @@ namespace Shared {
 		std::vector<uint32_t> meshes;
 	};
 
+	// ── 스켈레톤(본) — 명세 §4 의 독립 리소스 ─────────
+	struct SourceJoint
+	{
+		std::string name;
+		uint32_t    parent = kInvalidIndex;   // ★ 부모가 먼저 온다
+		Mat4        localRest{};              // 바인드 자세의 로컬 변환
+		Mat4        inverseBind{};            // 역바인드 행렬 (스키닝에 쓴다)
+	};
+
+	struct SkeletonSource
+	{
+		std::string              name;
+		std::vector<SourceJoint> joints;
+
+		bool Empty() const { return joints.empty(); }
+	};
+
+	// ── 애니메이션 클립 — 명세 §4 의 독립 리소스 ──────
+	//  채널은 «조인트 하나의 한 성분(T/R/S)» 시간열이다. Animator(§14)가 샘플링해 포즈를 만든다.
+	enum class AnimationPath : uint8_t { Translation, Rotation, Scale };
+
+	// CUBICSPLINE 은 리더에서 값만 뽑아 Linear 로 낮춘다(키프레임당 값 3개 구조를 들이지 않는다).
+	enum class AnimationInterpolation : uint8_t { Linear, Step };
+
+	struct AnimationChannel
+	{
+		uint32_t               joint = kInvalidIndex;    // SkeletonSource::joints 인덱스
+		AnimationPath          path = AnimationPath::Translation;
+		AnimationInterpolation interpolation = AnimationInterpolation::Linear;
+
+		std::vector<float> times;    // 초. 오름차순
+		std::vector<float> values;   // T·S = 3개씩, R = 4개씩(쿼터니언 xyzw)
+	};
+
+	struct AnimationSource
+	{
+		std::string                   name;
+		float                         duration = 0.0f;   // 초
+		std::vector<AnimationChannel> channels;
+	};
+
 	// ★ 서버가 쓰는 부분. 렌더 정보가 전혀 없다.
-	//   하이트맵을 쓰지 않는 맵(2026-10-05 방침)에서는 이것이 지면 높이의 출처가 된다.
 	struct CollisionData
 	{
 		std::vector<Vec3>     vertices;
@@ -88,19 +153,28 @@ namespace Shared {
 	{
 		std::vector<SourceMesh>     meshes;
 		std::vector<SourceMaterial> materials;
+		std::vector<SourceImage>    images;      // .glb 내장 이미지
 		std::vector<SourceNode>     nodes;
-		CollisionData               collision;
+
+		SkeletonSource               skeleton;   // 비어 있을 수 있다(정적 모델)
+		std::vector<AnimationSource> animations; // 클립만 든 파일이면 meshes 가 비어 있다
+
+		CollisionData collision;
 
 		Vec3 boundsMin{};
 		Vec3 boundsMax{};
 
 		ModelFormat format = ModelFormat::Unknown;
-		std::string sourceDirectory;   // 텍스처 상대 경로를 푸는 기준
+
+		// 텍스처 상대 경로를 푸는 기준.
+		// ★ 와이드다 — 윈도우 경로는 원래 UTF-16 이다. narrow 로 두면 ACP(CP949) 왕복이 생겨
+		//   한글 경로가 깨질 수 있다. 반대로 texturePaths 는 «파일에 적힌 바이트» 라 UTF-8 narrow 다.
+		std::wstring sourceDirectory;
 	};
 
 	struct ReadOptions
 	{
-		// 서버용. 정점색·UV·탄젠트·재질을 읽지 않고 충돌과 위치만 채운다.
+		// 서버용. 정점색·UV·탄젠트·재질·애니메이션을 읽지 않고 충돌과 위치만 채운다.
 		bool geometryOnly = false;
 
 		// 충돌 섹션이 없는 포맷(glTF·OBJ)이면 렌더 메시에서 만들어 넣는다.
@@ -108,6 +182,9 @@ namespace Shared {
 
 		// 탄젠트가 파일에 없을 때 UV 기준으로 만든다. 노멀맵을 쓰면 필요하다.
 		bool generateTangents = true;
+
+		// 스킨·애니메이션을 읽는다. 서버는 끈다(Animator 는 클라 전용 — 명세 §14).
+		bool readAnimation = true;
 	};
 
 } // namespace Shared

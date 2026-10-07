@@ -95,11 +95,17 @@
     <ClInclude Include="Model\ModelSource.h" />
     <ClInclude Include="Model\ModelReader.h" />
     <ClInclude Include="Model\MeshPostProcess.h" />
+    <ClInclude Include="Model\Readers\ObjReader.h" />
+    <ClInclude Include="Model\Readers\GltfReader.h" />
+    <ClInclude Include="Model\Readers\JsonValue.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
     <ClCompile Include="Model\ModelReader.cpp" />
     <ClCompile Include="Model\MeshPostProcess.cpp" />
+    <ClCompile Include="Model\Readers\ObjReader.cpp" />
+    <ClCompile Include="Model\Readers\GltfReader.cpp" />
+    <ClCompile Include="Model\Readers\JsonValue.cpp" />
     <ClCompile Include="Terrain\TerrainSampler.cpp" />
     <ClCompile Include="Terrain\HeightmapLoader.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />

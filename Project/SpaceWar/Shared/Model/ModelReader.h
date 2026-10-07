@@ -13,8 +13,9 @@
 //    새 포맷을 지원하려면 IModelReader 를 하나 만들고 ModelReader.cpp 의
 //    등록 목록에 한 줄 더하면 끝이다 — 호출부는 그대로다.
 //
-//  ★ 외부 SDK 없음 (2026-10-05 방침)
-//    FBX SDK · Assimp 를 쓰지 않는다. 런타임 의존은 표준 라이브러리뿐이다.
+//  ★ 운영 포맷은 glTF 2.0 하나다 (2026-10-07)
+//    스킨·애니메이션이 규격에 있어야 명세 §14 Animator 를 채울 수 있다.
+//    OBJ 는 정적 소품·충돌·디버깅용으로 남는다. FBX·Assimp 는 쓰지 않는다.
 //
 //  사용 예
 //      Shared::ModelSource source;
@@ -22,7 +23,9 @@
 //      if (!Shared::ModelReader().Load(path, source, error)) { /* error 표시 */ }
 //
 //  서버는 충돌만 필요하므로:
-//      Shared::ReadOptions opt; opt.geometryOnly = true;
+//      Shared::ReadOptions opt;
+//      opt.geometryOnly = true;     // 재질·애니메이션을 읽지 않는다
+//      opt.readAnimation = false;
 //      ModelReader().Load(path, source, error, opt);   // source.collision 만 쓴다
 // ============================================================
 

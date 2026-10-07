@@ -1,7 +1,9 @@
 #include "MeshPostProcess.h"
 
 #include <cmath>
+#include <filesystem>
 #include <limits>
+#include <string>
 
 namespace Shared {
 
@@ -60,13 +62,30 @@ namespace Shared {
 			return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 		}
 
+		// 오류 메시지에 이름(파일에 적힌 UTF-8)을 넣기 위한 변환.
+		// <Windows.h> 를 끌어오지 않으려고 filesystem 의 u8 경로 변환을 쓴다.
+		std::wstring ToWide(const std::string& utf8)
+		{
+			return std::filesystem::path(
+				std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size())).wstring();
+		}
+
 	} // namespace
 
 	bool ValidateModelSource(const ModelSource& source, std::wstring& error)
 	{
-		if (source.meshes.empty() || source.nodes.empty())
+		// ★ 애니메이션 클립만 든 파일이 정상 입력이다 (명세 §4 — 메시와 애니메이션은 다른 리소스).
+		//   동작 하나당 파일 하나로 내보내면 메시·노드가 비어 있다.
+		const bool hasGeometry = !source.meshes.empty() && !source.nodes.empty();
+		const bool hasAnimation = !source.animations.empty() || !source.skeleton.Empty();
+		if (!hasGeometry && !hasAnimation)
 		{
-			error = L"모델에 메시 또는 노드가 없습니다.";
+			error = L"모델에 메시·노드도 애니메이션도 없습니다.";
+			return false;
+		}
+		if (!source.meshes.empty() && source.nodes.empty())
+		{
+			error = L"메시는 있는데 노드가 없습니다.";
 			return false;
 		}
 
@@ -108,6 +127,84 @@ namespace Shared {
 				{
 					error = L"메시의 인덱스가 정점 수를 넘었습니다.";
 					return false;
+				}
+			}
+		}
+
+		// ── 스켈레톤 (본) ───────────────────────────────
+		if (source.skeleton.joints.size() > kMaxJoints)
+		{
+			error = L"스켈레톤의 조인트가 너무 많습니다(" + std::to_wstring(kMaxJoints) + L" 제한).";
+			return false;
+		}
+		for (size_t i = 0; i < source.skeleton.joints.size(); ++i)
+		{
+			// 포즈 계산이 배열 앞쪽부터 한 번에 돌 수 있어야 한다(메시 노드와 같은 규칙).
+			const SourceJoint& joint = source.skeleton.joints[i];
+			if (joint.parent != kInvalidIndex && joint.parent >= i)
+			{
+				error = L"스켈레톤 조인트가 부모보다 먼저 배치되어 있습니다.";
+				return false;
+			}
+		}
+
+		// ── 스킨 가중치 ─────────────────────────────────
+		for (const SourceMesh& mesh : source.meshes)
+		{
+			if (!mesh.skinned) continue;
+			if (source.skeleton.Empty())
+			{
+				error = L"스킨 메시인데 스켈레톤이 없습니다.";
+				return false;
+			}
+			const uint16_t jointCount = static_cast<uint16_t>(source.skeleton.joints.size());
+			for (const SourceVertex& vertex : mesh.vertices)
+			{
+				for (size_t slot = 0; slot < kJointsPerVertex; ++slot)
+				{
+					// 가중치가 0 인 슬롯의 조인트 번호는 보지 않는다(glTF 가 쓰레기를 넣어도 된다).
+					if (vertex.weights[slot] > 0.0f && vertex.joints[slot] >= jointCount)
+					{
+						error = L"스킨 정점의 조인트 번호가 스켈레톤 범위를 벗어났습니다.";
+						return false;
+					}
+				}
+			}
+		}
+
+		// ── 애니메이션 클립 ─────────────────────────────
+		if (source.animations.size() > kMaxAnimations)
+		{
+			error = L"애니메이션 클립이 너무 많습니다.";
+			return false;
+		}
+		for (const AnimationSource& clip : source.animations)
+		{
+			for (const AnimationChannel& channel : clip.channels)
+			{
+				if (channel.joint >= source.skeleton.joints.size())
+				{
+					error = L"애니메이션 채널이 가리키는 조인트가 없습니다: " + ToWide(clip.name);
+					return false;
+				}
+				const size_t stride = channel.path == AnimationPath::Rotation ? 4u : 3u;
+				if (channel.times.empty() || channel.values.size() != channel.times.size() * stride)
+				{
+					error = L"애니메이션 채널의 키 개수와 값 개수가 맞지 않습니다: " + ToWide(clip.name);
+					return false;
+				}
+				if (channel.times.size() > kMaxKeyframes)
+				{
+					error = L"애니메이션 키프레임이 너무 많습니다: " + ToWide(clip.name);
+					return false;
+				}
+				for (size_t i = 1; i < channel.times.size(); ++i)
+				{
+					if (!(channel.times[i] >= channel.times[i - 1]))
+					{
+						error = L"애니메이션 키 시간이 오름차순이 아닙니다: " + ToWide(clip.name);
+						return false;
+					}
 				}
 			}
 		}

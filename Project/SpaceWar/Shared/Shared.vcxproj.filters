@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
     Client 와 같은 규칙을 쓴다.
@@ -88,6 +88,15 @@
     <Filter Include="클래스 목록\MeshPostProcess">
       <UniqueIdentifier>{a35e82b1-64c7-4d19-8f06-93b5e2d7140f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\ObjReader">
+      <UniqueIdentifier>{3d8b0e52-c147-4a96-b25f-71e0a4c83f29}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\GltfReader">
+      <UniqueIdentifier>{6e2a9c41-83d5-4b70-9f28-c15d47a0e936}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\JsonValue">
+      <UniqueIdentifier>{a7f351d8-0c92-4e64-b83a-52d9f1c70b48}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Protocol.h">
@@ -110,6 +119,15 @@
     </ClInclude>
     <ClInclude Include="Model\MeshPostProcess.h">
       <Filter>클래스 목록\MeshPostProcess</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\Readers\ObjReader.h">
+      <Filter>클래스 목록\ObjReader</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\Readers\GltfReader.h">
+      <Filter>클래스 목록\GltfReader</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\Readers\JsonValue.h">
+      <Filter>클래스 목록\JsonValue</Filter>
     </ClInclude>
     <ClInclude Include="Vec3.h">
       <Filter>헤더파일</Filter>
@@ -193,6 +211,15 @@
     </ClCompile>
     <ClCompile Include="Model\MeshPostProcess.cpp">
       <Filter>클래스 목록\MeshPostProcess</Filter>
+    </ClCompile>
+    <ClCompile Include="Model\Readers\ObjReader.cpp">
+      <Filter>클래스 목록\ObjReader</Filter>
+    </ClCompile>
+    <ClCompile Include="Model\Readers\GltfReader.cpp">
+      <Filter>클래스 목록\GltfReader</Filter>
+    </ClCompile>
+    <ClCompile Include="Model\Readers\JsonValue.cpp">
+      <Filter>클래스 목록\JsonValue</Filter>
     </ClCompile>
     <ClCompile Include="Terrain\TerrainSampler.cpp">
       <Filter>클래스 목록\TerrainSampler</Filter>
