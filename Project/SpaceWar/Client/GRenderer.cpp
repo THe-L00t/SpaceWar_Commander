@@ -500,6 +500,22 @@ namespace swc {
 			impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 			m.blasIndex = impl->accel.AddMesh(impl->device.Get(), impl->commandList.Get(), geo);
 			impl->FlushCommands();
+
+			// ── BLAS 압축 + scratch 해제 (2026-10-08) ──
+			//  위 Flush 로 GPU 가 빌드를 끝냈다 → 압축 크기를 읽을 수 있다.
+			if (m.blasIndex != AccelStructure::kInvalidBlas)
+			{
+				impl->commandAllocator->Reset();
+				impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
+
+				impl->accel.CompactMesh(impl->device.Get(), impl->commandList.Get(), m.blasIndex);
+
+				// 압축을 안 하더라도 커맨드 리스트를 닫아야 다음 호출이 Reset 할 수 있다.
+				impl->FlushCommands();
+
+				// 여기서 원본·scratch 가 실제로 해제된다(압축 복사가 GPU 에서 끝난 뒤).
+				impl->accel.FinishCompaction(m.blasIndex);
+			}
 		}
 
 		impl->meshes.push_back(std::move(m));
@@ -613,4 +629,10 @@ namespace swc {
 	void GRenderer::SetDebugMode(uint32_t m) { impl->debugMode = m; }
 	uint32_t GRenderer::DebugMode() const { return impl->debugMode; }
 	const std::wstring& GRenderer::StatusText() const { return impl->status; }
+
+	// 가속 구조 계측 — Impl 안의 AccelStructure 를 그대로 묻는다(DX 타입은 밖으로 안 나간다).
+	uint64_t GRenderer::BlasResultBytes()     const { return impl->accel.BlasResultBytes(); }
+	uint64_t GRenderer::BlasScratchBytes()    const { return impl->accel.BlasScratchBytes(); }
+	uint64_t GRenderer::BlasCompactionSaved() const { return impl->accel.BlasCompactionSaved(); }
+	size_t   GRenderer::BlasCount()           const { return impl->accel.BlasCount(); }
 }

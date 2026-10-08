@@ -390,16 +390,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 				swprintf_s(netText, L"%s", netStatus.c_str());
 			}
 
-			wchar_t title[600];
+			// 가속 구조 계측 — scratch 는 빌드 뒤 해제되므로 로드가 끝나면 0 이어야 정상이다.
+			wchar_t blasText[128];
+			swprintf_s(blasText,
+				L"BLAS %zu개 %.0fMB(압축 -%.0fMB, scratch %.0fMB)",
+				renderer.BlasCount(),
+				double(renderer.BlasResultBytes())     / (1024.0 * 1024.0),
+				double(renderer.BlasCompactionSaved()) / (1024.0 * 1024.0),
+				double(renderer.BlasScratchBytes())    / (1024.0 * 1024.0));
+
+			wchar_t title[728];
 			swprintf_s(title,
 				L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-				L"|  %s  |  %s  |  RT %s knee %.2f view %u",
+				L"|  %s  |  %s  |  RT %s knee %.2f view %u  |  %s",
 				timer.Fps(), dt * 1000.0f,
 				controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 				distFromSpawn, controller.Speed(),
 				netText,
 				terrainStatus.c_str(),
-				rtState, rt.rouletteKnee, renderer.DebugMode());
+				rtState, rt.rouletteKnee, renderer.DebugMode(),
+				blasText);
 			SetWindowText(hwnd, title);
 		}
 	}

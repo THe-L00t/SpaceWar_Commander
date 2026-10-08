@@ -1,6 +1,9 @@
 #include "AccelStructure.h"
 #include "DXCommon.h"
 
+#include <cstring>
+#include <utility>
+
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
@@ -54,6 +57,20 @@ namespace swc {
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, tlasScratch))
 			return false;
 
+		// ── 압축 크기 질의용 버퍼 (8바이트) ──────────────
+		//  EmitRaytracingAccelerationStructurePostbuildInfo 는 UAV 에만 쓸 수 있어서
+		//  DEFAULT 힙에 쓰고 READBACK 으로 복사해 CPU 가 읽는다.
+		//  메쉬 하나를 만들 때마다 GPU 대기가 끼므로 하나를 돌려 쓴다.
+		if (!CreateAsBuffer(device, sizeof(uint64_t),
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, postbuildWrite))
+			return false;
+
+		D3D12_HEAP_PROPERTIES readback = HeapProps(D3D12_HEAP_TYPE_READBACK);
+		D3D12_RESOURCE_DESC readDesc = BufferDesc(sizeof(uint64_t));
+		if (FAILED(device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &readDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&postbuildRead))))
+			return false;
+
 		return true;
 	}
 
@@ -63,7 +80,10 @@ namespace swc {
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
 		inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
 		inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+		// ★ ALLOW_COMPACTION 추가 — 이 플래그가 있어야 빌드 뒤 압축 크기를 질의하고
+		//   COPY_MODE_COMPACT 로 옮겨 담을 수 있다. 정적 지오메트리는 보통 20~50% 줄어든다.
+		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
 		inputs.NumDescs = 1;
 		inputs.pGeometryDescs = &geometry;
 
@@ -71,6 +91,8 @@ namespace swc {
 		device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
 
 		Blas b;
+		b.resultBytes = info.ResultDataMaxSizeInBytes;
+		b.scratchBytes = info.ScratchDataSizeInBytes;
 		if (!CreateAsBuffer(device, info.ResultDataMaxSizeInBytes,
 			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, b.result))
 			return kInvalidBlas;
@@ -87,8 +109,98 @@ namespace swc {
 		D3D12_RESOURCE_BARRIER barrier = UavBarrier(b.result.Get());
 		cmd->ResourceBarrier(1, &barrier);
 
+		// 압축 크기 질의를 같은 커맨드에 기록한다. CPU 는 GPU 대기 뒤에 읽는다(CompactMesh).
+		if (postbuildWrite && postbuildRead)
+		{
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC query = {};
+			query.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+			query.DestBuffer = postbuildWrite->GetGPUVirtualAddress();
+
+			const D3D12_GPU_VIRTUAL_ADDRESS source = b.result->GetGPUVirtualAddress();
+			cmd->EmitRaytracingAccelerationStructurePostbuildInfo(&query, 1, &source);
+
+			D3D12_RESOURCE_BARRIER toCopy = {};
+			toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCopy.Transition.pResource = postbuildWrite.Get();
+			toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			cmd->ResourceBarrier(1, &toCopy);
+
+			cmd->CopyBufferRegion(postbuildRead.Get(), 0, postbuildWrite.Get(), 0, sizeof(uint64_t));
+
+			// 다음 메쉬가 다시 UAV 로 쓰도록 상태를 되돌린다.
+			std::swap(toCopy.Transition.StateBefore, toCopy.Transition.StateAfter);
+			cmd->ResourceBarrier(1, &toCopy);
+		}
+
 		blas.push_back(std::move(b));
 		return static_cast<uint32_t>(blas.size() - 1);
+	}
+
+	bool AccelStructure::CompactMesh(ID3D12Device5* device, ID3D12GraphicsCommandList4* cmd,
+		uint32_t blasIndex)
+	{
+		if (blasIndex >= blas.size() || !postbuildRead) return false;
+		Blas& b = blas[blasIndex];
+		if (!b.result || !b.scratch) return false;   // 이미 마무리된 BLAS
+
+		// ★ AddMesh 의 커맨드가 GPU 에서 끝난 뒤여야 이 값이 유효하다(호출자가 기다린다).
+		uint64_t compactedBytes = 0;
+		void* mapped = nullptr;
+		D3D12_RANGE range = { 0, sizeof(uint64_t) };
+		if (FAILED(postbuildRead->Map(0, &range, &mapped)) || !mapped) return false;
+		memcpy(&compactedBytes, mapped, sizeof(compactedBytes));
+		D3D12_RANGE noWrite = { 0, 0 };
+		postbuildRead->Unmap(0, &noWrite);
+
+		// 이득이 없으면 그대로 둔다. 커밋 리소스는 64KB 단위라 그보다 작은 차이는 의미가 없다.
+		if (compactedBytes == 0 || compactedBytes + (64ull * 1024ull) >= b.resultBytes)
+			return false;
+
+		if (!CreateAsBuffer(device, compactedBytes,
+			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, b.compacted))
+			return false;
+
+		cmd->CopyRaytracingAccelerationStructure(
+			b.compacted->GetGPUVirtualAddress(), b.result->GetGPUVirtualAddress(),
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+
+		D3D12_RESOURCE_BARRIER barrier = UavBarrier(b.compacted.Get());
+		cmd->ResourceBarrier(1, &barrier);
+
+		compactionSaved += b.resultBytes - compactedBytes;
+		b.resultBytes = compactedBytes;
+		return true;
+	}
+
+	void AccelStructure::FinishCompaction(uint32_t blasIndex)
+	{
+		if (blasIndex >= blas.size()) return;
+		Blas& b = blas[blasIndex];
+
+		// 압축본이 있으면 그것을 결과로 삼고 원본을 버린다.
+		// ★ AddInstance 가 매 프레임 result 의 주소를 새로 읽으므로 교체해도 안전하다.
+		if (b.compacted)
+			b.result = std::move(b.compacted);
+
+		// ★ scratch 는 빌드 중에만 쓰인다. 들고 있으면 결과만큼의 메모리가 그냥 잠긴다.
+		b.scratch.Reset();
+		b.scratchBytes = 0;
+	}
+
+	uint64_t AccelStructure::BlasResultBytes() const
+	{
+		uint64_t total = 0;
+		for (const Blas& b : blas) total += b.resultBytes;
+		return total;
+	}
+
+	uint64_t AccelStructure::BlasScratchBytes() const
+	{
+		uint64_t total = 0;
+		for (const Blas& b : blas) total += b.scratchBytes;
+		return total;
 	}
 
 	void AccelStructure::AddInstance(uint32_t blasIndex, const XMFLOAT4X4& world)
