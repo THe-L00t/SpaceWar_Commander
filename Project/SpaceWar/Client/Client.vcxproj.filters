@@ -87,6 +87,15 @@
     <Filter Include="클래스 목록\TextureLoader">
       <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\LoadingScene">
+      <UniqueIdentifier>{b4e71c2a-6d39-4f80-a5c2-1e9d7f3b8a64}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\LoadQueue">
+      <UniqueIdentifier>{5a2d9e47-c81b-4b36-9f0e-7c3a64d1e2b9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\LoadBatch">
+      <UniqueIdentifier>{e3c86f15-49a2-4d7b-b0e1-2f8a5c9d6b70}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
     </Filter>
@@ -166,6 +175,15 @@
     </ClCompile>
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\LoadingScene.cpp">
+      <Filter>클래스 목록\LoadingScene</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\LoadQueue.cpp">
+      <Filter>클래스 목록\LoadQueue</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\LoadBatch.cpp">
+      <Filter>클래스 목록\LoadBatch</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -283,6 +301,18 @@
     <ClInclude Include="..\Shared\PlanetConst.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="Scene\LoadingScene.h">
+      <Filter>클래스 목록\LoadingScene</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\LoadQueue.h">
+      <Filter>클래스 목록\LoadQueue</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\LoadBatch.h">
+      <Filter>클래스 목록\LoadBatch</Filter>
+    </ClInclude>
+    <ClInclude Include="UISprite.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl">
@@ -308,6 +338,9 @@
     </None>
     <None Include="OBJ_MODEL.md">
       <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="Shaders\UI.hlsl">
+      <Filter>셰이더</Filter>
     </None>
   </ItemGroup>
 </Project>

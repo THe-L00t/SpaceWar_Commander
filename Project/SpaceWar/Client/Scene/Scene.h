@@ -1,4 +1,5 @@
 #pragma once
+#include "Client/UI/UI.h"
 
 // ============================================================
 //  Client/Scene/Scene.h — 아키텍처 명세서 5절 · 6.10
@@ -13,6 +14,8 @@
 //    씬이 맵을 스스로 정하지 않는다. 서버가 보낸 것을 받아 들고 있을 뿐이다.
 //  ★ 지금은 swc::LegacyScene 이 이 역할과 Render World 역할을 겸하고 있다.
 //    노드 SoA 와 Extract 구조는 「렌더러 수정방향」 §5 대로 유지하고 소유만 나눈다.
+//  ★ 씬 종류마다 이 클래스를 상속한다 (2026-10-09). 첫 상속은 LoadingScene 이다.
+//    게임 씬은 아직 Engine 안에 있다(Engine.h «아직 자리로 옮기지 않은 것»).
 // ============================================================
 
 namespace swc {
@@ -21,7 +24,16 @@ namespace swc {
 	{
 	public:
 		Scene();
-		~Scene();
+		virtual ~Scene();
+
+		// 매 프레임 메인에서 부른다. 씬의 상태(UI 애니메이션 등)를 진행한다.
+		virtual void Update(float dt);
+
+		UI& GetUI() { return ui; }
+		const UI& GetUI() const { return ui; }
+
+	protected:
+		UI ui;    // 명세 5절 — UI 는 Scene 에 귀속된다
 	};
 
 } // namespace swc
