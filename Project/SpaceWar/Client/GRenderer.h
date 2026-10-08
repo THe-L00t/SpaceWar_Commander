@@ -5,8 +5,10 @@
 #include <string>
 #include <DirectXMath.h>
 #include "InstanceData.h"
+#include "UISprite.h"
 #include "Vertex.h"
 #include "RayTracingParams.h"
+#include "Resource/TextureData.h"
 
 struct HWND__;
 using HWND = HWND__*;
@@ -20,9 +22,19 @@ namespace swc {
 
 		bool Initialize(HWND, uint32_t, uint32_t);
 		MeshHandle CreateMesh(const Vertex*, size_t, const uint32_t*, size_t);
+
+		// RAM 사본(Resource Manager) → GPU 텍스처. 메인(렌더 단계)에서, 프레임 밖에서 부른다.
+		// 업로드가 끝난 뒤에 돌아오므로, 받은 직후 RAM 사본을 버려도 된다.
+		TextureHandle CreateTexture(const TextureData&);
+
 		void BeginFrame();
 		void Render(const RenderView&, const std::vector<InstanceData>&, const DirectX::XMFLOAT4X4*);
+		// UI 를 화면 맨 위에 덮어 그린다. BeginFrame 과 EndFrame 사이, Render 뒤에 부른다.
+		void DrawSprites(const std::vector<UISprite>&);
 		void EndFrame();
+
+		uint32_t Width() const;
+		uint32_t Height() const;
 
 		// ── 하이브리드 제어 (DX 타입 노출 없음) ──
 		bool SupportsRaytracing() const;

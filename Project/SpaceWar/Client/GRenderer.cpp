@@ -132,11 +132,26 @@ namespace swc {
 		float      pad2[3];
 	};
 
+	// UI.hlsl 의 SpriteCB 와 순서가 같아야 한다. 루트 상수 16개(64바이트).
+	struct SpriteConstants
+	{
+		XMFLOAT2 center;
+		XMFLOAT2 halfSize;
+		XMFLOAT2 uvMin;
+		XMFLOAT2 uvMax;
+		XMFLOAT4 tint;
+		float    rotation;
+		XMFLOAT2 invViewport;
+		float    pad0;
+	};
+	static_assert(sizeof(SpriteConstants) == 16 * sizeof(uint32_t), "SpriteCB 는 루트 상수 16개");
+
 	struct GRenderer::Impl
 	{
 		static const UINT FrameCount = 2;
 		static const UINT MaxInstances = 4096;
 		static const UINT FrameCBSize = 256;   // CBV 는 256바이트 정렬
+		static const UINT MaxTextures = 256;   // UI 텍스처 SRV 슬롯 수
 
 		struct MeshGpu
 		{
@@ -146,6 +161,11 @@ namespace swc {
 			D3D12_INDEX_BUFFER_VIEW ibv = {};
 			UINT indexCount = 0;
 			uint32_t blasIndex = AccelStructure::kInvalidBlas;
+		};
+
+		struct TextureGpu
+		{
+			ComPtr<ID3D12Resource> resource;   // DEFAULT 힙, PIXEL_SHADER_RESOURCE 상태
 		};
 
 		ComPtr<ID3D12Device5>              device;
@@ -163,6 +183,15 @@ namespace swc {
 		uint8_t*                           frameCBData = nullptr;
 
 		std::vector<MeshGpu> meshes;
+
+		// ── UI (로딩 화면 등) ──
+		//  셰이더 가시 SRV 힙은 UI 텍스처만 쓴다. 3D 패스는 여전히 루트 SRV(TLAS)만 쓴다.
+		//  텍스처 i 의 SRV = 힙 슬롯 i.
+		ComPtr<ID3D12DescriptorHeap>       srvHeap;
+		UINT                               srvDescriptorSize = 0;
+		std::vector<TextureGpu>            textures;
+		ComPtr<ID3D12RootSignature>        uiRootSig;
+		ComPtr<ID3D12PipelineState>        uiPso;
 
 		ShaderCompiler shaderCompiler;
 		AccelStructure accel;
@@ -443,6 +472,117 @@ namespace swc {
 			}
 		}
 
+		// ── UI 파이프라인 (로딩 화면 등) ──
+		//   b0 = 루트 상수 16개(SpriteCB) / t0 = 텍스처(디스크립터 테이블) / s0 = 정적 샘플러
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+			srvHeapDesc.NumDescriptors = Impl::MaxTextures;
+			srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+			if (FAILED(impl->device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&impl->srvHeap))))
+			{
+				impl->status = L"UI 디스크립터 힙 생성 실패.";
+				return false;
+			}
+			impl->srvDescriptorSize = impl->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+			D3D12_DESCRIPTOR_RANGE srvRange = {};
+			srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			srvRange.NumDescriptors = 1;
+			srvRange.BaseShaderRegister = 0;
+			srvRange.RegisterSpace = 0;
+			srvRange.OffsetInDescriptorsFromTableStart = 0;
+
+			D3D12_ROOT_PARAMETER params[2] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			params[0].Constants.ShaderRegister = 0;
+			params[0].Constants.RegisterSpace = 0;
+			params[0].Constants.Num32BitValues = sizeof(SpriteConstants) / sizeof(uint32_t);
+			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			params[1].DescriptorTable.NumDescriptorRanges = 1;
+			params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+			// 밉까지 선형 보간 — 스피너를 원본보다 훨씬 작게 그려도 반짝이지 않게.
+			D3D12_STATIC_SAMPLER_DESC sampler = {};
+			sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler.MaxLOD = D3D12_FLOAT32_MAX;
+			sampler.ShaderRegister = 0;
+			sampler.RegisterSpace = 0;
+			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 2;
+			rsDesc.pParameters = params;
+			rsDesc.NumStaticSamplers = 1;
+			rsDesc.pStaticSamplers = &sampler;
+			rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->uiRootSig))))
+			{
+				impl->status = L"UI 루트 시그니처 생성 실패.";
+				return false;
+			}
+
+			const std::wstring path = ShaderPath(L"UI.hlsl");
+			std::string log;
+			std::vector<uint8_t> vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", L"vs_6_0", nullptr, 0, log);
+			if (vs.empty())
+			{
+				OutputDebugStringA(("[UI VS] " + log + "\n").c_str());
+				impl->status = L"UI 버텍스 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+			std::vector<uint8_t> ps = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", L"ps_6_0", nullptr, 0, log);
+			if (ps.empty())
+			{
+				OutputDebugStringA(("[UI PS] " + log + "\n").c_str());
+				impl->status = L"UI 픽셀 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+			psoDesc.pRootSignature = impl->uiRootSig.Get();
+			psoDesc.VS = { vs.data(), vs.size() };
+			psoDesc.PS = { ps.data(), ps.size() };
+			psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+			psoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+			// premultiplied 알파 합성 (TextureData.h)
+			D3D12_RENDER_TARGET_BLEND_DESC& blend = psoDesc.BlendState.RenderTarget[0];
+			blend.BlendEnable = TRUE;
+			blend.SrcBlend = D3D12_BLEND_ONE;
+			blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+			blend.BlendOp = D3D12_BLEND_OP_ADD;
+			blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+			blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+			blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+			blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+			// 깊이는 쓰지도 읽지도 않는다. 바인딩된 DSV 와 형식만 맞춘다.
+			psoDesc.DepthStencilState.DepthEnable = FALSE;
+			psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+			psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+			psoDesc.SampleMask = UINT_MAX;
+			psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+			psoDesc.NumRenderTargets = 1;
+			psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+			psoDesc.SampleDesc.Count = 1;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->uiPso))))
+			{
+				impl->status = L"UI PSO 생성 실패.";
+				return false;
+			}
+		}
+
 		if (FAILED(impl->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&impl->fence))))
 			return false;
 		impl->fenceValue = 0;
@@ -531,6 +671,121 @@ namespace swc {
 		return MeshHandle(impl->meshes.size() - 1);
 	}
 
+	// RAM 사본 → DEFAULT 힙 텍스처. 밉 전체를 한 번에 복사하고 GPU 완료까지 기다린다.
+	// ★ 업로드 버퍼는 이 함수 안에서만 산다 — Flush 가 끝난 뒤 지역 변수로 풀린다.
+	TextureHandle GRenderer::CreateTexture(const TextureData& data)
+	{
+		if (!data.Valid())
+		{
+			impl->status = L"빈 텍스처 데이터.";
+			return kInvalidTexture;
+		}
+		if (impl->textures.size() >= Impl::MaxTextures)
+		{
+			impl->status = L"UI 텍스처 슬롯이 가득 찼습니다.";
+			return kInvalidTexture;
+		}
+
+		const UINT mipCount = UINT(data.mips.size());
+
+		D3D12_RESOURCE_DESC desc = {};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		desc.Width = data.width;
+		desc.Height = data.height;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = UINT16(mipCount);
+		desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+		Impl::TextureGpu tex;
+		D3D12_HEAP_PROPERTIES defaultHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		if (FAILED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex.resource))))
+		{
+			impl->status = L"텍스처 생성 실패.";
+			return kInvalidTexture;
+		}
+
+		// 밉마다 행 간격(RowPitch)이 256바이트로 정렬된 업로드 배치를 얻는다.
+		std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(mipCount);
+		std::vector<UINT> rowCounts(mipCount);
+		std::vector<UINT64> rowBytes(mipCount);
+		UINT64 uploadBytes = 0;
+		impl->device->GetCopyableFootprints(&desc, 0, mipCount, 0,
+			footprints.data(), rowCounts.data(), rowBytes.data(), &uploadBytes);
+
+		ComPtr<ID3D12Resource> upload;
+		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+		D3D12_RESOURCE_DESC uploadDesc = BufferDesc(uploadBytes);
+		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))))
+		{
+			impl->status = L"텍스처 업로드 버퍼 생성 실패.";
+			return kInvalidTexture;
+		}
+
+		uint8_t* mapped = nullptr;
+		D3D12_RANGE noRead = { 0, 0 };
+		if (FAILED(upload->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		{
+			impl->status = L"텍스처 업로드 버퍼 매핑 실패.";
+			return kInvalidTexture;
+		}
+		for (UINT i = 0; i < mipCount; ++i)
+		{
+			const TextureData::Mip& mip = data.mips[i];
+			const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp = footprints[i];
+			const size_t srcPitch = size_t(mip.width) * 4;
+			for (UINT row = 0; row < rowCounts[i]; ++row)
+			{
+				memcpy(mapped + fp.Offset + size_t(row) * fp.Footprint.RowPitch,
+					data.pixels.data() + mip.offset + size_t(row) * srcPitch,
+					srcPitch);
+			}
+		}
+		upload->Unmap(0, nullptr);
+
+		impl->commandAllocator->Reset();
+		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
+		for (UINT i = 0; i < mipCount; ++i)
+		{
+			D3D12_TEXTURE_COPY_LOCATION dst = {};
+			dst.pResource = tex.resource.Get();
+			dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			dst.SubresourceIndex = i;
+
+			D3D12_TEXTURE_COPY_LOCATION src = {};
+			src.pResource = upload.Get();
+			src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			src.PlacedFootprint = footprints[i];
+
+			impl->commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+		}
+
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = tex.resource.Get();
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		impl->commandList->ResourceBarrier(1, &barrier);
+		impl->FlushCommands();
+
+		const UINT slot = UINT(impl->textures.size());
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+		srv.Format = desc.Format;
+		srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srv.Texture2D.MipLevels = mipCount;
+		D3D12_CPU_DESCRIPTOR_HANDLE cpu = impl->srvHeap->GetCPUDescriptorHandleForHeapStart();
+		cpu.ptr += SIZE_T(slot) * impl->srvDescriptorSize;
+		impl->device->CreateShaderResourceView(tex.resource.Get(), &srv, cpu);
+
+		impl->textures.push_back(std::move(tex));
+		return TextureHandle(slot);
+	}
+
 	void GRenderer::BeginFrame()
 	{
 		impl->commandAllocator->Reset();
@@ -613,6 +868,41 @@ namespace swc {
 		}
 	}
 
+	void GRenderer::DrawSprites(const std::vector<UISprite>& sprites)
+	{
+		if (sprites.empty() || !impl->uiPso) return;
+
+		impl->commandList->SetGraphicsRootSignature(impl->uiRootSig.Get());
+		impl->commandList->SetPipelineState(impl->uiPso.Get());
+		ID3D12DescriptorHeap* heaps[] = { impl->srvHeap.Get() };
+		impl->commandList->SetDescriptorHeaps(1, heaps);
+		impl->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+		const XMFLOAT2 invViewport(1.0f / float(impl->width), 1.0f / float(impl->height));
+		const D3D12_GPU_DESCRIPTOR_HANDLE heapStart = impl->srvHeap->GetGPUDescriptorHandleForHeapStart();
+
+		for (const UISprite& s : sprites)
+		{
+			if (s.texture >= impl->textures.size()) continue;
+
+			SpriteConstants c = {};
+			c.center = s.center;
+			c.halfSize = s.halfSize;
+			c.uvMin = s.uvMin;
+			c.uvMax = s.uvMax;
+			c.tint = s.tint;
+			c.rotation = s.rotation;
+			c.invViewport = invViewport;
+			impl->commandList->SetGraphicsRoot32BitConstants(0, sizeof(c) / sizeof(uint32_t), &c, 0);
+
+			D3D12_GPU_DESCRIPTOR_HANDLE gpu = heapStart;
+			gpu.ptr += UINT64(s.texture) * impl->srvDescriptorSize;
+			impl->commandList->SetGraphicsRootDescriptorTable(1, gpu);
+
+			impl->commandList->DrawInstanced(4, 1, 0, 0);
+		}
+	}
+
 	void GRenderer::EndFrame()
 	{
 		D3D12_RESOURCE_BARRIER barrier = {};
@@ -639,6 +929,8 @@ namespace swc {
 	void GRenderer::SetDebugMode(uint32_t m) { impl->debugMode = m; }
 	uint32_t GRenderer::DebugMode() const { return impl->debugMode; }
 	const std::wstring& GRenderer::StatusText() const { return impl->status; }
+	uint32_t GRenderer::Width() const { return impl->width; }
+	uint32_t GRenderer::Height() const { return impl->height; }
 
 	// 가속 구조 계측 — Impl 안의 AccelStructure 를 그대로 묻는다(DX 타입은 밖으로 안 나간다).
 	uint64_t GRenderer::BlasResultBytes()     const { return impl->accel.BlasResultBytes(); }

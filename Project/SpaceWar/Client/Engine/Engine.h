@@ -54,6 +54,17 @@ namespace swc {
 
 	private:
 		bool PumpMessages();
+
+		// ── 로딩 (2026-10-09) ──────────────────────────────────
+		//  게임 씬에 필요한 것을 LoadBatch 로 쌓는다. SceneManager 가 이 묶음이
+		//  끝날 때까지 로딩 씬을 띄우고, 끝나면 게임 씬으로 넘긴다.
+		//  ★ 게임 씬이 아직 Engine 안에 있어서 묶음도 여기서 만든다.
+		//    GameScene 으로 옮길 때 이 함수도 같이 옮긴다.
+		void BuildGameLoad(LoadBatch&);
+		void EnterGame();
+		void RenderLoading();
+		void UpdateLoadingTitle(float);
+
 		void HandleSystemKeys();
 		void UpdatePlayer(float);
 		void UpdateFire(float);
@@ -68,8 +79,8 @@ namespace swc {
 		//  선언 순서 = 문서 순서. Renderer 가 맨 앞이라 소멸은 맨 마지막이다(GPU 자원을 마지막에 푼다).
 		GRenderer                 renderer;       // Renderer (3절)
 		SoundManager              soundManager;   // Sound Manager (15절) — 선언만
-		ResourceManager           resources;      // Resource Manager (4절)
-		SceneManager              sceneManager;   // Scene Manager (5절) — 선언만. 지금 씬은 아래 LegacyScene
+		ResourceManager           resources;      // Resource Manager (4절). 로딩 스레드(파일 I/O)를 소유한다
+		SceneManager              sceneManager;   // Scene Manager (5절). 로딩 씬 + 전환. 게임 씬은 아직 아래 LegacyScene
 		ClassBridge               classBridge;    // Game Logic └ Class Bridge (8·9절) — 선언만
 		                                          //   Game Logic 본체(Shared::GameLogic)는 지금 서버만 쓴다 (2026-09-18 결정)
 
@@ -117,6 +128,7 @@ namespace swc {
 		std::vector<NodeHandle> freeTracerNodes;
 
 		std::vector<InstanceData> items;
+		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫
 		float                     titleTimer = 0.0f;
 
 		// 마우스를 다시 잡으려고 누른 클릭이 그대로 사격이 되지 않게 한 프레임 막는다.
