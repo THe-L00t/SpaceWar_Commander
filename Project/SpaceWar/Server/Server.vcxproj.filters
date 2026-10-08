@@ -33,6 +33,9 @@
     <Filter Include="클래스 목록\IdleAction">
       <UniqueIdentifier>{f31b70d8-52c6-4917-a34e-6d820b5ce197}</UniqueIdentifier>
     </Filter>
+    <Filter Include="설정 및 리소스">
+      <UniqueIdentifier>{d18c4ec3-4201-4414-b5eb-4e6f07780794}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -64,5 +67,10 @@
     <ClInclude Include="AI\IdleAction.h">
       <Filter>클래스 목록\IdleAction</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\assets\model\planet\future_ruins_realistic.obj">
+      <Filter>설정 및 리소스</Filter>
+    </None>
   </ItemGroup>
 </Project>

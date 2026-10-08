@@ -71,6 +71,7 @@
     <ClInclude Include="PlanetConst.h" />
     <ClInclude Include="Terrain\TerrainSampler.h" />
     <ClInclude Include="Terrain\HeightmapLoader.h" />
+    <ClInclude Include="Terrain\PlanetSurface.h" />
     <ClInclude Include="GameLogic\GameLogic.h" />
     <ClInclude Include="Physics\PhysicsCalculator.h" />
     <ClInclude Include="GameObject\Object.h" />
@@ -108,6 +109,7 @@
     <ClCompile Include="Model\Readers\JsonValue.cpp" />
     <ClCompile Include="Terrain\TerrainSampler.cpp" />
     <ClCompile Include="Terrain\HeightmapLoader.cpp" />
+    <ClCompile Include="Terrain\PlanetSurface.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />
     <ClCompile Include="GameObject\Object.cpp" />

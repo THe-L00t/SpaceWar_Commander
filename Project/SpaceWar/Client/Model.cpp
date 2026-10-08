@@ -12,13 +12,34 @@ namespace {
 	// 이동 좌표는 기존 2m 큐브의 중심을 유지한다. 모델의 발은 중심보다 1m 아래다.
 	constexpr float kModelHeight = 2.0f;
 	constexpr float kGroundOffset = 1.0f;
-	// 엔진의 정면은 +Z. 제작 모델의 정면이 다르면 이 값만 조정한다(라디안).
-	constexpr float kModelYaw = 0.0f;
+	// OBJ 캐릭터의 정면을 엔진의 +Z 방향에 맞춰 Y축으로 180도 보정한다.
+	constexpr float kModelYaw = XM_PI;
 }
 
 namespace swc {
 
 	bool Model::Initialize(const ModelData& data, GRenderer& renderer)
+	{
+		const XMFLOAT3& lo = data.boundsMin;
+		const XMFLOAT3& hi = data.boundsMax;
+		const float height = hi.y - lo.y;
+		if (!std::isfinite(height) || height <= 1.0e-6f)
+		{
+			lastError = L"모델의 높이가 올바르지 않습니다.";
+			return false;
+		}
+		const float scale = kModelHeight / height;
+		const float centerX = lo.x * 0.5f + hi.x * 0.5f;
+		const float centerZ = lo.z * 0.5f + hi.z * 0.5f;
+		XMFLOAT4X4 placement;
+		XMStoreFloat4x4(&placement,
+			XMMatrixTranslation(-centerX, -lo.y, -centerZ) *
+			XMMatrixScaling(scale, scale, scale) * XMMatrixRotationY(kModelYaw) *
+			XMMatrixTranslation(0.0f, -kGroundOffset, 0.0f));
+		return Initialize(data, renderer, placement);
+	}
+
+	bool Model::Initialize(const ModelData& data, GRenderer& renderer, const XMFLOAT4X4& visualTransform)
 	{
 		lastError.clear();
 		if (initialized)
@@ -29,6 +50,23 @@ namespace swc {
 		if (data.meshes.empty() || data.nodes.empty())
 		{
 			lastError = L"모델에 표시할 메시 또는 노드가 없습니다.";
+			return false;
+		}
+		for (const auto& row : visualTransform.m)
+		{
+			for (float value : row)
+			{
+				if (!std::isfinite(value))
+				{
+					lastError = L"모델 표시 변환이 올바르지 않습니다.";
+					return false;
+				}
+			}
+		}
+		const float determinant = XMVectorGetX(XMMatrixDeterminant(XMLoadFloat4x4(&visualTransform)));
+		if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-20f)
+		{
+			lastError = L"모델 표시 변환의 배율이 올바르지 않습니다.";
 			return false;
 		}
 
@@ -134,13 +172,7 @@ namespace swc {
 				? 0 : materialHandles[mesh.material]);
 		}
 
-		const float scale = kModelHeight / height;
-		const float centerX = lo.x * 0.5f + hi.x * 0.5f;
-		const float centerZ = lo.z * 0.5f + hi.z * 0.5f;
-		XMStoreFloat4x4(&visualLocal,
-			XMMatrixTranslation(-centerX, -lo.y, -centerZ) *
-			XMMatrixScaling(scale, scale, scale) * XMMatrixRotationY(kModelYaw) *
-			XMMatrixTranslation(0.0f, -kGroundOffset, 0.0f));
+		visualLocal = visualTransform;
 
 		// 노드 이름/계층은 값으로 보관해 향후 애니메이션 확장에 사용할 수 있다.
 		nodes = data.nodes;
@@ -169,7 +201,7 @@ namespace swc {
 			scene.SetLocalTransform(handle, XMLoadFloat4x4(&node.local));
 			nodeHandles.push_back(handle);
 
-			// 한 FBX 노드가 여러 재질 부분을 가지면 같은 부모 아래 별도 draw 노드를 둔다.
+			// 한 모델 노드가 여러 재질 부분을 가지면 같은 부모 아래 별도 draw 노드를 둔다.
 			for (uint32_t mesh : node.meshes)
 				scene.AddNode(handle, meshes[mesh], meshMaterials[mesh]);
 		}

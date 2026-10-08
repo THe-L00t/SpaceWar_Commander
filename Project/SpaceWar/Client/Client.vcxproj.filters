@@ -81,14 +81,11 @@
     <Filter Include="클래스 목록\Model">
       <UniqueIdentifier>{0b5e9a41-7c62-4d38-9a15-3f8ed2c47b60}</UniqueIdentifier>
     </Filter>
-    <Filter Include="클래스 목록\FbxModelLoader">
+    <Filter Include="클래스 목록\ModelBuilder">
       <UniqueIdentifier>{5c3a7d18-94b6-42ef-8207-6be1d4a9f735}</UniqueIdentifier>
     </Filter>
     <Filter Include="클래스 목록\TextureLoader">
       <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="클래스 목록\ModelBuilder">
-      <UniqueIdentifier>{9c74e1b3-5a02-4d8f-91e6-47b0d2c85a31}</UniqueIdentifier>
     </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
@@ -124,9 +121,6 @@
     </ClCompile>
     <ClCompile Include="Animation\Animator.cpp">
       <Filter>클래스 목록\Animator</Filter>
-    </ClCompile>
-    <ClCompile Include="Animation\AnimationBlender.cpp">
-      <Filter>클래스 목록\AnimationBlender</Filter>
     </ClCompile>
     <ClCompile Include="Sound\SoundManager.cpp">
       <Filter>클래스 목록\SoundManager</Filter>
@@ -164,14 +158,14 @@
     <ClCompile Include="Model.cpp">
       <Filter>클래스 목록\Model</Filter>
     </ClCompile>
-    <ClCompile Include="Resource\FbxModelLoader.cpp">
-      <Filter>클래스 목록\FbxModelLoader</Filter>
+    <ClCompile Include="Resource\ModelBuilder.cpp">
+      <Filter>클래스 목록\ModelBuilder</Filter>
+    </ClCompile>
+    <ClCompile Include="Animation\AnimationBlender.cpp">
+      <Filter>클래스 목록\AnimationBlender</Filter>
     </ClCompile>
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
-    </ClCompile>
-    <ClCompile Include="Resource\ModelBuilder.cpp">
-      <Filter>클래스 목록\ModelBuilder</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -198,12 +192,6 @@
     </ClInclude>
     <ClInclude Include="Animation\Animator.h">
       <Filter>클래스 목록\Animator</Filter>
-    </ClInclude>
-    <ClInclude Include="Animation\AnimationBlender.h">
-      <Filter>클래스 목록\AnimationBlender</Filter>
-    </ClInclude>
-    <ClInclude Include="Animation\AnimationObject.h">
-      <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="Sound\SoundManager.h">
       <Filter>클래스 목록\SoundManager</Filter>
@@ -244,17 +232,20 @@
     <ClInclude Include="Model.h">
       <Filter>클래스 목록\Model</Filter>
     </ClInclude>
-    <ClInclude Include="Resource\FbxModelLoader.h">
-      <Filter>클래스 목록\FbxModelLoader</Filter>
-    </ClInclude>
-    <ClInclude Include="Resource\TextureLoader.h">
-      <Filter>클래스 목록\TextureLoader</Filter>
-    </ClInclude>
     <ClInclude Include="Resource\ModelBuilder.h">
       <Filter>클래스 목록\ModelBuilder</Filter>
     </ClInclude>
     <ClInclude Include="Resource\AnimationData.h">
       <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\AnimationBlender.h">
+      <Filter>클래스 목록\AnimationBlender</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\AnimationObject.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\TextureLoader.h">
+      <Filter>클래스 목록\TextureLoader</Filter>
     </ClInclude>
     <ClInclude Include="MeshData.h">
       <Filter>헤더파일</Filter>
@@ -297,22 +288,25 @@
     <None Include="Shaders\Forward.hlsl">
       <Filter>셰이더</Filter>
     </None>
-    <None Include="FbxSdk.props">
+    <None Include="..\..\assets\model\character\*.obj">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="FbxSdk.local.props.example">
+    <None Include="..\..\assets\model\character\*.mtl">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="FBX_SETUP.md">
+    <None Include="..\..\assets\model\character\*.png">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="..\..\assets\model\*.fbx">
+    <None Include="..\..\assets\model\planet\*.obj">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="..\..\assets\model\cube_test.obj">
+    <None Include="..\..\assets\model\planet\*.mtl">
       <Filter>설정 및 리소스</Filter>
     </None>
-    <None Include="..\..\assets\model\cube_test.mtl">
+    <None Include="PLANET_MODEL.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="OBJ_MODEL.md">
       <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>

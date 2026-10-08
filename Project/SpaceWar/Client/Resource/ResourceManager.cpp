@@ -5,7 +5,6 @@
 #include "Shared/Terrain/HeightmapLoader.h"
 #include "Shared/Model/ModelReader.h"
 #include "ModelBuilder.h"
-#include "FbxModelLoader.h"   // ★ 임시 — 캐릭터를 .glb 로 바꾸면 이 include 와 함께 사라진다
 #include <filesystem>
 #include <utility>
 
@@ -67,26 +66,6 @@ namespace swc {
 		Shared::ReadOptions options;
 		options.generateCollision = false;
 
-		// ★ 임시 다리 — .fbx 는 아직 FBX SDK 경로로 읽는다 (2026-10-07)
-		//   운영 포맷은 glTF 하나이고 FBX 리더는 만들지 않는다. 그런데 지금 캐릭터 에셋이
-		//   아직 .fbx 라서, 이 분기를 지우면 게임이 뜨지 않는다.
-		//   캐릭터를 .glb 로 내보내는 순간 이 블록과 FbxModelLoader·FbxSdk.props 를 같이 지운다.
-		if (Shared::ModelReader::Detect(key.c_str()) == Shared::ModelFormat::Unknown)
-		{
-			auto data = std::make_unique<ModelData>();
-			FbxModelLoader loader;
-			if (!loader.Load(key.c_str(), *data, lastError))
-				return {};
-
-			models.push_back(std::move(data));
-			modelGenerations.push_back(1);
-
-			ModelFileResources legacy;
-			legacy.model = { static_cast<uint32_t>(models.size()), 1 };
-			fileCache.emplace(key, legacy);
-			return legacy;
-		}
-
 		Shared::ModelSource source;
 		if (!Shared::ModelReader().Load(key.c_str(), source, lastError, options))
 			return {};
@@ -142,6 +121,28 @@ namespace swc {
 		if (!resources.model.Valid() && lastError.empty())
 			lastError = L"이 파일에는 표시할 메시가 없습니다(애니메이션 전용 파일입니다).";
 		return resources.model;
+	}
+
+	void ResourceManager::ReleaseModel(ModelHandle handle)
+	{
+		if (!handle.Valid() || handle.index > models.size()) return;
+		const uint32_t slot = handle.index - 1;
+		if (modelGenerations[slot] != handle.generation) return;   // 이미 해제된 핸들
+
+		// CPU 사본을 버리고 세대를 올린다 → 남아 있는 핸들의 Get() 이 nullptr 가 된다.
+		models[slot].reset();
+		++modelGenerations[slot];
+
+		// 같은 경로를 다시 요청하면 파일을 다시 읽어야 한다. 캐시에서 지운다.
+		// ★ 스켈레톤·클립 핸들은 손대지 않는다 — Animator 가 이미 들고 돌리는 중이다.
+		for (auto it = fileCache.begin(); it != fileCache.end(); ++it)
+		{
+			if (it->second.model.index == handle.index)
+			{
+				fileCache.erase(it);
+				break;
+			}
+		}
 	}
 
 	const ModelData* ResourceManager::Get(ModelHandle handle) const

@@ -21,15 +21,7 @@ namespace
 	// 캐릭터 모델. exe 옆 assets\ 기준이다.
 	// ★ 파일명이 Client.vcxproj 의 CopyModelAssets 검사에도 적혀 있다 — 바꿀 때 두 곳.
 	constexpr const wchar_t* kCharacterModelAsset =
-		L"model\\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx";
-
-	// ── 자체 OBJ 파서 점검용 소품 (2026-10-06, 파서 2단계) ──
-	//  외부 SDK 없이 만든 파서가 «파일 → ModelSource → ModelData → 화면» 까지 닿는지 본다.
-	//  ★ 실행 인자가 아니라 코드 상수다. 끄려면 false 로 바꾸고 다시 빌드한다.
-	//  ★ 실패해도 게임은 뜬다 — 점검용이라 경고만 띄운다(캐릭터 모델은 없으면 중단한다).
-	constexpr bool           kShowObjProbe = true;
-	constexpr const wchar_t* kObjProbeAsset = L"model\\cube_test.obj";
-	constexpr float          kObjProbeForward = 6.0f;   // 스폰 앞 (m)
+		L"model\\character\\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj";
 
 	// ── 사격 효과 (임시) ───────────────────────────────────
 	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
@@ -155,31 +147,53 @@ namespace swc {
 
 		// planet — 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
 
-		// ── 하이트맵 1장을 스폰 위치에 적용 ──
-		//  ★ 서버도 같은 파일(Shared::kTerrainTileAsset)을 같은 설정으로 읽는다. 여기만 바꾸면 안 된다.
-		const HeightmapHandle tile = resources.LoadHeightmap(
-			AssetPath(Shared::kTerrainTileAsset).c_str());
-		if (const Shared::HeightmapData* hm = resources.Get(tile))
+		// ── 행성 맵 (OBJ) ──────────────────────────────────────
+		// 지표면 판정은 Shared가 맡고 렌더는 기존 ResourceManager → Model 경로를 사용한다.
+		// 전체 경계에는 건물/파편이 들어 있으므로 원점과 Planet_Core의 기준 반경으로 맞춘다.
+		const std::wstring planetAsset = AssetPath(Shared::kPlanetModelAsset);
+		std::wstring surfaceError;
+		if (!planetSurface.Load(planetAsset.c_str(), surfaceError))
 		{
-			terrain.Configure(hm, planet.radius, {});   // 1km / 60m / 10% 감쇠 (TerrainConfig 기본값)
-			planet.terrain = &terrain;
-
-			wchar_t buf[96];
-			swprintf_s(buf, L"지형 %ux%u mean %.3f", hm->size, hm->size, hm->mean);
-			terrainStatus = buf;
+			MessageBox(hwnd, surfaceError.c_str(), L"행성 지표면 로드 실패", MB_OK | MB_ICONERROR);
+			return false;
 		}
-		else
+		terrain.Configure(&planetSurface, planet.radius);
+		planet.terrain = &terrain;
+		terrainStatus = L"OBJ 행성 지표면 " + std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
+
+		const ModelHandle planetHandle = resources.LoadModel(planetAsset.c_str());
+		const ModelData* planetData = resources.Get(planetHandle);
+		if (!planetData)
 		{
-			terrainStatus = L"지형 실패: " + resources.LastError();
+			MessageBox(hwnd, resources.LastError().c_str(), L"행성 모델 로드 실패", MB_OK | MB_ICONERROR);
+			return false;
 		}
+		const float planetScale = float(planet.radius / Shared::kPlanetModelReferenceRadius);
+		XMFLOAT4X4 planetVisual;
+		XMStoreFloat4x4(&planetVisual, XMMatrixScaling(planetScale, planetScale, planetScale));
+		if (!planetModel.Initialize(*planetData, renderer, planetVisual))
+		{
+			MessageBox(hwnd, planetModel.LastError().c_str(), L"행성 모델 초기화 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
+		// Model이 노드/핸들을 보관하므로 GPU 업로드 후 CPU 메시/픽셀은 필요 없다.
+		resources.ReleaseModel(planetHandle);
+		const NodeHandle planetNode = planetModel.Instantiate(scene);
+		if (planetNode == kInvalidNode)
+		{
+			MessageBox(hwnd, L"행성 모델을 장면에 등록하지 못했습니다.", L"맵 초기화 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
+		scene.SetLocalTransform(planetNode,
+			XMMatrixTranslation(float(planet.center.x), float(planet.center.y), float(planet.center.z)));
 
-		// ── 캐릭터 모델 (FBX) ──────────────────────────────────
+		// ── 캐릭터 모델 (OBJ) ──────────────────────────────────
 		//  ★ 한 번만 읽고 GPU 자원을 만든다. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다
 		//    (그래서 BLAS 도 하나다). 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
 		//    «모델이 안 나온다» 를 빌드 문제로 착각한다.
 		//  ★ 렌더러 초기화 뒤에 와야 한다. GPU 메시·텍스처·재질을 만들기 때문이다.
 		//  ★ 파일 하나에서 메시·스켈레톤·클립이 함께 나온다 (명세 §4 — 종류별로 다른 핸들).
-		//    지금 에셋은 .fbx 라 메시만 나오고, .glb 로 바꾸면 스켈레톤·클립도 같이 채워진다.
+		//    지금 에셋은 OBJ 라 메시만 나오고, .glb 로 바꾸면 스켈레톤·클립도 같이 채워진다.
 		const ModelFileResources characterResources =
 			resources.LoadModelFile(AssetPath(kCharacterModelAsset).c_str());
 		const ModelData* modelData = resources.Get(characterResources.model);
@@ -193,9 +207,11 @@ namespace swc {
 			MessageBox(hwnd, characterModel.LastError().c_str(), L"모델 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
+		// GPU 업로드가 끝났으므로 CPU 메시·픽셀을 버린다. 스켈레톤·클립은 남는다(Animator 가 쓴다).
+		resources.ReleaseModel(characterResources.model);
 
 		// 스킨이 있는 모델이면 재생 인스턴스를 만들고 첫 클립을 돌린다 (명세 §14).
-		// 스킨이 없으면(지금 FBX 가 그렇다) 아무 일도 하지 않는다 — 정적 모델로 그려진다.
+		// OBJ 캐릭터는 뼈가 없어 여기를 지나가지 않는다 — .glb 로 내보내면 살아난다.
 		if (characterResources.skeleton.Valid())
 		{
 			playerAnimation = animator.Create(characterResources.skeleton);
@@ -203,59 +219,16 @@ namespace swc {
 				animator.Play(playerAnimation, characterResources.animations.front());
 		}
 
-		// 지면 = 큐브 구 6면 전체 메시 (파일 없이 코드로 생성)
-		// 면당 321 격자 → 정점 간격 약 7.9m, 정점 61.8만 / 삼각형 123만.
-		// 513 이면 4.9m 간격이지만 삼각형 315만이라 BLAS 부담이 크다.
-		constexpr int kPlanetFaceGrid = 321;
-		MeshData groundData = MakeCubeSphere(planet, kPlanetFaceGrid,
-			{ 0.15f, 0.30f, 0.18f });
 		// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
 		MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
 
-		const MeshHandle groundMesh = renderer.CreateMesh(
-			groundData.vertices.data(), groundData.vertices.size(),
-			groundData.indices.data(), groundData.indices.size());
-		if (groundMesh == kInvalidMesh)
-		{
-			MessageBox(hwnd, renderer.StatusText().c_str(), L"지형 메시 생성 실패", MB_OK | MB_ICONERROR);
-			return false;
-		}
 		tracerMesh = renderer.CreateMesh(
 			tracerData.vertices.data(), tracerData.vertices.size(),
 			tracerData.indices.data(), tracerData.indices.size());
 
-		scene.AddNode(kInvalidNode, groundMesh, 0);
-
-		// 모델은 루트(이동) + 표시 보정 + FBX 노드 계층으로 펼쳐진다. 반환값이 이동 루트다.
+		// 모델은 루트(이동) + 표시 보정 + OBJ 오브젝트 노드로 펼쳐진다. 반환값이 이동 루트다.
 		// 화면 밖으로 치울 때도 이 루트만 옮기면 자식이 따라온다.
 		player = characterModel.Instantiate(scene);
-
-		// 자체 파서 점검용 OBJ 소품. 스폰 앞 6m 에 세워 둔다.
-		//  ★ LoadModel 은 포맷을 보고 길을 고른다 — 여기서는 .obj 라 Shared 의 자체 파서가 돈다.
-		//    같은 호출로 .fbx 도 그대로 열린다(캐릭터 모델이 그 경우다).
-		if (kShowObjProbe)
-		{
-			const ModelHandle probeHandle = resources.LoadModel(AssetPath(kObjProbeAsset).c_str());
-			const ModelData* probeData = resources.Get(probeHandle);
-			if (!probeData)
-			{
-				MessageBox(hwnd, resources.LastError().c_str(),
-					L"OBJ 점검 모델 로드 실패 (게임은 계속 뜬다)", MB_OK | MB_ICONWARNING);
-			}
-			else if (!objProbeModel.Initialize(*probeData, renderer))
-			{
-				MessageBox(hwnd, objProbeModel.LastError().c_str(),
-					L"OBJ 점검 모델 초기화 실패 (게임은 계속 뜬다)", MB_OK | MB_ICONWARNING);
-			}
-			else
-			{
-				// 스폰과 같은 지점(북극, 표면 +1m)에서 +Z 로 6m. 스폰 시선이 +Z 라 정면에 보인다.
-				const Vec3d spawn = planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0);
-				const NodeHandle probe = objProbeModel.Instantiate(scene);
-				scene.SetLocalTransform(probe, DirectX::XMMatrixTranslation(
-					float(spawn.x), float(spawn.y), float(spawn.z) + kObjProbeForward));
-			}
-		}
 
 		// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
 		freeTracerNodes.reserve(kTracerPool);
@@ -357,7 +330,7 @@ namespace swc {
 		}
 
 		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
-		// 11번째(10) 는 재질 확인용 — 거칠기·금속성 (2026-09-26 FBX 이식에서 추가)
+		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
 			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);
 		if (input.WasPressed('R'))

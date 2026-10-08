@@ -19,7 +19,12 @@ namespace Shared {
 
 		// ── 파일 읽기 ───────────────────────────────────────
 		//  OBJ·MTL 은 텍스트다. 통째로 읽고 줄 단위로 훑는다 — 한 줄씩 읽는 것보다 단순하다.
-		inline constexpr size_t kMaxTextFileBytes = 256u * 1024u * 1024u;
+		//  ★ 1GB 로 올렸다 (2026-10-08)
+		//    client2 의 행성 모델 future_ruins_realistic.obj 가 **687MB** 다. 256MB 제한에 걸려
+		//    열리지 않았다. 다만 통째로 읽는 방식에는 한계가 있다 — 파일 크기만큼 메모리를 쓰고
+		//    정점 중복 제거 해시까지 올라간다. 맵을 .glb(바이너리)로 내보내면 파일이 수십 MB 로
+		//    줄고 이 경로를 아예 지나가지 않는다. 그쪽이 맞는 해법이다.
+		inline constexpr size_t kMaxTextFileBytes = 1024u * 1024u * 1024u;
 
 		bool ReadWholeFile(const fs::path& path, std::string& out, std::wstring& error)
 		{
@@ -343,9 +348,17 @@ namespace Shared {
 		std::unordered_map<std::string, uint32_t> materialByName;
 		uint32_t currentMaterial = kInvalidIndex;
 
-		// 재질마다 메시를 나눈다(FBX 경로와 같은 규칙). 면이 하나라도 올 때 만든다 —
-		// 그래야 쓰이지 않은 usemtl 때문에 빈 메시가 남지 않는다.
-		std::unordered_map<uint32_t, uint32_t> submeshByMaterial;
+		// ★ o / g 를 노드로 남긴다 (2026-10-08)
+		//   예전에는 파일 하나 = 노드 하나였다. 그런데 맵 OBJ 는 오브젝트 이름으로 용도를 가른다 —
+		//   `Shared::PlanetSurface` 가 «Asphalt·Sidewalk·Planet_Core …» 이름만 접지면으로 골라 쓴다.
+		//   이름을 버리면 그 선별이 불가능하므로 오브젝트마다 노드를 만들고 이름을 남긴다.
+		//   o/g 가 없는 파일은 파일 이름으로 노드 하나를 만든다(예전 동작과 같다).
+		std::string currentObject;
+		uint32_t    currentNode = kInvalidIndex;
+
+		// 메시는 (노드, 재질) 조합마다 하나다. 면이 하나라도 올 때 만든다 —
+		// 그래야 쓰이지 않은 usemtl·빈 오브젝트 때문에 빈 메시가 남지 않는다.
+		std::unordered_map<uint64_t, uint32_t> submeshByKey;
 		std::vector<std::unordered_map<VertexKey, uint32_t, VertexKeyHash>> dedupe;
 
 		std::vector<Corner> corners;
@@ -442,8 +455,20 @@ namespace Shared {
 				continue;
 			}
 
-			// o·g·s 는 받아들이고 버린다. OBJ 의 그룹은 노드 계층이 아니다(설계안 5장).
-			if (Keyword(p, "o") || Keyword(p, "g") || Keyword(p, "s")) continue;
+			// o·g 는 오브젝트 경계다. 이름을 기억해 두고, 면이 올 때 노드를 만든다.
+			// (OBJ 의 그룹은 계층이 아니라 평면 묶음이라 전부 루트 노드가 된다)
+			if (Keyword(p, "o") || Keyword(p, "g"))
+			{
+				std::string name = FirstToken(p);
+				if (name.size() > kMaxNameLength) name.resize(kMaxNameLength);
+				if (name != currentObject)
+				{
+					currentObject = std::move(name);
+					currentNode = kInvalidIndex;   // 다음 면에서 새로 만든다
+				}
+				continue;
+			}
+			if (Keyword(p, "s")) continue;   // 스무딩 그룹은 쓰지 않는다
 
 			// ── 면 ─────────────────────────────────────
 			if (Keyword(p, "f"))
@@ -454,9 +479,24 @@ namespace Shared {
 				if (corners.size() < 3)
 					return fail(L"OBJ 면의 모서리가 3개보다 적습니다");
 
+				// 이 면이 들어갈 노드. o/g 가 없으면 파일 이름으로 하나만 만든다.
+				if (currentNode == kInvalidIndex)
+				{
+					if (out.nodes.size() >= kMaxNodes)
+						return fail(L"OBJ 오브젝트가 너무 많습니다");
+					currentNode = static_cast<uint32_t>(out.nodes.size());
+					SourceNode node;
+					node.name = currentObject.empty() ? ToUtf8(objPath.stem()) : currentObject;
+					node.parent = kInvalidIndex;
+					out.nodes.push_back(std::move(node));
+				}
+
 				const uint32_t materialKey = options.geometryOnly ? kInvalidIndex : currentMaterial;
+				const uint64_t submeshKey =
+					(static_cast<uint64_t>(currentNode) << 32) | static_cast<uint64_t>(materialKey);
+
 				uint32_t meshIndex;
-				if (auto it = submeshByMaterial.find(materialKey); it != submeshByMaterial.end())
+				if (auto it = submeshByKey.find(submeshKey); it != submeshByKey.end())
 				{
 					meshIndex = it->second;
 				}
@@ -469,7 +509,8 @@ namespace Shared {
 					mesh.material = materialKey;
 					out.meshes.push_back(std::move(mesh));
 					dedupe.emplace_back();
-					submeshByMaterial.emplace(materialKey, meshIndex);
+					submeshByKey.emplace(submeshKey, meshIndex);
+					out.nodes[currentNode].meshes.push_back(meshIndex);
 				}
 
 				SourceMesh& mesh = out.meshes[meshIndex];
@@ -573,15 +614,7 @@ namespace Shared {
 			return false;
 		}
 
-		// OBJ 는 노드 계층이 없다. 파일 하나 = 노드 하나이고, 모든 메시가 그 아래 달린다.
-		SourceNode node;
-		node.name = ToUtf8(objPath.stem());
-		node.parent = kInvalidIndex;
-		node.meshes.reserve(out.meshes.size());
-		for (size_t i = 0; i < out.meshes.size(); ++i)
-			node.meshes.push_back(static_cast<uint32_t>(i));
-		out.nodes.push_back(std::move(node));
-
+		// 노드는 면을 읽는 동안 오브젝트(o/g)마다 만들었다. 전부 루트다 — OBJ 에 계층이 없다.
 		return true;
 	}
 

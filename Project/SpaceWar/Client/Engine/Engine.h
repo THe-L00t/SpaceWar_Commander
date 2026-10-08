@@ -25,6 +25,7 @@
 #include "Client/PlayerController.h"
 #include "Client/Planet.h"
 #include "Shared/Terrain/TerrainSampler.h"
+#include "Shared/Terrain/PlanetSurface.h"
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -88,6 +89,7 @@ namespace swc {
 
 		// ── 아직 자리로 옮기지 않은 것 ──────────────────────────
 		Planet                 planet;            // 맵 정보 → Scene 이 가진다 (2026-09-18 결정)
+		Shared::PlanetSurface  planetSurface;     // OBJ 지표면. 렌더와 서버가 같은 좌표/배율을 사용한다.
 		Shared::TerrainSampler terrain;
 		std::wstring           terrainStatus;
 		LegacyScene            scene;             // → Scene 노드 + Render World 로 나뉜다 (LegacyScene.h)
@@ -95,17 +97,14 @@ namespace swc {
 		PlayerController       controller;        // → Player(6.6) · Game Logic(8절). 입력은 Class Bridge 경유(6.6.3)
 		NodeHandle             player = kInvalidNode;
 
-		// FBX 캐릭터 모델 (client2 `46567fd` 이식). 플레이어·원격 플레이어·NPC 가 공유한다.
+		// 캐릭터 모델. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다.
 		// 명세 1절에 Model 자리가 없다 — 리소스(ModelData)를 GPU 자원 + Scene 노드로 펼치는 어댑터다.
 		Model                  characterModel;
+		Model                  planetModel;       // 정적 맵 메시/재질. 행성 중심에 한 번 배치한다.
 
-		// 플레이어 캐릭터의 재생 인스턴스 (명세 §14). 스킨 있는 모델(.glb)일 때만 유효하다.
-		// 원격 플레이어·NPC 도 각자 인스턴스를 갖게 되지만, 그건 GPU 스키닝을 올린 뒤다.
+		// 플레이어 캐릭터의 재생 인스턴스 (명세 §14). 스킨이 있는 모델(.glb)일 때만 유효하다.
+		// 지금 캐릭터는 OBJ(뼈 없음)라 무효로 남고, Animator 는 아무 일도 하지 않는다.
 		AnimationInstance      playerAnimation = kInvalidAnimationInstance;
-
-		// 자체 OBJ 파서 점검용 소품 (2026-10-06, 파서 2단계). Engine.cpp 의 kShowObjProbe 로 끈다.
-		// 파서가 서는 것을 눈으로 확인하는 임시 물건이다 — .swm 이 들어오면 지운다.
-		Model                  objProbeModel;
 
 		// 원격 플레이어 · NPC 노드 → Scene 의 OtherPlayer · NPC (6.10)
 		std::unordered_map<uint32_t, NodeHandle> remoteNodes;

@@ -16,6 +16,11 @@
     <ProjectGuid>{d4deada1-89ff-47a7-959a-798e824c4abf}</ProjectGuid>
     <RootNamespace>Client</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <VcpkgEnableManifest>false</VcpkgEnableManifest>
+    <VcpkgManifestInstall>false</VcpkgManifestInstall>
+    <VcpkgAutoLink>false</VcpkgAutoLink>
+    <VcpkgApplocalDeps>false</VcpkgApplocalDeps>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -43,12 +48,11 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <!-- FBX SDK 는 저장소에 없다. 각 PC 에서 Client/FbxSdk.local.props 또는 FBX_SDK_ROOT 로 경로를 준다 (FBX_SETUP.md) -->
-  <Import Project="FbxSdk.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
@@ -62,8 +66,7 @@
       <Message>DXC 런타임(dxcompiler/dxil) 및 셰이더 복사</Message>
       <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
 xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
-xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
-xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png" "$(OutDir)assets\terrain\"</Command>
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -72,6 +75,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
@@ -87,8 +91,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
       <Message>DXC 런타임(dxcompiler/dxil) 및 셰이더 복사</Message>
       <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
 xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
-xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
-xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__Realistic_Mountain_v00_Out.png" "$(OutDir)assets\terrain\"</Command>
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -101,7 +104,6 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClCompile Include="Bridge\ClassBridge.cpp" />
     <ClCompile Include="State\StateManager.cpp" />
     <ClCompile Include="Animation\Animator.cpp" />
-    <ClCompile Include="Animation\AnimationBlender.cpp" />
     <ClCompile Include="Sound\SoundManager.cpp" />
     <ClCompile Include="Render\RenderWorld.cpp" />
     <ClCompile Include="GRenderer.cpp" />
@@ -112,18 +114,21 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClCompile Include="ShaderCompiler.cpp" />
     <ClCompile Include="AccelStructure.cpp" />
     <ClCompile Include="Resource\ResourceManager.cpp" />
-    <ClCompile Include="Resource\FbxModelLoader.cpp" />
-    <ClCompile Include="Resource\TextureLoader.cpp" />
     <ClCompile Include="Resource\ModelBuilder.cpp" />
+    <ClCompile Include="Animation\AnimationBlender.cpp" />
+    <ClCompile Include="Resource\TextureLoader.cpp" />
     <ClCompile Include="Model.cpp" />
     <ClCompile Include="Net\Network.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
-    <None Include="FbxSdk.props" />
-    <None Include="FbxSdk.local.props.example" />
-    <None Include="FBX_SETUP.md" />
-    <None Include="..\..\assets\model\*.fbx" />
+    <None Include="..\..\assets\model\character\*.obj" />
+    <None Include="..\..\assets\model\character\*.mtl" />
+    <None Include="..\..\assets\model\character\*.png" />
+    <None Include="..\..\assets\model\planet\*.obj" />
+    <None Include="..\..\assets\model\planet\*.mtl" />
+    <None Include="PLANET_MODEL.md" />
+    <None Include="OBJ_MODEL.md" />
     <None Include="..\..\assets\model\cube_test.obj" />
     <None Include="..\..\assets\model\cube_test.mtl" />
   </ItemGroup>
@@ -143,8 +148,6 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="Bridge\ClassBridge.h" />
     <ClInclude Include="State\StateManager.h" />
     <ClInclude Include="Animation\Animator.h" />
-    <ClInclude Include="Animation\AnimationBlender.h" />
-    <ClInclude Include="Animation\AnimationObject.h" />
     <ClInclude Include="Sound\SoundManager.h" />
     <ClInclude Include="Render\RenderWorld.h" />
     <ClInclude Include="GRenderer.h" />
@@ -165,10 +168,11 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <ClInclude Include="MeshData.h" />
     <ClInclude Include="Model.h" />
     <ClInclude Include="Resource\ModelData.h" />
-    <ClInclude Include="Resource\FbxModelLoader.h" />
-    <ClInclude Include="Resource\TextureLoader.h" />
     <ClInclude Include="Resource\ModelBuilder.h" />
     <ClInclude Include="Resource\AnimationData.h" />
+    <ClInclude Include="Animation\AnimationBlender.h" />
+    <ClInclude Include="Animation\AnimationObject.h" />
+    <ClInclude Include="Resource\TextureLoader.h" />
     <ClInclude Include="..\Shared\Units.h" />
     <ClInclude Include="..\Shared\HeightmapData.h" />
     <ClInclude Include="..\Shared\PlanetConst.h" />
@@ -177,9 +181,12 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
   <!-- 모델 에셋은 exe 옆 assets\model 로 복사한다. 작업 디렉터리와 무관하게 찾게 하려면 필요하다. -->
   <Target Name="CopyModelAssets" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
     <ItemGroup>
-      <ModelAsset Include="$(ProjectDir)..\..\assets\model\**\*" />
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\**\*.obj;$(ProjectDir)..\..\assets\model\**\*.mtl;$(ProjectDir)..\..\assets\model\**\*.png;$(ProjectDir)..\..\assets\model\**\*.jpg;$(ProjectDir)..\..\assets\model\**\*.jpeg;$(ProjectDir)..\..\assets\model\**\*.bmp;$(ProjectDir)..\..\assets\model\**\*.tga;$(ProjectDir)..\..\assets\model\**\*.dds;$(ProjectDir)..\..\assets\model\**\*.tif;$(ProjectDir)..\..\assets\model\**\*.tiff;$(ProjectDir)..\..\assets\model\**\*.gif;$(ProjectDir)..\..\assets\model\**\*.webp;$(ProjectDir)..\..\assets\model\**\*.hdr;$(ProjectDir)..\..\assets\model\**\*.exr" />
     </ItemGroup>
-    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx')" Text="assets/model에 Arc Sentinel FBX 파일이 필요합니다. Git LFS 로 받았는지 확인하세요 (git lfs pull)." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS로 받았는지 확인하세요 (git lfs pull)." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다. assets/model/character 폴더를 확인하세요." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\planet\future_ruins_realistic.obj')" Text="assets/model/planet에 future_ruins_realistic.obj 행성 모델이 필요합니다. Git LFS로 받았는지 확인하세요 (git lfs pull)." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\planet\future_ruins_realistic.mtl')" Text="행성 모델의 기본 색상 재질 future_ruins_realistic.mtl이 필요합니다. assets/model/planet 폴더를 확인하세요." />
     <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">

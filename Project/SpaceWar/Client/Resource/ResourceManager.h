@@ -85,6 +85,13 @@ namespace swc {
 		// 메시만 쓰는 호출부용. 내부적으로 LoadModelFile 을 부른다.
 		ModelHandle LoadModel(const wchar_t* path);
 
+		// GPU 업로드가 끝난 뒤 CPU 메시·텍스처 픽셀을 버린다 (client2 `c680733` 에서 가져온 기능).
+		// 행성 모델은 삼각형이 수십만이라 CPU 사본을 들고 있을 이유가 없다.
+		//  · 그 핸들과 Get() 포인터는 무효가 된다. 세대(generation)를 올려 막는다.
+		//  · ★ 스켈레톤·애니메이션 클립은 그대로 남는다 — Animator 가 계속 읽는다.
+		//  · 같은 경로를 다시 LoadModelFile 하면 파일을 다시 읽는다(캐시에서 지운다).
+		void ReleaseModel(ModelHandle);
+
 		// 무효 핸들이면 nullptr
 		const Shared::HeightmapData* Get(HeightmapHandle) const;
 		const ModelData* Get(ModelHandle) const;

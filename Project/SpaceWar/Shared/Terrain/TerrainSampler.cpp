@@ -1,4 +1,5 @@
 #include "TerrainSampler.h"
+#include "PlanetSurface.h"
 #include <algorithm>
 
 namespace {
@@ -20,12 +21,21 @@ namespace Shared {
 		double planetRadius, const TerrainConfig& cfg)
 	{
 		data = (heightmap && heightmap->Valid()) ? heightmap : nullptr;
+		surface = nullptr;
 		radius = planetRadius;
 		config = cfg;
 	}
 
+	void TerrainSampler::Configure(const PlanetSurface* planetSurface, double planetRadius)
+	{
+		data = nullptr;
+		surface = (planetSurface && planetSurface->Valid()) ? planetSurface : nullptr;
+		radius = planetRadius;
+	}
+
 	double TerrainSampler::Height(double upX, double upY, double upZ) const
 	{
+		if (surface) return surface->Height(upX, upY, upZ, radius);
 		if (!data) return 0.0;
 
 		// 지면이 구 전체 메시라 반대편 반구도 그려진다. x,z 만 보면 대척점에
