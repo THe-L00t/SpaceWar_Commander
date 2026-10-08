@@ -393,11 +393,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			// 가속 구조 계측 — scratch 는 빌드 뒤 해제되므로 로드가 끝나면 0 이어야 정상이다.
 			wchar_t blasText[128];
 			swprintf_s(blasText,
-				L"BLAS %zu개 %.0fMB(압축 -%.0fMB, scratch %.0fMB)",
+				L"BLAS %zu개 %.0fMB(압축 -%.0fMB, scratch %.0fMB)  TLAS %u/%u%s",
 				renderer.BlasCount(),
 				double(renderer.BlasResultBytes())     / (1024.0 * 1024.0),
 				double(renderer.BlasCompactionSaved()) / (1024.0 * 1024.0),
-				double(renderer.BlasScratchBytes())    / (1024.0 * 1024.0));
+				double(renderer.BlasScratchBytes())    / (1024.0 * 1024.0),
+				renderer.TlasInstanceCount(), renderer.TlasMaxInstances(),
+				renderer.TlasDroppedInstances() ? L" ★유실" : L"");
 
 			wchar_t title[728];
 			swprintf_s(title,

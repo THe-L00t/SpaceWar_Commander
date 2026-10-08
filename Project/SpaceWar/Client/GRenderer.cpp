@@ -557,7 +557,8 @@ namespace swc {
 		// ── TLAS 재빌드 (씬 노드 → 인스턴스) ──
 		if (rtActive)
 		{
-			impl->accel.ResetInstances();
+			// 프레임 슬롯을 넘긴다 — 비행 중 프레임(M1)에서 인스턴스 버퍼 덮어쓰기를 막는다.
+			impl->accel.ResetInstances(impl->frameIndex);
 			for (const RenderItem& it : items)
 			{
 				if (it.mesh >= impl->meshes.size()) continue;
@@ -635,4 +636,7 @@ namespace swc {
 	uint64_t GRenderer::BlasScratchBytes()    const { return impl->accel.BlasScratchBytes(); }
 	uint64_t GRenderer::BlasCompactionSaved() const { return impl->accel.BlasCompactionSaved(); }
 	size_t   GRenderer::BlasCount()           const { return impl->accel.BlasCount(); }
+	uint32_t GRenderer::TlasInstanceCount()   const { return impl->accel.InstanceCount(); }
+	uint32_t GRenderer::TlasMaxInstances()    const { return impl->accel.MaxInstances(); }
+	uint32_t GRenderer::TlasDroppedInstances()const { return impl->accel.DroppedInstances(); }
 }

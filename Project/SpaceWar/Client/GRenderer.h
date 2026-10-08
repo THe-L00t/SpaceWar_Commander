@@ -43,6 +43,12 @@ namespace swc {
 		uint64_t BlasCompactionSaved() const;
 		size_t   BlasCount() const;
 
+		// TLAS 는 매 프레임 재빌드한다. 상한을 넘겨 버려진 인스턴스가 있으면
+		// «RT 에만 안 보이는 물체» 가 생기므로 숫자를 드러낸다.
+		uint32_t TlasInstanceCount() const;
+		uint32_t TlasMaxInstances() const;
+		uint32_t TlasDroppedInstances() const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;

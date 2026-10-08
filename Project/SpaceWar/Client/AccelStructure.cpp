@@ -28,23 +28,29 @@ namespace swc {
 	{
 		maxInstances = maxInst;
 
-		// 인스턴스 디스크립터 — UPLOAD 힙에 영속 매핑.
-		// 매 프레임 GPU 완료를 기다리는 현재 구조라 링 버퍼가 필요 없다.
+		// 인스턴스 디스크립터 — UPLOAD 힙에 영속 매핑. 프레임 슬롯만큼 잡는다(kFrameSlots 주석 참조).
 		D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-		D3D12_RESOURCE_DESC desc = BufferDesc(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * maxInstances);
+		D3D12_RESOURCE_DESC desc = BufferDesc(
+			sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * maxInstances * kFrameSlots);
 		if (FAILED(device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
 			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&instanceBuffer))))
 			return false;
 
 		D3D12_RANGE noRead = { 0, 0 };
-		if (FAILED(instanceBuffer->Map(0, &noRead, reinterpret_cast<void**>(&instanceData))))
+		if (FAILED(instanceBuffer->Map(0, &noRead, reinterpret_cast<void**>(&instanceBase))))
 			return false;
+		instanceData = reinterpret_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(instanceBase);
 
 		// TLAS 는 최대 인스턴스 기준으로 미리 잡아두고 매 프레임 재빌드한다.
+		// ★ PREFER_FAST_BUILD 로 둔다 (2026-10-08)
+		//   TLAS 는 매 프레임 처음부터 다시 빌드한다. FAST_TRACE 는 빌드가 비싸고,
+		//   인스턴스 수십 개 규모에서 트래버설 이득은 미미하다 — 빌드 비용이 더 큰 쪽이다.
+		//   (BLAS 는 한 번만 빌드하고 계속 추적하므로 FAST_TRACE 를 유지한다)
+		//   ※ 프리빌드 질의와 실제 빌드의 플래그는 반드시 같아야 한다 — 크기가 달라진다.
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
 		inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
 		inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
 		inputs.NumDescs = maxInstances;
 
 		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
@@ -203,10 +209,29 @@ namespace swc {
 		return total;
 	}
 
+	void AccelStructure::ResetInstances(uint32_t slot)
+	{
+		// ★ 프레임마다 다른 슬롯에 쓴다. 지금은 프레임마다 GPU 를 기다리므로 효과가 없지만,
+		//   비행 중 프레임(M1)이 들어오면 이 분리가 깜빡임을 막는다.
+		frameSlot = kFrameSlots ? (slot % kFrameSlots) : 0;
+		instanceData = instanceBase
+			? reinterpret_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(
+				instanceBase + size_t(frameSlot) * maxInstances * sizeof(D3D12_RAYTRACING_INSTANCE_DESC))
+			: nullptr;
+		instanceCount = 0;
+		droppedInstances = 0;
+	}
+
 	void AccelStructure::AddInstance(uint32_t blasIndex, const XMFLOAT4X4& world)
 	{
-		if (instanceCount >= maxInstances || blasIndex >= blas.size() || !instanceData)
+		if (blasIndex >= blas.size() || !instanceData)
 			return;
+		if (instanceCount >= maxInstances)
+		{
+			// 조용히 버리면 «RT 에만 안 보이는 물체» 가 생긴다. 숫자로 남긴다.
+			++droppedInstances;
+			return;
+		}
 
 		D3D12_RAYTRACING_INSTANCE_DESC& d = instanceData[instanceCount];
 
@@ -232,9 +257,12 @@ namespace swc {
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
 		inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
 		inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+		// Initialize 의 프리빌드 질의와 같은 플래그여야 한다(크기가 달라진다).
+		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
 		inputs.NumDescs = instanceCount;
-		inputs.InstanceDescs = instanceBuffer->GetGPUVirtualAddress();
+		// 이번 프레임 슬롯의 주소를 넘긴다.
+		inputs.InstanceDescs = instanceBuffer->GetGPUVirtualAddress() +
+			UINT64(frameSlot) * maxInstances * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
 
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build = {};
 		build.Inputs = inputs;

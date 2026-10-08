@@ -41,12 +41,27 @@ namespace swc {
 		// CompactMesh 의 커맨드가 끝난 뒤에 부른다. 압축 원본과 scratch 를 해제한다.
 		void FinishCompaction(uint32_t blasIndex);
 
-		void ResetInstances() { instanceCount = 0; }
+		// ★ 비행 중 프레임 수만큼의 인스턴스 슬롯 (2026-10-08)
+		//   인스턴스 디스크립터는 UPLOAD 힙에 있고 CPU 가 매 프레임 덮어쓴다.
+		//   지금은 프레임마다 GPU 완료를 기다리므로 한 벌로도 안전하지만,
+		//   「멀티스레딩 분류 명세서」 M1(비행 중 프레임)이 들어오면 GPU 가 읽는 중에
+		//   덮어쓰게 된다(9.4: «링이 아닌 버퍼가 하나라도 남으면 깜빡임이 생긴다»).
+		//   프레임 수를 늘릴 때 이 값만 올린다.
+		static constexpr uint32_t kFrameSlots = 2;
+
+		// frameSlot = 이번 프레임이 쓸 슬롯(보통 스왑체인 백버퍼 번호).
+		void ResetInstances(uint32_t frameSlot);
 		void AddInstance(uint32_t blasIndex, const DirectX::XMFLOAT4X4& world);
 		void BuildTlas(ID3D12GraphicsCommandList4*);
 
 		D3D12_GPU_VIRTUAL_ADDRESS TlasAddress() const;
 		uint32_t InstanceCount() const { return instanceCount; }
+		uint32_t MaxInstances() const { return maxInstances; }
+
+		// ★ 상한을 넘겨 버린 인스턴스 수 (프레임마다 초기화)
+		//   넘치면 조용히 빠져서 «RT 에만 안 보이는 물체» 가 생긴다. 실제로 메시가
+		//   3,708개였을 때 그런 상태였다 — 숫자로 드러나게 둔다.
+		uint32_t DroppedInstances() const { return droppedInstances; }
 
 		// 계측용 — 창 제목·로그에 찍어 «BLAS 가 얼마나 먹는지» 를 눈으로 본다.
 		uint64_t BlasResultBytes() const;
@@ -76,8 +91,11 @@ namespace swc {
 		Microsoft::WRL::ComPtr<ID3D12Resource> postbuildWrite;
 		Microsoft::WRL::ComPtr<ID3D12Resource> postbuildRead;
 
-		D3D12_RAYTRACING_INSTANCE_DESC* instanceData = nullptr;   // UPLOAD 힙 영속 매핑
+		uint8_t* instanceBase = nullptr;                          // UPLOAD 힙 영속 매핑(전체 슬롯)
+		D3D12_RAYTRACING_INSTANCE_DESC* instanceData = nullptr;   // 이번 프레임 슬롯
+		uint32_t frameSlot = 0;
 		uint32_t instanceCount = 0;
+		uint32_t droppedInstances = 0;
 		uint32_t maxInstances = 0;
 		uint64_t compactionSaved = 0;   // 압축으로 줄인 누적 바이트 (계측)
 	};
