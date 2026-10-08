@@ -455,10 +455,12 @@ namespace Shared {
 				continue;
 			}
 
-			// o·g 는 오브젝트 경계다. 이름을 기억해 두고, 면이 올 때 노드를 만든다.
-			// (OBJ 의 그룹은 계층이 아니라 평면 묶음이라 전부 루트 노드가 된다)
+			// o·g 는 오브젝트 경계다. ★ splitByObject 일 때만 노드를 나눈다 —
+			// 끄면 노드 하나·재질 기준 분리로 남는다(드로우 콜 폭증 방지. ReadOptions 주석 참조).
 			if (Keyword(p, "o") || Keyword(p, "g"))
 			{
+				if (!options.splitByObject) continue;
+
 				std::string name = FirstToken(p);
 				if (name.size() > kMaxNameLength) name.resize(kMaxNameLength);
 				if (name != currentObject)
@@ -546,7 +548,13 @@ namespace Shared {
 							if (!Resolve(triangle[i].normal, normals.size(), index))
 								return fail(L"OBJ 면의 법선 인덱스가 범위를 벗어났습니다");
 							vertex[i].normal = normals[index];
-							key[i].normal = static_cast<uint32_t>(index) + 1;
+
+							// ★ geometryOnly 면 법선을 중복 제거 키에 넣지 않는다 (2026-10-08)
+							//   충돌·접지에는 법선이 필요 없다. 키에 넣으면 좌표가 같은 정점이
+							//   법선 수만큼 갈라져 정점·해시가 두 배 이상으로 불어난다
+							//   (행성 OBJ: 정점 419만인데 (v,vn) 조합은 1천만 가까이 된다).
+							if (!options.geometryOnly)
+								key[i].normal = static_cast<uint32_t>(index) + 1;
 						}
 						else
 						{

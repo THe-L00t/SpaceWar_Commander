@@ -62,6 +62,10 @@ namespace Shared {
 		options.generateTangents = false;
 		options.generateCollision = false;  // 접지 삼각형은 아래에서 «고른 노드» 로만 모은다
 		options.readAnimation = false;
+		// ★ 오브젝트 이름이 필요하다 — 이 경로만 노드를 쪼갠다.
+		//   렌더 경로는 끈 상태로 둬야 한다(메시 하나 = 드로우 하나. ReadOptions 주석 참조).
+		//   여기서 쪼개진 메시는 GPU 에 올라가지 않으므로 드로우 비용이 없다.
+		options.splitByObject = true;
 
 		ModelSource source;
 		if (!ModelReader().Load(path, source, error, options))

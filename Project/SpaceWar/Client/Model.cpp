@@ -12,8 +12,13 @@ namespace {
 	// 이동 좌표는 기존 2m 큐브의 중심을 유지한다. 모델의 발은 중심보다 1m 아래다.
 	constexpr float kModelHeight = 2.0f;
 	constexpr float kGroundOffset = 1.0f;
-	// OBJ 캐릭터의 정면을 엔진의 +Z 방향에 맞춰 Y축으로 180도 보정한다.
-	constexpr float kModelYaw = XM_PI;
+	// ★ 정면 보정 0 (2026-10-08 — 통합 뒤 실행해서 확인했다)
+	//   client2 에서는 XM_PI 였다. 그쪽 ObjModelLoader 가 정점의 Z 를 뒤집어 올렸기 때문에
+	//   모델 정면이 −Z 로 돌아가고, 그것을 180도 돌려 엔진 전방(+Z)에 맞춘 것이다.
+	//   지금 파서(Shared/Model)는 좌표를 변환하지 않는다 → 캐릭터 OBJ 의 정면이 그대로 +Z 다.
+	//   그래서 180도를 그대로 두면 이동 방향의 **정반대**를 바라본다(실제로 그랬다).
+	//   제작 모델의 정면이 바뀌면 이 값만 조정한다(라디안).
+	constexpr float kModelYaw = 0.0f;
 }
 
 namespace swc {

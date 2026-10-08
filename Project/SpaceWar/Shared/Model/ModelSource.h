@@ -185,6 +185,15 @@ namespace Shared {
 
 		// 스킨·애니메이션을 읽는다. 서버는 끈다(Animator 는 클라 전용 — 명세 §14).
 		bool readAnimation = true;
+
+		// ★ OBJ 의 o/g 오브젝트마다 노드를 만들고 메시를 쪼갠다 (2026-10-08)
+		//   끄면(기본) 재질 기준으로만 쪼갠다 — 메시 하나가 드로우 하나·BLAS 하나·TLAS 인스턴스
+		//   하나라서, 켜면 드로우 콜이 폭증한다. 행성 OBJ 로 실측: 재질 기준 18개 vs 오브젝트×재질 3,708개
+		//   (그래서 20fps 가 나왔다).
+		//   켜는 쪽은 «이름으로 골라야 하는» 기하 전용 경로뿐이다 —
+		//   Shared::PlanetSurface 가 Asphalt·Sidewalk·Planet_Core 같은 오브젝트만 접지면으로 쓴다.
+		//   그 경로는 GPU 에 아무것도 올리지 않으므로 메시가 많아도 드로우가 늘지 않는다.
+		bool splitByObject = false;
 	};
 
 } // namespace Shared
