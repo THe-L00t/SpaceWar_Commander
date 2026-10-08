@@ -40,6 +40,19 @@ namespace swc {
 		// 초기화 실패 원인 / 어댑터 이름 등
 		const std::wstring& StatusText() const;
 
+		// ── 가속 구조 계측 (DX 타입 노출 없음) ──
+		//  scratch 는 빌드 뒤 해제되므로 로드가 끝나면 0 이어야 정상이다.
+		uint64_t BlasResultBytes() const;
+		uint64_t BlasScratchBytes() const;
+		uint64_t BlasCompactionSaved() const;
+		size_t   BlasCount() const;
+
+		// TLAS 는 매 프레임 재빌드한다. 상한을 넘겨 버려진 인스턴스가 있으면
+		// «RT 에만 안 보이는 물체» 가 생기므로 숫자를 드러낸다.
+		uint32_t TlasInstanceCount() const;
+		uint32_t TlasMaxInstances() const;
+		uint32_t TlasDroppedInstances() const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;
