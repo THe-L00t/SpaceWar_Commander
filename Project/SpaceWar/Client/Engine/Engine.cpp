@@ -7,6 +7,7 @@
 #include <DirectXMath.h>
 #include "Client/DummyMesh.h"
 #include "Client/RayTracingParams.h"
+#include "Shared/Model/ModelSource.h"   // 행성 접지면을 파싱 결과(collected)로 만든다
 
 using namespace DirectX;
 
@@ -197,13 +198,13 @@ namespace swc {
 	}
 
 	// ── 게임 씬 로드 묶음 ───────────────────────────────────────
-	//  단계 0 (로딩 스레드) OBJ 지표면 파싱        → (메인) 지형 설정
-	//         (로딩 스레드) 행성 모델 파싱         → (메인) GPU 업로드 · 씬 배치 · RAM 사본 해제
+	//  단계 0 (로딩 스레드) 행성 OBJ 파싱 «한 번» → 같은 결과로 접지면(PlanetSurface)과 렌더 메시를 함께 만든다
+	//                       → (메인) 지형 연결 · GPU 업로드 · 씬 배치 · RAM 사본 해제
 	//         (로딩 스레드) 캐릭터 모델 파싱       → (메인) GPU 업로드 · 애니메이션 · RAM 사본 해제
 	//  단계 1 (메인)        예광탄 · 플레이어 노드 · 스폰(지형을 쓰므로 단계 0 뒤) · 서버 접속
 	//
 	//  ★ GPU 업로드는 메인에서 한다 — 렌더 몫(명세 ⑥). 한 프레임에 하나씩(kLoadFinishesPerFrame).
-	//  ★ planetSurface 는 로딩 스레드가 채운다
+	//  ★ planetSurface 는 로딩 스레드가 채운다 (onParsed 훅)
 	//    로딩 중 메인은 로딩 씬만 그리므로 planetSurface 를 건드리지 않는다. 다 채운 뒤에야
 	//    finish(메인)가 지형에 연결한다 — 완료 큐의 락이 그 순서를 보장한다.
 	//  ★ 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
@@ -216,28 +217,29 @@ namespace swc {
 		// planet — 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
 		const std::wstring planetAsset = AssetPath(Shared::kPlanetModelAsset);
 
-		std::shared_ptr<std::wstring> surfaceError = std::make_shared<std::wstring>();
-		batch.Add(L"행성 지표면",
-			[this, planetAsset, surfaceError]()
+		// ★ 행성 OBJ 는 한 번만 파싱한다 (2026-10-09)
+		//   렌더 메시는 재질 기준으로 합쳐 읽으면서(드로우 18개), 같은 파싱에서 접지 오브젝트의 면만
+		//   collected 로 따로 모은다(collectObject). 그걸로 로딩 스레드에서 접지면 BVH 를 바로 만든다.
+		ModelRequestOptions planetOptions;
+		planetOptions.collectObject = &Shared::PlanetSurface::IsGroundObject;
+		planetOptions.onParsed = [this](const Shared::ModelSource& source, std::wstring& error)
+		{
+			return planetSurface.Build(source.collected, error);
+		};
+
+		resources.RequestModelFile(batch, planetAsset,
+			[this, &batch](const ModelFileResources& loaded)
 			{
-				return planetSurface.Load(planetAsset.c_str(), *surfaceError);
-			},
-			[this, &batch, surfaceError](bool ok)
-			{
-				if (!ok)
+				// 접지면 — 로딩 스레드가 파싱 직후 만들어 두었다.
+				if (!planetSurface.Valid())
 				{
-					batch.SetFailureDetail(*surfaceError);
+					batch.SetFailureDetail(L"행성 지표면 로드 실패: " + resources.LastError());
 					return false;
 				}
 				terrain.Configure(&planetSurface, planet.radius);
 				planet.terrain = &terrain;
 				terrainStatus = L"OBJ 행성 지표면 " + std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
-				return true;
-			});
 
-		resources.RequestModelFile(batch, planetAsset,
-			[this, &batch](const ModelFileResources& loaded)
-			{
 				const ModelData* planetData = resources.Get(loaded.model);
 				if (!planetData)
 				{
@@ -263,7 +265,8 @@ namespace swc {
 				scene.SetLocalTransform(planetNode,
 					XMMatrixTranslation(float(planet.center.x), float(planet.center.y), float(planet.center.z)));
 				return true;
-			});
+			},
+			std::move(planetOptions));
 
 		// ── 캐릭터 모델 (OBJ) ──────────────────────────────────
 		//  ★ 한 번만 읽고 GPU 자원을 만든다. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다

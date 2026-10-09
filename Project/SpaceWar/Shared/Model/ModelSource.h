@@ -1,7 +1,9 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../Vec3.h"
@@ -149,6 +151,20 @@ namespace Shared {
 		bool Empty() const { return indices.empty(); }
 	};
 
+	// ★ 이름으로 고른 오브젝트의 삼각형 (2026-10-09) — ReadOptions::collectObject 가 채운다
+	//   렌더 메시는 재질 기준으로 합쳐져 오브젝트 이름이 사라진다. 그래도 «이름으로 골라야 하는»
+	//   기하(행성 접지면)가 필요해서, 리더가 한 번 훑는 동안 고른 오브젝트의 면을 여기에 따로 모은다.
+	//   그래서 같은 파일을 렌더용·접지용으로 두 번 파싱하지 않아도 된다.
+	//   위치와 삼각형만 있다. 와인딩은 렌더 메시와 같다. 지금은 OBJ 리더만 채운다.
+	struct CollectedGeometry
+	{
+		std::vector<Vec3>        positions;
+		std::vector<uint32_t>    indices;    // 삼각형 목록
+		std::vector<std::string> objects;    // 면을 하나 이상 내놓은 오브젝트 이름 (중복 없음)
+
+		bool Empty() const { return indices.empty(); }
+	};
+
 	struct ModelSource
 	{
 		std::vector<SourceMesh>     meshes;
@@ -160,6 +176,7 @@ namespace Shared {
 		std::vector<AnimationSource> animations; // 클립만 든 파일이면 meshes 가 비어 있다
 
 		CollisionData collision;
+		CollectedGeometry collected;   // ReadOptions::collectObject 가 있을 때만 채워진다
 
 		Vec3 boundsMin{};
 		Vec3 boundsMax{};
@@ -190,10 +207,16 @@ namespace Shared {
 		//   끄면(기본) 재질 기준으로만 쪼갠다 — 메시 하나가 드로우 하나·BLAS 하나·TLAS 인스턴스
 		//   하나라서, 켜면 드로우 콜이 폭증한다. 행성 OBJ 로 실측: 재질 기준 18개 vs 오브젝트×재질 3,708개
 		//   (그래서 20fps 가 나왔다).
-		//   켜는 쪽은 «이름으로 골라야 하는» 기하 전용 경로뿐이다 —
-		//   Shared::PlanetSurface 가 Asphalt·Sidewalk·Planet_Core 같은 오브젝트만 접지면으로 쓴다.
+		//   이름으로 골라야 하는 기하(행성 접지면)는 이제 아래 collectObject 를 쓴다(2026-10-09).
+		//   켜야 하는 경우는 «오브젝트별 노드» 자체가 필요한 기하 전용 경로뿐이다 —
 		//   그 경로는 GPU 에 아무것도 올리지 않으므로 메시가 많아도 드로우가 늘지 않는다.
 		bool splitByObject = false;
+
+		// ★ 이름으로 오브젝트를 골라 그 면을 ModelSource::collected 에 따로 모은다 (2026-10-09)
+		//   splitByObject 를 켜지 않아도 된다 — 렌더 메시는 재질 기준 그대로 두고,
+		//   같은 한 번의 파싱에서 접지면만 추린다(Shared::PlanetSurface::IsGroundObject 를 넘긴다).
+		//   비어 있으면 아무것도 모으지 않는다. 지금은 OBJ 리더만 지원한다(o/g 이름).
+		std::function<bool(std::string_view)> collectObject;
 	};
 
 } // namespace Shared

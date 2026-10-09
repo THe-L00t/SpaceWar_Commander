@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <new>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -25,10 +26,13 @@ namespace {
 		return leafCount * 2 - 1;
 	}
 
-	// 지붕·벽까지 접지면으로 읽으면 그 아래를 걷는 플레이어도 지붕 위로 밀려난다.
-	// 이 모델의 객체 이름으로 지면·도로·보도·입구만 고른다.
-	bool IsGroundObject(std::string_view name)
+} // namespace
+
+namespace Shared {
+
+	bool PlanetSurface::IsGroundObject(std::string_view name)
 	{
+		// 이 모델의 객체 이름으로 지면·도로·보도·입구만 고른다.
 		if (name == "Planet_Core" || name == "Fragmented_Planet_Armor") return true;
 		constexpr std::string_view keywords[] = {
 			"Asphalt", "Sidewalk", "Paving", "Ramp", "Subgrade", "Approaches",
@@ -38,10 +42,6 @@ namespace {
 			if (name.find(keyword) != std::string_view::npos) return true;
 		return false;
 	}
-
-} // namespace
-
-namespace Shared {
 
 	bool PlanetSurface::Load(const wchar_t* path, std::wstring& error)
 	{
@@ -60,83 +60,84 @@ namespace Shared {
 		ReadOptions options;
 		options.geometryOnly = true;        // 재질·UV·탄젠트를 읽지 않는다(서버도 같은 길)
 		options.generateTangents = false;
-		options.generateCollision = false;  // 접지 삼각형은 아래에서 «고른 노드» 로만 모은다
+		options.generateCollision = false;  // 접지 삼각형은 collectObject 로 «고른 오브젝트» 만 모은다
 		options.readAnimation = false;
-		// ★ 오브젝트 이름이 필요하다 — 이 경로만 노드를 쪼갠다.
-		//   렌더 경로는 끈 상태로 둬야 한다(메시 하나 = 드로우 하나. ReadOptions 주석 참조).
-		//   여기서 쪼개진 메시는 GPU 에 올라가지 않으므로 드로우 비용이 없다.
-		options.splitByObject = true;
+		// ★ 오브젝트를 노드로 쪼개지 않는다 (2026-10-09)
+		//   예전에는 splitByObject 로 쪼갠 뒤 노드 이름으로 골랐다. 이제 리더가 o/g 이름을 보며
+		//   바로 골라 collected 에 모은다 — 클라가 렌더용 파싱 한 번으로 같은 결과를 얻는 길과 같다.
+		options.collectObject = &PlanetSurface::IsGroundObject;
 
 		ModelSource source;
 		if (!ModelReader().Load(path, source, error, options))
 			return false;
 
+		return Build(source.collected, error);
+	}
+
+	bool PlanetSurface::Build(const CollectedGeometry& ground, std::wstring& error)
+	{
+		error.clear();
+		*this = PlanetSurface{};
+
 		try
 		{
-			PlanetSurface loaded;
-			bool coreHasFaces = false;
+			PlanetSurface built;
 
-			// 오브젝트(OBJ 의 o / glTF 의 노드) 이름으로 접지면을 고른다.
-			// 지붕·벽·부유 잔해를 접지로 읽으면 그 아래를 걷는 플레이어가 지붕 위로 밀려난다.
-			for (const SourceNode& node : source.nodes)
+			const bool coreHasFaces = std::find(ground.objects.begin(), ground.objects.end(),
+				std::string("Planet_Core")) != ground.objects.end();
+
+			if (ground.positions.size() >= std::numeric_limits<uint32_t>::max())
 			{
-				if (!IsGroundObject(node.name)) continue;
-				const bool coreObject = node.name == "Planet_Core";
+				error = L"행성 접지 정점 수가 지원 범위를 초과했습니다.";
+				return false;
+			}
+			built.positions.reserve(ground.positions.size());
+			for (const Vec3& p : ground.positions)
+				built.positions.push_back({ p.x, p.y, p.z });
 
-				for (const uint32_t meshIndex : node.meshes)
+			// 리더가 삼각형 목록을 보장한다(다각형 분할·인덱스 범위 검사까지 끝난 상태).
+			built.triangles.reserve(ground.indices.size() / 3);
+			for (size_t i = 0; i + 2 < ground.indices.size(); i += 3)
+			{
+				const Triangle triangle{ {
+					ground.indices[i], ground.indices[i + 1], ground.indices[i + 2] } };
+				if (triangle.vertices[0] >= built.positions.size() ||
+					triangle.vertices[1] >= built.positions.size() ||
+					triangle.vertices[2] >= built.positions.size())
 				{
-					if (meshIndex >= source.meshes.size()) continue;
-					const SourceMesh& mesh = source.meshes[meshIndex];
-
-					if (loaded.positions.size() + mesh.vertices.size() >=
-						std::numeric_limits<uint32_t>::max())
-					{
-						error = L"행성 접지 정점 수가 지원 범위를 초과했습니다.";
-						return false;
-					}
-					const uint32_t base = uint32_t(loaded.positions.size());
-					for (const SourceVertex& vertex : mesh.vertices)
-						loaded.positions.push_back({ vertex.position.x, vertex.position.y, vertex.position.z });
-
-					// 파서가 삼각형 목록을 보장한다(다각형 분할·인덱스 범위 검사까지 끝난 상태).
-					for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
-					{
-						const Triangle triangle{ {
-							base + mesh.indices[i], base + mesh.indices[i + 1], base + mesh.indices[i + 2] } };
-						const Position& a = loaded.positions[triangle.vertices[0]];
-						const Position& b = loaded.positions[triangle.vertices[1]];
-						const Position& c = loaded.positions[triangle.vertices[2]];
-						const double bx = double(b.x) - a.x, by = double(b.y) - a.y, bz = double(b.z) - a.z;
-						const double cx = double(c.x) - a.x, cy = double(c.y) - a.y, cz = double(c.z) - a.z;
-						const double nx = by * cz - bz * cy;
-						const double ny = bz * cx - bx * cz;
-						const double nz = bx * cy - by * cx;
-						if (nx * nx + ny * ny + nz * nz <= 1.0e-20) continue;   // 퇴화 삼각형
-						if (loaded.triangles.size() >= std::numeric_limits<uint32_t>::max() / 2)
-						{
-							error = L"행성 접지 삼각형 수가 지원 범위를 초과했습니다.";
-							return false;
-						}
-						loaded.triangles.push_back(triangle);
-						coreHasFaces = coreHasFaces || coreObject;
-					}
+					error = L"행성 접지 삼각형의 정점 번호가 범위를 벗어났습니다.";
+					return false;
 				}
+				const Position& a = built.positions[triangle.vertices[0]];
+				const Position& b = built.positions[triangle.vertices[1]];
+				const Position& c = built.positions[triangle.vertices[2]];
+				const double bx = double(b.x) - a.x, by = double(b.y) - a.y, bz = double(b.z) - a.z;
+				const double cx = double(c.x) - a.x, cy = double(c.y) - a.y, cz = double(c.z) - a.z;
+				const double nx = by * cz - bz * cy;
+				const double ny = bz * cx - bx * cz;
+				const double nz = bx * cy - by * cx;
+				if (nx * nx + ny * ny + nz * nz <= 1.0e-20) continue;   // 퇴화 삼각형
+				if (built.triangles.size() >= std::numeric_limits<uint32_t>::max() / 2)
+				{
+					error = L"행성 접지 삼각형 수가 지원 범위를 초과했습니다.";
+					return false;
+				}
+				built.triangles.push_back(triangle);
 			}
 
-			if (!coreHasFaces || loaded.triangles.empty())
+			if (!coreHasFaces || built.triangles.empty())
 			{
 				error = L"Planet_Core 지표면 또는 접지 삼각형이 없습니다.";
 				return false;
 			}
 
-			// 파싱 중에는 OBJ 전역 인덱스가 필요하지만 조회에는 접지 정점만 필요하다.
-			// remap 임시 배열은 CompactPositions가 끝나면 BVH를 만들기 전에 해제된다.
-			loaded.CompactPositions();
-			loaded.positions.shrink_to_fit();
-			loaded.triangles.shrink_to_fit();
-			loaded.nodes.reserve(NodeCount(uint32_t(loaded.triangles.size())));
-			loaded.BuildNode(0, uint32_t(loaded.triangles.size()));
-			*this = std::move(loaded);
+			// 리더는 고른 면이 쓰는 위치만 넘긴다. 퇴화 삼각형을 뺀 뒤 남는 위치만 다시 추린다.
+			built.CompactPositions();
+			built.positions.shrink_to_fit();
+			built.triangles.shrink_to_fit();
+			built.nodes.reserve(NodeCount(uint32_t(built.triangles.size())));
+			built.BuildNode(0, uint32_t(built.triangles.size()));
+			*this = std::move(built);
 			return true;
 		}
 		catch (const std::bad_alloc&)

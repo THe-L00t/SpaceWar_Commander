@@ -348,13 +348,23 @@ namespace Shared {
 		std::unordered_map<std::string, uint32_t> materialByName;
 		uint32_t currentMaterial = kInvalidIndex;
 
-		// ★ o / g 를 노드로 남긴다 (2026-10-08)
-		//   예전에는 파일 하나 = 노드 하나였다. 그런데 맵 OBJ 는 오브젝트 이름으로 용도를 가른다 —
-		//   `Shared::PlanetSurface` 가 «Asphalt·Sidewalk·Planet_Core …» 이름만 접지면으로 골라 쓴다.
-		//   이름을 버리면 그 선별이 불가능하므로 오브젝트마다 노드를 만들고 이름을 남긴다.
+		// ★ o / g 를 노드로 남긴다 (2026-10-08, splitByObject 일 때)
+		//   예전에는 파일 하나 = 노드 하나였다. 맵 OBJ 는 오브젝트 이름으로 용도를 가른다.
+		//   이름으로 «면을 고르는» 일은 이제 아래 collectObject 가 노드를 쪼개지 않고 한다(2026-10-09).
 		//   o/g 가 없는 파일은 파일 이름으로 노드 하나를 만든다(예전 동작과 같다).
 		std::string currentObject;
 		uint32_t    currentNode = kInvalidIndex;
+
+		// ★ 이름으로 고른 오브젝트의 면을 out.collected 에 함께 모은다 (2026-10-09)
+		//   splitByObject 와 상관없이 o/g 이름을 따라가며 필터(collectObject)로 고른다.
+		//   그래야 렌더 메시는 재질 기준으로 합친 채로 두고도, 같은 파싱에서 접지면을 얻는다.
+		//   o/g 앞의 면은 파일 이름 오브젝트로 본다(노드 이름 규칙과 같다).
+		const bool collectEnabled = static_cast<bool>(options.collectObject);
+		std::string collectName = ToUtf8(objPath.stem());
+		bool collecting = collectEnabled && options.collectObject(collectName);
+		bool collectNameRecorded = false;
+		// OBJ 위치 번호 → out.collected.positions 번호. 고른 면이 쓰는 위치만 옮긴다.
+		std::vector<uint32_t> collectRemap;
 
 		// 메시는 (노드, 재질) 조합마다 하나다. 면이 하나라도 올 때 만든다 —
 		// 그래야 쓰이지 않은 usemtl·빈 오브젝트 때문에 빈 메시가 남지 않는다.
@@ -459,10 +469,18 @@ namespace Shared {
 			// 끄면 노드 하나·재질 기준 분리로 남는다(드로우 콜 폭증 방지. ReadOptions 주석 참조).
 			if (Keyword(p, "o") || Keyword(p, "g"))
 			{
-				if (!options.splitByObject) continue;
-
 				std::string name = FirstToken(p);
 				if (name.size() > kMaxNameLength) name.resize(kMaxNameLength);
+
+				if (collectEnabled && name != collectName)
+				{
+					collectName = name;
+					collecting = options.collectObject(collectName);
+					collectNameRecorded = false;
+				}
+
+				if (!options.splitByObject) continue;
+
 				if (name != currentObject)
 				{
 					currentObject = std::move(name);
@@ -525,6 +543,7 @@ namespace Shared {
 
 					VertexKey key[3]{};
 					SourceVertex vertex[3]{};
+					size_t positionIndex[3]{};
 					bool hasFileNormals = true;
 
 					for (int i = 0; i < 3; ++i)
@@ -533,6 +552,7 @@ namespace Shared {
 						if (!Resolve(triangle[i].position, positions.size(), index))
 							return fail(L"OBJ 면의 정점 인덱스가 범위를 벗어났습니다");
 						vertex[i].position = positions[index];
+						positionIndex[i] = index;
 						key[i].position = static_cast<uint32_t>(index) + 1;
 
 						if (triangle[i].uv != 0 && !options.geometryOnly)
@@ -608,6 +628,35 @@ namespace Shared {
 							keys.emplace(key[i], vertexIndex);
 						}
 						mesh.indices.push_back(vertexIndex);
+					}
+
+					// 고른 오브젝트면 같은 삼각형을 collected 에도 넣는다(같은 와인딩).
+					if (collecting)
+					{
+						if (!collectNameRecorded)
+						{
+							// 같은 이름이 파일 뒤쪽에 다시 나올 수 있다 — 한 번만 적는다.
+							std::vector<std::string>& names = out.collected.objects;
+							if (std::find(names.begin(), names.end(), collectName) == names.end())
+								names.push_back(collectName);
+							collectNameRecorded = true;
+						}
+						if (collectRemap.size() < positions.size())
+							collectRemap.resize(positions.size(), kInvalidIndex);
+						if (out.collected.indices.size() + 3 > kMaxIndices)
+							return fail(L"OBJ 에서 고른 오브젝트의 인덱스가 너무 많습니다");
+
+						for (int slot = 0; slot < 3; ++slot)
+						{
+							const size_t source = positionIndex[order[slot]];
+							uint32_t& mapped = collectRemap[source];
+							if (mapped == kInvalidIndex)
+							{
+								mapped = static_cast<uint32_t>(out.collected.positions.size());
+								out.collected.positions.push_back(positions[source]);
+							}
+							out.collected.indices.push_back(mapped);
+						}
 					}
 				}
 				continue;

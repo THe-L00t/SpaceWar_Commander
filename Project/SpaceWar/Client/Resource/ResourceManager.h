@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <string_view>
 #include "Shared/HeightmapData.h"
 #include "AnimationData.h"
 #include "ModelData.h"
@@ -40,6 +41,8 @@
 //    등록이 끝난 데이터는 불변이라 다른 스레드도 읽을 수 있다(7장 읽기 전용 공유 데이터).
 //    그래서 원소를 unique_ptr 로 들어 주소가 바뀌지 않게 한다.
 // ============================================================
+
+namespace Shared { struct ModelSource; }
 
 namespace swc {
 
@@ -80,6 +83,21 @@ namespace swc {
 		bool Valid() const { return index != 0; }
 	};
 
+	// RequestModelFile 의 추가 선택 (2026-10-09)
+	//  같은 파싱 결과에서 렌더용 말고 다른 것도 만들 때 쓴다 — 행성 OBJ 를 한 번만 읽고
+	//  렌더 메시와 접지면(Shared::PlanetSurface)을 함께 얻는다.
+	struct ModelRequestOptions
+	{
+		// Shared::ReadOptions::collectObject 로 넘긴다. 고른 오브젝트의 면이 ModelSource::collected 에 모인다.
+		std::function<bool(std::string_view)> collectObject;
+
+		// ★ 로딩 스레드에서 파싱 직후 한 번 부른다(렌더용 변환 전). false = 실패, error 에 원인.
+		//   메인 스레드 소유물(Scene·Renderer·GameObject)을 건드리면 안 된다.
+		//   로딩 중 메인이 손대지 않는 대상(예: 로드 전용 PlanetSurface)만 채운다.
+		//   이미 캐시에 있는 파일이면 파싱을 하지 않으므로 이 훅도 불리지 않는다.
+		std::function<bool(const Shared::ModelSource&, std::wstring& error)> onParsed;
+	};
+
 	// 모델 파일 하나에서 나온 리소스들. 비어 있는 핸들은 그 파일에 그것이 없다는 뜻이다.
 	struct ModelFileResources
 	{
@@ -118,7 +136,8 @@ namespace swc {
 		// 파일 하나를 읽어 메시·스켈레톤·클립을 각각 등록한다.
 		ModelFileResources LoadModelFile(const wchar_t* path);
 		// 같은 일을 로딩 스레드에서 한다. 파싱은 로딩 스레드, 등록과 onReady 는 메인.
-		void RequestModelFile(LoadBatch& batch, const std::wstring& path, ModelReady onReady);
+		void RequestModelFile(LoadBatch& batch, const std::wstring& path, ModelReady onReady,
+			ModelRequestOptions extra = {});
 
 		// 메시만 쓰는 호출부용. 내부적으로 LoadModelFile 을 부른다.
 		ModelHandle LoadModel(const wchar_t* path);
@@ -167,7 +186,8 @@ namespace swc {
 		// 캐시 키 = 정규화한 절대 경로. 실패면 빈 문자열.
 		static std::wstring ModelKey(const wchar_t* path, std::wstring& error);
 		// 컨테이너를 건드리지 않는다 → 어느 스레드에서나 부를 수 있다.
-		static bool ParseModelFile(const std::wstring& key, ParsedModelFile& out, std::wstring& error);
+		static bool ParseModelFile(const std::wstring& key, const ModelRequestOptions& extra,
+			ParsedModelFile& out, std::wstring& error);
 		// 메인 스레드 전용.
 		ModelFileResources RegisterModelFile(const std::wstring& key, ParsedModelFile&& parsed);
 

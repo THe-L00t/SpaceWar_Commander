@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // ============================================================
@@ -15,14 +16,29 @@
 //    행성 중심에서 바깥으로 쏜 레이가 만나는 가장 바깥 지면을 높이로 쓴다.
 //    건물 벽·동굴·교량 아래의 충돌은 이 방향당 높이 하나인 형식의 범위 밖이다.
 //    지붕·부유 잔해·대기는 접지 대상으로 읽지 않는다.
+//  ★ 행성 OBJ 를 한 번만 파싱한다 (2026-10-09)
+//    렌더 메시를 읽는 같은 파싱에서 ReadOptions::collectObject = IsGroundObject 로
+//    접지 오브젝트의 면을 ModelSource::collected 에 함께 모은 뒤 Build 로 넘긴다(클라).
+//    서버처럼 렌더가 필요 없으면 Load(path) 가 같은 방식으로 읽는다.
 // ============================================================
 
 namespace Shared {
 
+	struct CollectedGeometry;
+
 	class PlanetSurface
 	{
 	public:
+		// 파일을 직접 읽는다(서버). 내부적으로 collectObject + Build 와 같은 길이다.
 		bool Load(const wchar_t* path, std::wstring& error);
+
+		// 이미 파싱한 결과로 만든다(클라 — 렌더용 파싱과 한 번에).
+		// ground 는 collectObject = IsGroundObject 로 모은 것이어야 한다.
+		bool Build(const CollectedGeometry& ground, std::wstring& error);
+
+		// 이 맵의 접지 오브젝트 이름 규칙. ReadOptions::collectObject 에 그대로 넘긴다.
+		// 지붕·벽까지 접지면으로 읽으면 그 아래를 걷는 플레이어도 지붕 위로 밀려난다.
+		static bool IsGroundObject(std::string_view name);
 
 		bool Valid() const { return !nodes.empty(); }
 		size_t TriangleCount() const { return triangles.size(); }

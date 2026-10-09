@@ -138,17 +138,25 @@ namespace swc {
 		return fullPath.lexically_normal().wstring();
 	}
 
-	bool ResourceManager::ParseModelFile(const std::wstring& key, ParsedModelFile& out, std::wstring& error)
+	bool ResourceManager::ParseModelFile(const std::wstring& key, const ModelRequestOptions& extra,
+		ParsedModelFile& out, std::wstring& error)
 	{
 		// ── 1) 포맷 중립 표현으로 읽는다 ────────────────
 		//  클라는 충돌 데이터가 필요 없다. 렌더 삼각형을 한 번 더 복사하지 않게 끈다
 		//  (서버는 geometryOnly = true 로 충돌만 읽는다).
 		Shared::ReadOptions options;
 		options.generateCollision = false;
+		options.collectObject = extra.collectObject;   // 이름으로 고른 면을 같은 파싱에서 함께 모은다
 
 		Shared::ModelSource source;
 		if (!Shared::ModelReader().Load(key.c_str(), source, error, options))
 			return false;
+
+		// 같은 파싱 결과로 렌더 말고 다른 것도 만든다(예: 행성 접지면). 로딩 스레드다.
+		if (extra.onParsed && !extra.onParsed(source, error))
+			return false;
+		// 모은 기하는 렌더 변환에 쓰지 않는다. 메모리를 일찍 돌려준다.
+		source.collected = Shared::CollectedGeometry{};
 
 		// ── 2) 메시·재질 ───────────────────────────────
 		//  클립만 든 파일이면 메시가 없다 — 그것은 실패가 아니다.
@@ -214,22 +222,25 @@ namespace swc {
 			return it->second;                       // ★ 파일 하나는 한 번만 읽는다
 
 		ParsedModelFile parsed;
-		if (!ParseModelFile(key, parsed, lastError))
+		if (!ParseModelFile(key, ModelRequestOptions{}, parsed, lastError))
 			return {};
 
 		return RegisterModelFile(key, std::move(parsed));
 	}
 
-	void ResourceManager::RequestModelFile(LoadBatch& batch, const std::wstring& path, ModelReady onReady)
+	void ResourceManager::RequestModelFile(LoadBatch& batch, const std::wstring& path, ModelReady onReady,
+		ModelRequestOptions extra)
 	{
 		struct Job
 		{
-			std::wstring    key;
-			ParsedModelFile parsed;
-			std::wstring    error;
+			std::wstring        key;
+			ModelRequestOptions extra;
+			ParsedModelFile     parsed;
+			std::wstring        error;
 		};
 		std::shared_ptr<Job> job = std::make_shared<Job>();
 		job->key = ModelKey(path.c_str(), job->error);
+		job->extra = std::move(extra);
 
 		// 키를 못 만들었거나 이미 읽은 파일이면 로딩 스레드에 일을 주지 않는다.
 		LoadBatch::Work work;
@@ -237,7 +248,7 @@ namespace swc {
 		{
 			work = [job]()
 			{
-				return ParseModelFile(job->key, job->parsed, job->error);
+				return ParseModelFile(job->key, job->extra, job->parsed, job->error);
 			};
 		}
 
