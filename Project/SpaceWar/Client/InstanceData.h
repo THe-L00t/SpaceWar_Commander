@@ -28,5 +28,6 @@ namespace swc {
 	struct RenderView {
 		DirectX::XMFLOAT4X4 viewProj{ };
 		DirectX::XMFLOAT3   eyePosition{ };   // 프레넬의 시선 벡터(V) 계산용
+		bool background = false;             // 배경 패스 뒤 깊이만 초기화한다.
 	};
 }

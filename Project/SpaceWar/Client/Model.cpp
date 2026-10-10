@@ -39,7 +39,7 @@ namespace swc {
 		return Initialize(data, renderer, placement);
 	}
 
-	bool Model::Initialize(const ModelData& data, GRenderer& renderer, const XMFLOAT4X4& visualTransform)
+	bool Model::Initialize(const ModelData& data, GRenderer& renderer, const XMFLOAT4X4& visualTransform, bool forceBackfaceCulling)
 	{
 		lastError.clear();
 		if (initialized)
@@ -134,8 +134,11 @@ namespace swc {
 
 		std::vector<MaterialHandle> materialHandles;
 		materialHandles.reserve(data.materials.size());
-		for (const MaterialData& material : data.materials)
+		for (const MaterialData& source : data.materials)
 		{
+			// CPU 메시를 복제하거나 로더 캐시를 수정하지 않고 GPU 재질의 양면 설정만 선택한다.
+			MaterialData material = source;
+			if (forceBackfaceCulling) material.doubleSided = false;
 			std::array<TextureHandle, kMaterialTextureCount> textures;
 			textures.fill(kInvalidTexture);
 			for (size_t slot = 0; slot < textures.size(); ++slot)

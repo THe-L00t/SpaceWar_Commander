@@ -3,6 +3,7 @@
 #include <shellapi.h>
 #include <objbase.h>
 #include <cstdio>
+#include <psapi.h>
 #include <DirectXMath.h>
 #include "Client/DummyMesh.h"
 #include "Client/RayTracingParams.h"
@@ -77,7 +78,7 @@ namespace
 	}
 
 	// 쓰지 않는 노드를 화면 밖으로 치워 두는 변환.
-	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
+	// 현재 행성 크기보다 충분히 먼 1만 km 아래로 이동한다.
 	DirectX::XMMATRIX ParkedTransform()
 	{
 		return DirectX::XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
@@ -95,6 +96,45 @@ namespace
 		const size_t slash = p.find_last_of(L"\\/");
 		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
 		return p + L"assets\\" + relative;
+	}
+
+	// 좌표만 받는 원격 캐릭터도 현재 지면의 위쪽에 몸통을 정렬한다.
+	XMMATRIX CharacterTransform(const swc::Planet& planet, const float position[3])
+	{
+		const swc::Vec3d p{ position[0], position[1], position[2] };
+		const swc::Vec3d up = planet.Up(p);
+		const swc::Vec3d forward = swc::ProjectOntoPlane({ 0.0, 0.0, 1.0 }, up);
+		const swc::Vec3d right = swc::Cross(up, forward);
+		XMMATRIX m;
+		m.r[0] = XMVectorSet(float(right.x), float(right.y), float(right.z), 0.0f);
+		m.r[1] = XMVectorSet(float(up.x), float(up.y), float(up.z), 0.0f);
+		m.r[2] = XMVectorSet(float(forward.x), float(forward.y), float(forward.z), 0.0f);
+		m.r[3] = XMVectorSet(position[0], position[1], position[2], 1.0f);
+		return m;
+	}
+
+	// Visual Studio 출력창에서 로딩 중 임시 메모리와 실행 후 상주량을 구분한다.
+	void LogMemory(const wchar_t* stage, size_t cachedModels, const swc::ModelData* model = nullptr)
+	{
+		PROCESS_MEMORY_COUNTERS_EX memory{};
+		memory.cb = sizeof(memory);
+		if (!K32GetProcessMemoryInfo(GetCurrentProcess(),
+			reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) return;
+		size_t modelBytes = 0;
+		if (model)
+		{
+			for (const auto& mesh : model->meshes)
+				modelBytes += mesh.mesh.vertices.capacity() * sizeof(swc::Vertex) +
+					mesh.mesh.indices.capacity() * sizeof(uint32_t);
+			for (const auto& texture : model->textures) modelBytes += texture.pixels.capacity();
+		}
+		constexpr double kMiB = 1024.0 * 1024.0;
+		wchar_t message[384];
+		swprintf_s(message,
+			L"[Memory] %s: private=%.1f MiB, workingSet=%.1f MiB, peakWorkingSet=%.1f MiB, cpuModel=%.1f MiB, cachedModels=%zu\n",
+			stage, double(memory.PrivateUsage) / kMiB, double(memory.WorkingSetSize) / kMiB,
+			double(memory.PeakWorkingSetSize) / kMiB, double(modelBytes) / kMiB, cachedModels);
+		OutputDebugStringW(message);
 	}
 
 	LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -145,47 +185,60 @@ namespace swc {
 			return false;
 		}
 
-		// planet — 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
-
-		// ── 행성 맵 (OBJ) ──────────────────────────────────────
+		// ── Separated Planet 구면 맵 (GLB) ─────────────────────
 		// 지표면 판정은 Shared가 맡고 렌더는 기존 ResourceManager → Model 경로를 사용한다.
-		// 전체 경계에는 건물/파편이 들어 있으므로 원점과 Planet_Core의 기준 반경으로 맞춘다.
+		// GLB의 미터 단위와 노드별 변환을 유지하고 충돌용 지형은 별도로 읽는다.
+		LogMemory(L"before map load", resources.ModelCount());
 		const std::wstring planetAsset = AssetPath(Shared::kPlanetModelAsset);
 		std::wstring surfaceError;
 		if (!planetSurface.Load(planetAsset.c_str(), surfaceError))
 		{
-			MessageBox(hwnd, surfaceError.c_str(), L"행성 지표면 로드 실패", MB_OK | MB_ICONERROR);
+			MessageBox(hwnd, surfaceError.c_str(), L"맵 지면 로드 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
 		terrain.Configure(&planetSurface, planet.radius);
 		planet.terrain = &terrain;
-		terrainStatus = L"OBJ 행성 지표면 " + std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
+		terrainStatus = (Shared::kUsePlanarMap ? L"GLB 평면 지형 " : L"GLB 구면 지형 ") +
+			std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
 
+		LogMemory(L"ground loaded", resources.ModelCount());
 		const ModelHandle planetHandle = resources.LoadModel(planetAsset.c_str());
 		const ModelData* planetData = resources.Get(planetHandle);
 		if (!planetData)
 		{
-			MessageBox(hwnd, resources.LastError().c_str(), L"행성 모델 로드 실패", MB_OK | MB_ICONERROR);
+			MessageBox(hwnd, resources.LastError().c_str(), L"GLB 맵 로드 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
-		const float planetScale = float(planet.radius / Shared::kPlanetModelReferenceRadius);
+		LogMemory(L"map parsed", resources.ModelCount(), planetData);
+		const float planetScale = Shared::kUsePlanarMap ? 1.0f : float(planet.radius / Shared::kPlanetModelReferenceRadius);
 		XMFLOAT4X4 planetVisual;
 		XMStoreFloat4x4(&planetVisual, XMMatrixScaling(planetScale, planetScale, planetScale));
 		if (!planetModel.Initialize(*planetData, renderer, planetVisual))
 		{
-			MessageBox(hwnd, planetModel.LastError().c_str(), L"행성 모델 초기화 실패", MB_OK | MB_ICONERROR);
+			MessageBox(hwnd, planetModel.LastError().c_str(), L"맵 모델 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
 		// Model이 노드/핸들을 보관하므로 GPU 업로드 후 CPU 메시/픽셀은 필요 없다.
+		LogMemory(L"map GPU uploaded", resources.ModelCount(), planetData);
 		resources.ReleaseModel(planetHandle);
+		LogMemory(L"map CPU released", resources.ModelCount());
 		const NodeHandle planetNode = planetModel.Instantiate(scene);
 		if (planetNode == kInvalidNode)
 		{
-			MessageBox(hwnd, L"행성 모델을 장면에 등록하지 못했습니다.", L"맵 초기화 실패", MB_OK | MB_ICONERROR);
+			MessageBox(hwnd, L"맵 모델을 장면에 등록하지 못했습니다.", L"맵 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
 		scene.SetLocalTransform(planetNode,
 			XMMatrixTranslation(float(planet.center.x), float(planet.center.y), float(planet.center.z)));
+
+
+		// ── 하늘의 원거리 행성 (glTF GLB LOD2/LOD3) ────────────────
+		if (!skyPlanet.Initialize(resources, renderer, AssetPath(L"model\\sky_planet\\")))
+		{
+			MessageBox(hwnd, skyPlanet.LastError().c_str(), L"하늘 행성 초기화 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
+		LogMemory(L"sky planet CPU released", resources.ModelCount());
 
 		// ── 캐릭터 모델 (OBJ) ──────────────────────────────────
 		//  ★ 한 번만 읽고 GPU 자원을 만든다. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다
@@ -205,6 +258,7 @@ namespace swc {
 			return false;
 		}
 		resources.ReleaseModel(modelHandle);
+		LogMemory(L"character CPU released", resources.ModelCount());
 
 		// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
 		MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
@@ -231,10 +285,15 @@ namespace swc {
 
 		camera.SetAspect(float(kWidth) / float(kHeight));
 
-		// 스폰 = 월드 원점(구 표면). 몸통 중심을 1m 띄워 발이 땅에 닿게 한다
+		// 공통 시작 방향을 사용하고 실제 지면·플랫폼 높이에 맞춘다.
 		// (모델도 중심 기준으로 1m 내려 배치된다 — Model.cpp kGroundOffset).
 		controller.SetPlanet(&planet);
-		controller.Spawn(planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0), { 0.0, 0.0, 1.0 });
+		const Vec3d spawn = Shared::kUsePlanarMap
+			? Vec3d{ Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ }
+			: planet.PositionAt(Normalize({ Shared::kPlanetSpawnUpX,
+				Shared::kPlanetSpawnUpY, Shared::kPlanetSpawnUpZ }), Shared::kGroundOffset);
+		controller.Spawn(spawn, { 0.0, 0.0, 1.0 });
+		spawnPosition = controller.Position();
 		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 
 		// ── 서버 접속 ───────────────────────────────────────────
@@ -515,7 +574,7 @@ namespace swc {
 			}
 
 			scene.SetLocalTransform(found->second,
-				XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
+				CharacterTransform(planet, v.pos));
 		}
 
 		// ── NPC 노드 갱신 ───────────────────────────────
@@ -566,7 +625,7 @@ namespace swc {
 
 			// 고도까지 서버가 지형으로 정해 보낸다. 받은 좌표를 그대로 그린다.
 			scene.SetLocalTransform(found->second,
-				XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
+				CharacterTransform(planet, v.pos));
 		}
 	}
 
@@ -577,6 +636,7 @@ namespace swc {
 		scene.Extract(items);
 
 		renderer.BeginFrame();
+		skyPlanet.Render(renderer, camera, kHeight);
 		RenderView view{ };
 		view.viewProj = camera.ViewProj();
 		view.eyePosition = camera.EyePosition();
@@ -587,6 +647,13 @@ namespace swc {
 	// 델타타임 / 하이브리드 상태를 창 제목으로 확인
 	void Engine::UpdateTitle(float dt)
 	{
+		// 게임 기능을 사용한 뒤에도 상주량이 계속 늘어나는지 출력창에서 비교한다.
+		memoryLogTimer += dt;
+		if (memoryLogTimer >= 30.0f)
+		{
+			memoryLogTimer = 0.0f;
+			LogMemory(L"runtime", resources.ModelCount());
+		}
 		titleTimer += dt;
 		if (titleTimer < 0.5f)
 			return;
@@ -599,9 +666,9 @@ namespace swc {
 			: !renderer.SupportsRaytracing() ? L"미지원"
 			: (rt.enabled ? L"ON" : L"OFF");
 
-		// 구면 이동 검증용: 고도 / 접지 / 스폰에서의 거리
+		// 이동 검증용: 고도 / 접지 / 실제 스폰에서의 거리
 		const Vec3d& p = controller.Position();
-		const double distFromSpawn = Length(p);
+		const double distFromSpawn = Length(p - spawnPosition);
 
 		// 네트워크 상태 — 보낸 수 / 에코 받은 수 / 마지막 에코 좌표
 		wchar_t netText[240];
@@ -626,16 +693,21 @@ namespace swc {
 			swprintf_s(netText, L"%s", netStatus.c_str());
 		}
 
-		wchar_t title[600];
+		const RenderStats& renderStats = renderer.Stats();
+		wchar_t title[840];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-			L"|  %s  |  %s  |  RT %s knee %.2f view %u",
+			L"|  %s  |  %s  |  RT %s knee %.2f view %u "
+			L"| 행성 LOD%u %.0fpx | Draw %zu/%zu Cull %zu Tri %.2fM",
 			timer.Fps(), dt * 1000.0f,
 			controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 			distFromSpawn, controller.Speed(),
 			netText,
 			terrainStatus.c_str(),
-			rtState, rt.rouletteKnee, renderer.DebugMode());
+			rtState, rt.rouletteKnee, renderer.DebugMode(),
+			skyPlanet.SelectedLod(), skyPlanet.DiameterPixels(),
+			renderStats.drawCalls, renderStats.submitted, renderStats.culled,
+			double(renderStats.triangles) / 1000000.0);
 		SetWindowText(hwnd, title);
 	}
 

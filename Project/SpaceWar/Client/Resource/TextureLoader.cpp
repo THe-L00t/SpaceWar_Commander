@@ -89,4 +89,36 @@ namespace swc {
 		return DecodeTexture(factory.Get(), decoder.Get(), path, srgb, out, error);
 	}
 
+	bool LoadTextureImageFromMemory(const uint8_t* bytes, size_t byteCount, const wchar_t* label,
+		bool srgb, TextureData& out, std::wstring& error)
+	{
+		error.clear();
+		const wchar_t* imageLabel = label && *label ? label : L"GLB 내장 이미지";
+		if (!bytes || byteCount == 0 || byteCount > (std::numeric_limits<DWORD>::max)())
+		{
+			error = std::wstring(L"내장 텍스처 이미지 데이터가 지원 범위를 벗어납니다.\n") + imageLabel;
+			return false;
+		}
+
+		ComPtr<IWICImagingFactory> factory;
+		if (!CreateFactory(factory, error)) return false;
+		ComPtr<IWICStream> stream;
+		// WIC의 메모리 스트림 API는 BYTE*를 요구하지만 아래 디코더는 읽기만 수행한다.
+		// 스트림/디코더/픽셀 변환이 끝날 때까지 호출자의 GLB BIN 범위를 참조한다.
+		if (FAILED(factory->CreateStream(&stream)) ||
+			FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(bytes), static_cast<DWORD>(byteCount))))
+		{
+			error = std::wstring(L"내장 텍스처 메모리 스트림 생성 실패.\n") + imageLabel;
+			return false;
+		}
+		ComPtr<IWICBitmapDecoder> decoder;
+		if (FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr,
+			WICDecodeMetadataCacheOnLoad, &decoder)))
+		{
+			error = std::wstring(L"내장 텍스처 이미지 열기 실패.\n") + imageLabel;
+			return false;
+		}
+		return DecodeTexture(factory.Get(), decoder.Get(), imageLabel, srgb, out, error);
+	}
+
 }

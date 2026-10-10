@@ -71,6 +71,7 @@
     <ClInclude Include="PlanetConst.h" />
     <ClInclude Include="Terrain\TerrainSampler.h" />
     <ClInclude Include="Terrain\PlanetSurface.h" />
+    <ClInclude Include="Resource\GlbDocument.h" />
     <ClInclude Include="Terrain\HeightmapLoader.h" />
     <ClInclude Include="GameLogic\GameLogic.h" />
     <ClInclude Include="Physics\PhysicsCalculator.h" />
@@ -97,6 +98,7 @@
     <ClCompile Include="Shared.cpp" />
     <ClCompile Include="Terrain\TerrainSampler.cpp" />
     <ClCompile Include="Terrain\PlanetSurface.cpp" />
+    <ClCompile Include="Resource\GlbDocument.cpp" />
     <ClCompile Include="Terrain\HeightmapLoader.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />

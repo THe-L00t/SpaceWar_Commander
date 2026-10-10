@@ -1,10 +1,12 @@
 #include "PlanetSurface.h"
 #include "../PlanetConst.h"
+#include "../Resource/GlbDocument.h"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -63,6 +65,17 @@ namespace {
 		return false;
 	}
 
+	bool IsGlbGroundNode(std::string_view name)
+	{
+		if (name == Shared::kPlanetSurfaceNode) return true;
+		if constexpr (Shared::kUsePlanarMap) return false;
+		// 구면 자산의 보행로와 보이는 착륙 플랫폼은 지면보다 약간 높다.
+		// COL_Landing 프록시는 잘못된 로컬 변환을 가지므로 선택하지 않는다.
+		return name.compare(0, 14, "Walkable_Path_") == 0 ||
+			(name.compare(0, 9, "Landing_L") == 0 && name.size() >= 9 &&
+				name.substr(name.size() - 9) == "_Platform");
+	}
+
 	bool ParseFloat(std::string_view token, float& value)
 	{
 		if (!token.empty() && token.front() == '+') token.remove_prefix(1);
@@ -107,12 +120,17 @@ namespace Shared {
 		*this = PlanetSurface{};
 		if (!path || !*path)
 		{
-			error = L"행성 모델 경로가 비어 있습니다.";
+			error = L"맵 모델 경로가 비어 있습니다.";
 			return false;
 		}
 
 		try
 		{
+			std::wstring extension = std::filesystem::path(path).extension().wstring();
+			std::transform(extension.begin(), extension.end(), extension.begin(),
+				[](wchar_t c) { return wchar_t(std::towlower(c)); });
+			if (extension == L".glb") return LoadGlb(path, error);
+
 			// UTF-16 파일 경로로 열고, 대용량 OBJ는 한 줄씩 읽는다.
 			std::array<char, 64 * 1024> fileBuffer{};
 			std::ifstream stream;
@@ -162,6 +180,8 @@ namespace Shared {
 						return fail(L"정점 위치가 올바르지 않습니다.");
 					if (loaded.positions.size() >= std::numeric_limits<uint32_t>::max())
 						return fail(L"정점 수가 지원 범위를 초과했습니다.");
+					// OBJ/GLB 접지를 같은 DirectX 좌수계로 보관한다.
+					position.z = -position.z;
 					// 선택하지 않은 객체의 정점도 읽어야 뒤쪽 객체의 전역 인덱스가 맞는다.
 					loaded.positions.push_back(position);
 				}
@@ -213,9 +233,150 @@ namespace Shared {
 		}
 		catch (const std::bad_alloc&)
 		{
-			error = L"행성 접지 데이터를 위한 메모리가 부족합니다.";
+			error = L"맵 접지 데이터를 위한 메모리가 부족합니다.";
 			return false;
 		}
+	}
+
+	bool PlanetSurface::LoadGlb(const wchar_t* path, std::wstring& error)
+	{
+		PlanetSurface loaded;
+		{
+			// 렌더 장식물과 충돌용 지면을 구분한다. GLB의 BIN과 임시 정점은
+			// 이 범위를 벗어나면 해제되며, 접지용 위치와 삼각형만 남는다.
+			GlbDocument document;
+			if (!document.Load(path, error)) return false;
+			bool foundGround = false;
+			std::vector<const GlbNode*> groundNodes;
+			groundNodes.reserve(12);
+			size_t vertexCount = 0;
+			size_t triangleCount = 0;
+			for (const GlbNode& node : document.Nodes())
+			{
+				if (!IsGlbGroundNode(node.name)) continue;
+				if (node.mesh == kInvalidGlbIndex || node.mesh >= document.Meshes().size())
+				{
+					error = L"GLB 접지 노드의 메시가 올바르지 않습니다.";
+					return false;
+				}
+				foundGround = foundGround || node.name == kPlanetSurfaceNode;
+				for (const GlbPrimitiveInfo& primitive : document.Meshes()[node.mesh].primitives)
+				{
+					if (primitive.vertexCount > std::numeric_limits<uint32_t>::max() - vertexCount ||
+						primitive.indexCount / 3 > std::numeric_limits<uint32_t>::max() / 2 - triangleCount)
+					{
+						error = L"GLB 접지 정점 또는 삼각형 수가 지원 범위를 초과했습니다.";
+						return false;
+					}
+					vertexCount += primitive.vertexCount;
+					triangleCount += primitive.indexCount / 3;
+				}
+				groundNodes.push_back(&node);
+			}
+			// 도로만 있는 파일을 행성 지면으로 잘못 받아들이지 않는다.
+			if (!foundGround || triangleCount == 0)
+			{
+				error = L"GLB에 지정된 행성 접지 노드 또는 지면 삼각형이 없습니다.";
+				return false;
+			}
+			// 노드별 변환은 서로 다르므로 접지 위치는 각 인스턴스 좌표로 저장한다.
+			// 전체 개수를 먼저 합산해 대형 배열의 반복 재할당·복사를 피한다.
+			loaded.positions.reserve(vertexCount);
+			loaded.triangles.reserve(triangleCount);
+			for (const GlbNode* groundNode : groundNodes)
+			{
+				const GlbNode& node = *groundNode;
+				const GlbMesh& mesh = document.Meshes()[node.mesh];
+				for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex)
+				{
+					GlbGeometry primitive;
+					if (!document.ReadGeometry(node.mesh, uint32_t(primitiveIndex), primitive, error))
+						return false;
+					if (primitive.indices.size() % 3 != 0 || primitive.positions.size() >
+						std::numeric_limits<uint32_t>::max() - loaded.positions.size())
+					{
+						error = L"GLB 접지 정점 또는 삼각형 수가 지원 범위를 초과했습니다.";
+						return false;
+					}
+					if (primitive.indices.size() / 3 > std::numeric_limits<uint32_t>::max() / 2 -
+						loaded.triangles.size())
+					{
+						error = L"GLB 접지 삼각형 수가 지원 범위를 초과했습니다.";
+						return false;
+					}
+					const uint32_t firstVertex = uint32_t(loaded.positions.size());
+					const auto& m = node.world;
+					for (const auto& p : primitive.positions)
+					{
+						// 리더가 좌수계로 바꾼 좌표에 노드의 비균등 스케일·회전·이동을
+						// 한 번 적용한다. 렌더 맵과 같은 자산 좌표의 BVH를 만든다.
+						// 구면 표시 배율·중심 이동은 Height 반환과 Planet.PositionAt에서 적용한다.
+						const Position position{
+							p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12],
+							p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13],
+							p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14]
+						};
+						if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+							!std::isfinite(position.z))
+						{
+							error = L"GLB 접지 정점의 월드 위치가 유효하지 않습니다.";
+							return false;
+						}
+						loaded.positions.push_back(position);
+					}
+					for (size_t i = 0; i < primitive.indices.size(); i += 3)
+					{
+						Triangle triangle{};
+						for (size_t corner = 0; corner < 3; ++corner)
+						{
+							const uint32_t vertex = primitive.indices[i + corner];
+							if (vertex >= primitive.positions.size())
+							{
+								error = L"GLB 접지 삼각형의 인덱스가 올바르지 않습니다.";
+								return false;
+							}
+							triangle.vertices[corner] = firstVertex + vertex;
+						}
+						const Position& a = loaded.positions[triangle.vertices[0]];
+						const Position& b = loaded.positions[triangle.vertices[1]];
+						const Position& c = loaded.positions[triangle.vertices[2]];
+						const double bx = double(b.x) - a.x, by = double(b.y) - a.y, bz = double(b.z) - a.z;
+						const double cx = double(c.x) - a.x, cy = double(c.y) - a.y, cz = double(c.z) - a.z;
+						if constexpr (kUsePlanarMap)
+						{
+							// 평면 높이 조회에서 수직 벽은 지면을 만들지 못한다.
+							if (std::fabs(bx * cz - bz * cx) <= 1.0e-12) continue;
+						}
+						else
+						{
+							// 구체 옆면도 보행면이다. X/Z 투영 대신 3D 면적만 검사한다.
+							const double nx = by * cz - bz * cy;
+							const double ny = bz * cx - bx * cz;
+							const double nz = bx * cy - by * cx;
+							if (nx * nx + ny * ny + nz * nz <= 1.0e-20) continue;
+						}
+						if (loaded.triangles.size() >= std::numeric_limits<uint32_t>::max() / 2)
+						{
+							error = L"GLB 접지 삼각형 수가 지원 범위를 초과했습니다.";
+							return false;
+						}
+						loaded.triangles.push_back(triangle);
+					}
+				}
+			}
+			if (loaded.triangles.empty())
+			{
+				error = L"GLB에 지정된 접지 노드 또는 유효한 지면 삼각형이 없습니다.";
+				return false;
+			}
+		}
+		loaded.CompactPositions();
+		loaded.positions.shrink_to_fit();
+		loaded.triangles.shrink_to_fit();
+		loaded.nodes.reserve(NodeCount(uint32_t(loaded.triangles.size())));
+		loaded.BuildNode(0, uint32_t(loaded.triangles.size()));
+		*this = std::move(loaded);
+		return true;
 	}
 
 	void PlanetSurface::CompactPositions()
@@ -354,8 +515,8 @@ namespace Shared {
 		const double length = std::sqrt(upX * upX + upY * upY + upZ * upZ);
 		if (!std::isfinite(length) || length <= 1.0e-12) return 0.0;
 
-		// OBJ 렌더 로더와 같은 Z 반전으로 DirectX 좌수계 방향을 원본 좌표계로 바꾼다.
-		const double direction[3] = { upX / length, upY / length, -upZ / length };
+		// OBJ/GLB 접지를 이미 같은 좌수계로 보관하므로 조회 방향을 다시 반전하지 않는다.
+		const double direction[3] = { upX / length, upY / length, upZ / length };
 		double bestDistance = 0.0;
 		std::array<uint32_t, 64> stack{};
 		size_t stackSize = 1;
@@ -377,6 +538,49 @@ namespace Shared {
 		}
 		return bestDistance > 0.0
 			? bestDistance * (planetRadius / kPlanetModelReferenceRadius) - planetRadius : 0.0;
+	}
+
+	double PlanetSurface::HeightAt(double worldX, double worldZ) const
+	{
+		if (!Valid() || !std::isfinite(worldX) || !std::isfinite(worldZ)) return 0.0;
+		double bestHeight = -std::numeric_limits<double>::infinity();
+		std::array<uint32_t, 64> stack{};
+		size_t stackSize = 1;
+		stack[0] = 0;
+		constexpr double tolerance = 1.0e-8;
+		while (stackSize != 0)
+		{
+			const Node& node = nodes[stack[--stackSize]];
+			if (worldX < double(node.lo.x) - tolerance || worldX > double(node.hi.x) + tolerance ||
+				worldZ < double(node.lo.z) - tolerance || worldZ > double(node.hi.z) + tolerance ||
+				node.hi.y <= bestHeight) continue;
+			if (node.count != 0)
+			{
+				for (uint32_t i = node.first; i < node.first + node.count; ++i)
+				{
+					const Triangle& triangle = triangles[i];
+					const Position& a = positions[triangle.vertices[0]];
+					const Position& b = positions[triangle.vertices[1]];
+					const Position& c = positions[triangle.vertices[2]];
+					const double bx = double(b.x) - a.x, bz = double(b.z) - a.z;
+					const double cx = double(c.x) - a.x, cz = double(c.z) - a.z;
+					const double determinant = bx * cz - bz * cx;
+					if (std::fabs(determinant) <= 1.0e-12) continue;
+					const double dx = worldX - a.x, dz = worldZ - a.z;
+					const double u = (dx * cz - dz * cx) / determinant;
+					const double v = (bx * dz - bz * dx) / determinant;
+					if (u < -tolerance || v < -tolerance || u + v > 1.0 + tolerance) continue;
+					const double height = a.y + u * (double(b.y) - a.y) + v * (double(c.y) - a.y);
+					bestHeight = std::max(bestHeight, height);
+				}
+			}
+			else
+			{
+				stack[stackSize++] = node.left;
+				stack[stackSize++] = node.right;
+			}
+		}
+		return std::isfinite(bestHeight) ? bestHeight : 0.0;
 	}
 
 } // namespace Shared

@@ -16,6 +16,9 @@
     로더는 함수 하나라 헤더파일·소스코드 필터에 둔다.
   -->
   <ItemGroup>
+    <Filter Include="클래스 목록\GlbDocument">
+      <UniqueIdentifier>{7f3303cf-7b2a-467c-a8f1-69ac28c06bd6}</UniqueIdentifier>
+    </Filter>
     <Filter Include="소스코드">
       <UniqueIdentifier>{b1f0c724-9a83-4d16-95e7-08c3d2a4f651}</UniqueIdentifier>
     </Filter>
@@ -238,6 +241,14 @@
     </ClCompile>
     <ClCompile Include="AI\Node\ConditionNode.cpp">
       <Filter>클래스 목록\ConditionNode</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Resource\GlbDocument.h">
+      <Filter>클래스 목록\GlbDocument</Filter>
+    </ClInclude>
+    <ClCompile Include="Resource\GlbDocument.cpp">
+      <Filter>클래스 목록\GlbDocument</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

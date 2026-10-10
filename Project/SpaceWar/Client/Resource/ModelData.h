@@ -32,6 +32,7 @@ namespace swc {
 		DirectX::XMFLOAT3 emissive{ 0.0f, 0.0f, 0.0f };
 		float roughness = 0.65f;
 		float metallic = 0.0f;
+		bool doubleSided = false;
 		std::array<uint32_t, kMaterialTextureCount> textures{
 			kInvalidModelIndex, kInvalidModelIndex, kInvalidModelIndex,
 			kInvalidModelIndex, kInvalidModelIndex };

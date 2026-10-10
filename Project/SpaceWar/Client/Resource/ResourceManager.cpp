@@ -1,7 +1,9 @@
 #include "ResourceManager.h"
-// 하이트맵 로더는 서버와 공유하고, OBJ 렌더링 로더는 클라이언트에서만 사용한다.
+// 하이트맵 로더는 서버와 공유하고, OBJ/GLB 렌더링 어댑터는 클라이언트에서만 사용한다.
 #include "Shared/Terrain/HeightmapLoader.h"
 #include "ObjModelLoader.h"
+#include "GlbModelLoader.h"
+#include <cwctype>
 #include <filesystem>
 #include <utility>
 
@@ -58,9 +60,18 @@ namespace swc {
 			return it->second;
 
 		auto data = std::make_unique<ModelData>();
-		ObjModelLoader loader;
-		if (!loader.Load(key.c_str(), *data, lastError))
-			return {};
+		std::wstring extension = fullPath.extension().wstring();
+		for (wchar_t& value : extension) value = wchar_t(std::towlower(value));
+		if (extension == L".glb")
+		{
+			GlbModelLoader loader;
+			if (!loader.Load(key.c_str(), *data, lastError)) return {};
+		}
+		else
+		{
+			ObjModelLoader loader;
+			if (!loader.Load(key.c_str(), *data, lastError)) return {};
+		}
 
 		// 해제한 슬롯을 재사용하고 generation으로 이전 핸들을 구분한다.
 		size_t index = 0;

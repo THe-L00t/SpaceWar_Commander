@@ -4,13 +4,15 @@
 #include "Shared/PlanetConst.h"
 
 // ============================================================
-//  Planet.h — 구형 행성 정의
+//  Planet.h — 맵의 이동 좌표와 중력 정의
+//
+//  현재 GLB는 구면 맵이며 행성 중심으로부터의 방향이 위쪽이다.
+//  평면 모드는 Shared::kUsePlanarMap으로 같은 인터페이스에서 선택한다.
 //
 //  ★ 좌표계 규약
-//     월드 원점 = 플레이어 스폰 지점(행성 표면), 행성 중심 = (0, -R, 0).
-//     원점을 표면에 두면 주변 좌표가 전부 작은 수라 float32 정밀도가 넉넉하고,
-//     스폰 지점에서 up 이 정확히 (0,1,0) 이 되어 검증 기준점이 생긴다.
-//     (R=120km 시절엔 정밀도가 1.4cm 까지 벌어져 필수였다. 1.6km 에서도 규약은 유지)
+//     행성 중심 = Shared::kPlanetCenter (0,-R,0).
+//     기준구 북극을 원점에 두어 주변 좌표를 작게 유지한다.
+//     시작 지점은 Landing L1 방향의 실제 지면 위다.
 //
 //  ★ 구면 계산은 double 로 한다
 //     (R + 고도) 를 float 로 다루면 고도가 양자화된다. R 가 클수록 심해서
@@ -26,7 +28,7 @@
 
 namespace swc {
 
-	// 2026-08-05 회의: 120km → 1.6km (교수님 프로토타입 1,650m 와 같은 급)
+	// 현재 모델의 기준 반경은 Shared에서 정한다.
 	// ★ 실제 값은 Shared 에 있다. 서버도 같은 값을 봐야 NPC 가 지표면에 놓인다.
 	inline constexpr double kPlanetRadius = Shared::kPlanetRadius;
 
@@ -34,32 +36,35 @@ namespace swc {
 	{
 		double radius = kPlanetRadius;   // 기준구 반지름 (m)
 		double gravity = 18.0;           // m/s^2 — 물리값 0.18 은 소행성 수준이라 게임이 안 됨
-		Vec3d  center{ 0.0, -radius, 0.0 };
+		Vec3d  center{ Shared::kPlanetCenterX, Shared::kPlanetCenterY, Shared::kPlanetCenterZ };
 
-		const Shared::TerrainSampler* terrain = nullptr;   // 없으면 평평한 구
+		const Shared::TerrainSampler* terrain = nullptr;   // 없으면 높이 0인 지면
 
 		// 지표면 법선 (= 로컬 위쪽)
 		Vec3d Up(const Vec3d& position) const
 		{
+			if constexpr (Shared::kUsePlanarMap) return { 0.0, 1.0, 0.0 };
 			return Normalize(position - center);
 		}
 
-		// 기준구 위 고도
+		// 평면 맵의 월드 Y 또는 기준구 위 고도
 		double Altitude(const Vec3d& position) const
 		{
+			if constexpr (Shared::kUsePlanarMap) return position.y;
 			return Length(position - center) - radius;
 		}
 
-		// ★ 지형 높이. 메쉬 생성과 충돌 판정이 반드시 이 경로를 거친다.
-		double SurfaceHeight(const Vec3d& upDirection) const
+		// 평면 맵은 월드 위치, 구면 맵은 단위 방향으로 같은 지형 조회를 사용한다.
+		double SurfaceHeight(const Vec3d& surfacePoint) const
 		{
-			return terrain ? terrain->Height(upDirection.x, upDirection.y, upDirection.z) : 0.0;
+			return terrain ? terrain->Height(surfacePoint.x, surfacePoint.y, surfacePoint.z) : 0.0;
 		}
 
-		// 방향과 고도로부터 위치를 구성
-		Vec3d PositionAt(const Vec3d& upDirection, double altitude) const
+		// 평면 맵은 XZ를 보존하고 Y만 설정한다. 구면 맵은 방향과 고도로 구성한다.
+		Vec3d PositionAt(const Vec3d& surfacePoint, double altitude) const
 		{
-			return center + upDirection * (radius + altitude);
+			if constexpr (Shared::kUsePlanarMap) return { surfacePoint.x, altitude, surfacePoint.z };
+			return center + surfacePoint * (radius + altitude);
 		}
 	};
 }

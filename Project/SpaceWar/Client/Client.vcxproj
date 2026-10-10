@@ -115,8 +115,10 @@ xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"</Command>
     <ClCompile Include="AccelStructure.cpp" />
     <ClCompile Include="Resource\ResourceManager.cpp" />
     <ClCompile Include="Resource\ObjModelLoader.cpp" />
+    <ClCompile Include="Resource\GlbModelLoader.cpp" />
     <ClCompile Include="Resource\TextureLoader.cpp" />
     <ClCompile Include="Model.cpp" />
+    <ClCompile Include="SkyPlanet.cpp" />
     <ClCompile Include="Net\Network.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -127,6 +129,9 @@ xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"</Command>
     <None Include="..\..\assets\model\planet\*.obj" />
     <None Include="..\..\assets\model\planet\*.mtl" />
     <None Include="PLANET_MODEL.md" />
+    <None Include="..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb" />
+    <None Include="..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb" />
+    <None Include="SKY_PLANET.md" />
     <None Include="OBJ_MODEL.md" />
   </ItemGroup>
   <ItemGroup>
@@ -164,24 +169,41 @@ xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"</Command>
     <ClInclude Include="Net\Network.h" />
     <ClInclude Include="MeshData.h" />
     <ClInclude Include="Model.h" />
+    <ClInclude Include="SkyPlanet.h" />
     <ClInclude Include="Resource\ModelData.h" />
     <ClInclude Include="Resource\ObjModelLoader.h" />
+    <ClInclude Include="Resource\GlbModelLoader.h" />
     <ClInclude Include="Resource\TextureLoader.h" />
     <ClInclude Include="..\Shared\Units.h" />
     <ClInclude Include="..\Shared\HeightmapData.h" />
     <ClInclude Include="..\Shared\PlanetConst.h" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!-- 모델 에셋은 exe 옆 assets\model 로 복사한다. 작업 디렉터리와 무관하게 찾게 하려면 필요하다. -->
   <Target Name="CopyModelAssets" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
     <ItemGroup>
-      <ModelAsset Include="$(ProjectDir)..\..\assets\model\**\*.obj;$(ProjectDir)..\..\assets\model\**\*.mtl;$(ProjectDir)..\..\assets\model\**\*.png;$(ProjectDir)..\..\assets\model\**\*.jpg;$(ProjectDir)..\..\assets\model\**\*.jpeg;$(ProjectDir)..\..\assets\model\**\*.bmp;$(ProjectDir)..\..\assets\model\**\*.tga;$(ProjectDir)..\..\assets\model\**\*.dds;$(ProjectDir)..\..\assets\model\**\*.tif;$(ProjectDir)..\..\assets\model\**\*.tiff;$(ProjectDir)..\..\assets\model\**\*.gif;$(ProjectDir)..\..\assets\model\**\*.webp;$(ProjectDir)..\..\assets\model\**\*.hdr;$(ProjectDir)..\..\assets\model\**\*.exr" />
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\character\*.obj;$(ProjectDir)..\..\assets\model\character\*.mtl;$(ProjectDir)..\..\assets\model\character\*.png" >
+        <TargetFolder>character</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb">
+        <TargetFolder>map</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb">
+        <TargetFolder>sky_planet\LOD2</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
+        <TargetFolder>sky_planet\LOD3</TargetFolder>
+      </ModelAsset>
     </ItemGroup>
-    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS로 받았는지 확인하세요 (git lfs pull)." />
-    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다. assets/model/character 폴더를 확인하세요." />
-    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\planet\future_ruins_realistic.obj')" Text="assets/model/planet에 future_ruins_realistic.obj 행성 모델이 필요합니다. Git LFS로 받았는지 확인하세요 (git lfs pull)." />
-    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\planet\future_ruins_realistic.mtl')" Text="행성 모델의 기본 색상 재질 future_ruins_realistic.mtl이 필요합니다. assets/model/planet 폴더를 확인하세요." />
-    <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb')" Text="assets/model/map에 future_ruins_planet_separated.glb 맵 파일이 필요합니다." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb')" Text="하늘 행성 LOD2의 future_ruins_fps_lod2.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
+    <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb')" Text="하늘 행성 LOD3의 future_ruins_fps_lod3.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
+    <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(TargetFolder)\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

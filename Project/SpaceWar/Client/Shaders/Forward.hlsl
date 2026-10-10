@@ -186,7 +186,7 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 }
 #endif
 
-float4 PSMain(VOut i) : SV_TARGET
+float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 {
 	// ── 재질 ────────────────────────────────────────────────
 	//  텍스처가 없는 재질에는 흰색·평면 노멀 폴백이 묶여 있어 분기 없이 곱해도 된다.
@@ -197,6 +197,7 @@ float4 PSMain(VOut i) : SV_TARGET
 	float3 emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
 
 	float3 N = normalize(i.nrm);
+	if (!frontFace) N = -N;
 	if (gHasNormalMap != 0)
 		N = ApplyNormalMap(N, i.tan, i.uv);
 

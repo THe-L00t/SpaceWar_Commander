@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <algorithm>
+#include <array>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -29,6 +31,67 @@ namespace {
 		const size_t slash = p.find_last_of(L"\\/");
 		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
 		return p + L"Shaders\\" + name;
+	}
+
+	struct FrustumPlane
+	{
+		double x = 0.0, y = 0.0, z = 0.0, d = 0.0;
+	};
+
+	struct Frustum
+	{
+		std::array<FrustumPlane, 6> planes{};
+		bool valid = false;
+	};
+
+	Frustum MakeFrustum(const XMFLOAT4X4& m)
+	{
+		// 행벡터 view * projection, D3D 클립 범위: -w <= x,y <= w, 0 <= z <= w.
+		// 행이 아니라 열을 조합한다. 카메라별로 한 프레임에 한 번만 계산한다.
+		Frustum frustum;
+		frustum.planes = {{
+			{ double(m._14) + m._11, double(m._24) + m._21, double(m._34) + m._31, double(m._44) + m._41 },
+			{ double(m._14) - m._11, double(m._24) - m._21, double(m._34) - m._31, double(m._44) - m._41 },
+			{ double(m._14) + m._12, double(m._24) + m._22, double(m._34) + m._32, double(m._44) + m._42 },
+			{ double(m._14) - m._12, double(m._24) - m._22, double(m._34) - m._32, double(m._44) - m._42 },
+			{ m._13, m._23, m._33, m._43 },
+			{ double(m._14) - m._13, double(m._24) - m._23, double(m._34) - m._33, double(m._44) - m._43 }
+		}};
+		for (FrustumPlane& plane : frustum.planes)
+		{
+			const double length = std::sqrt(plane.x * plane.x + plane.y * plane.y + plane.z * plane.z);
+			if (!std::isfinite(length) || length <= 0.0 || !std::isfinite(plane.d)) return frustum;
+			plane.x /= length; plane.y /= length; plane.z /= length; plane.d /= length;
+		}
+		frustum.valid = true;
+		return frustum;
+	}
+
+	bool OutsideFrustum(const Frustum& frustum, const XMFLOAT3& center,
+		const XMFLOAT3& extents, const XMFLOAT4X4& world)
+	{
+		if (!frustum.valid) return false;
+		// AABB 변환은 아핀 행렬에만 적용한다. 지원하지 않는 변환은 보수적으로 표시한다.
+		if (world._14 != 0.0f || world._24 != 0.0f || world._34 != 0.0f || world._44 != 1.0f) return false;
+		for (const auto& row : world.m)
+			for (float value : row)
+				if (!std::isfinite(value)) return false;
+		const double cx = double(center.x) * world._11 + double(center.y) * world._21 + double(center.z) * world._31 + world._41;
+		const double cy = double(center.x) * world._12 + double(center.y) * world._22 + double(center.z) * world._32 + world._42;
+		const double cz = double(center.x) * world._13 + double(center.y) * world._23 + double(center.z) * world._33 + world._43;
+		// 비균일 배율, 회전, 반전, shear 모두 포함하는 월드 AABB의 정확한 외곽 범위다.
+		const double ex = double(extents.x) * std::fabs(world._11) + double(extents.y) * std::fabs(world._21) + double(extents.z) * std::fabs(world._31);
+		const double ey = double(extents.x) * std::fabs(world._12) + double(extents.y) * std::fabs(world._22) + double(extents.z) * std::fabs(world._32);
+		const double ez = double(extents.x) * std::fabs(world._13) + double(extents.y) * std::fabs(world._23) + double(extents.z) * std::fabs(world._33);
+		// CPU/GPU 부동소수 연산의 차이로 화면 경계의 메시가 사라지지 않게 여유를 둔다.
+		const double margin = 1.0e-5 * (1.0 + std::fabs(cx) + std::fabs(cy) + std::fabs(cz) + ex + ey + ez);
+		for (const FrustumPlane& plane : frustum.planes)
+		{
+			const double distance = plane.x * cx + plane.y * cy + plane.z * cz + plane.d;
+			const double radius = std::fabs(plane.x) * ex + std::fabs(plane.y) * ey + std::fabs(plane.z) * ez;
+			if (distance + radius < -margin) return true;
+		}
+		return false;
 	}
 
 	struct AdapterPick
@@ -165,6 +228,8 @@ namespace swc {
 			D3D12_VERTEX_BUFFER_VIEW vbv = {};
 			D3D12_INDEX_BUFFER_VIEW ibv = {};
 			UINT indexCount = 0;
+			XMFLOAT3 boundsCenter{};
+			XMFLOAT3 boundsExtents{};
 			uint32_t blasIndex = AccelStructure::kInvalidBlas;
 		};
 
@@ -176,6 +241,7 @@ namespace swc {
 
 		struct MaterialGpu
 		{
+			bool doubleSided = false;
 			MaterialConstants constants{};
 			D3D12_GPU_DESCRIPTOR_HANDLE textures{};
 		};
@@ -192,6 +258,9 @@ namespace swc {
 		ComPtr<ID3D12GraphicsCommandList4> commandList;
 		ComPtr<ID3D12RootSignature>        rootSig;
 		ComPtr<ID3D12PipelineState>        pso;
+		ComPtr<ID3D12PipelineState>        doubleSidedPso;
+		ComPtr<ID3D12PipelineState>        mirroredPso;
+		ComPtr<ID3D12PipelineState>        mirroredDoubleSidedPso;
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
 
@@ -212,6 +281,7 @@ namespace swc {
 		uint32_t debugMode = 0;
 		uint32_t frameCounter = 0;
 		std::wstring status;
+		RenderStats stats;
 
 		UINT rtvDescriptorSize = 0;
 		UINT frameIndex = 0;
@@ -410,7 +480,7 @@ namespace swc {
 		// 프레임 상수 버퍼 (UPLOAD, 영속 매핑)
 		{
 			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-			D3D12_RESOURCE_DESC desc = BufferDesc(Impl::FrameCBSize);
+			D3D12_RESOURCE_DESC desc = BufferDesc(Impl::FrameCBSize * 2);
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
 				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->frameCB))))
 				return false;
@@ -546,6 +616,25 @@ namespace swc {
 				impl->status = L"PSO 생성 실패.";
 				return false;
 			}
+			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->doubleSidedPso))))
+			{
+				impl->status = L"양면 재질 PSO 생성 실패.";
+				return false;
+			}
+			// 반전 배율은 와인딩만 뒤집는다. SV_IsFrontFace도 실제 앞면을 가리켜야 한다.
+			psoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->mirroredDoubleSidedPso))))
+			{
+				impl->status = L"반전 양면 재질 PSO 생성 실패.";
+				return false;
+			}
+			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->mirroredPso))))
+			{
+				impl->status = L"반전 메시 PSO 생성 실패.";
+				return false;
+			}
 		}
 
 		if (FAILED(impl->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&impl->fence))))
@@ -607,7 +696,26 @@ namespace swc {
 				return kInvalidMesh;
 			}
 		}
+		// CPU 정점을 해제하기 전에 경계만 남긴다. 프레임마다 정점을 읽지 않는다.
+		XMFLOAT3 boundsMin = verts[0].position;
+		XMFLOAT3 boundsMax = boundsMin;
+		for (size_t i = 0; i < vcount; ++i)
+		{
+			const XMFLOAT3& point = verts[i].position;
+			if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+			{
+				impl->status = L"메시 정점 좌표가 유효하지 않습니다.";
+				return kInvalidMesh;
+			}
+			boundsMin.x = (std::min)(boundsMin.x, point.x); boundsMax.x = (std::max)(boundsMax.x, point.x);
+			boundsMin.y = (std::min)(boundsMin.y, point.y); boundsMax.y = (std::max)(boundsMax.y, point.y);
+			boundsMin.z = (std::min)(boundsMin.z, point.z); boundsMax.z = (std::max)(boundsMax.z, point.z);
+		}
 		Impl::MeshGpu m;
+		m.boundsCenter = { boundsMin.x * 0.5f + boundsMax.x * 0.5f,
+			boundsMin.y * 0.5f + boundsMax.y * 0.5f, boundsMin.z * 0.5f + boundsMax.z * 0.5f };
+		m.boundsExtents = { boundsMax.x * 0.5f - boundsMin.x * 0.5f,
+			boundsMax.y * 0.5f - boundsMin.y * 0.5f, boundsMax.z * 0.5f - boundsMin.z * 0.5f };
 		const UINT vbSize = UINT(vcount * sizeof(Vertex));
 		const UINT ibSize = UINT(icount * sizeof(uint32_t));
 		const UINT64 indexOffset = (UINT64(vbSize) + sizeof(uint32_t) - 1) & ~(UINT64(sizeof(uint32_t)) - 1);
@@ -814,6 +922,7 @@ namespace swc {
 		}
 
 		Impl::MaterialGpu material;
+		material.doubleSided = data.doubleSided;
 		material.constants.baseColor = data.baseColor;
 		material.constants.emissive = data.emissive;
 		material.constants.roughness = data.roughness;
@@ -842,6 +951,8 @@ namespace swc {
 	void GRenderer::BeginFrame()
 	{
 		impl->frameOpen = true;
+		impl->stats = RenderStats{};
+		++impl->frameCounter;   // 배경/메인 패스가 같은 프레임의 룰렛 패턴을 사용한다.
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 
@@ -870,8 +981,10 @@ namespace swc {
 
 	void GRenderer::Render(const RenderView& view, const std::vector<InstanceData>& items, const XMFLOAT4X4* worlds)
 	{
+		impl->stats.submitted += items.size();
 		if (!worlds || impl->materials.empty()) return;
-		const bool rtActive = impl->rtSupported && impl->rtParams.enabled;
+		const Frustum frustum = MakeFrustum(view.viewProj);
+		const bool rtActive = !view.background && impl->rtSupported && impl->rtParams.enabled;
 
 		// ── TLAS 재빌드 (씬 노드 → 인스턴스) ──
 		if (rtActive)
@@ -896,8 +1009,11 @@ namespace swc {
 		fc.rouletteKnee = impl->rtParams.rouletteKnee;
 		fc.fresnelBoost = impl->rtParams.fresnelBoost;
 		fc.debugMode = impl->debugMode;
-		fc.frameIndex = impl->frameCounter++;   // 룰렛 디더링을 프레임마다 흔든다
-		memcpy(impl->frameCBData, &fc, sizeof(fc));
+		fc.frameIndex = impl->frameCounter;
+		// 한 커맨드 리스트에 두 패스를 기록하므로 서로 다른 256바이트 CBV를 사용한다.
+		// 같은 CPU 메모리를 덮어쓰면 GPU가 배경에서도 마지막 메인 행렬을 읽는다.
+		const UINT frameOffset = view.background ? 0 : Impl::FrameCBSize;
+		memcpy(impl->frameCBData + frameOffset, &fc, sizeof(fc));
 
 		// ── 래스터 패스 ──
 		impl->commandList->SetGraphicsRootSignature(impl->rootSig.Get());
@@ -905,14 +1021,27 @@ namespace swc {
 		ID3D12DescriptorHeap* heaps[] = { impl->materialHeap.Get() };
 		impl->commandList->SetDescriptorHeaps(1, heaps);
 		impl->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		impl->commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress());
-		if (impl->rtSupported && impl->accel.InstanceCount() > 0)
-			impl->commandList->SetGraphicsRootShaderResourceView(4, impl->accel.TlasAddress());
+		impl->commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress() + frameOffset);
+		if (impl->rtSupported)
+		{
+			// DXR의 null acceleration structure는 GPU 주소 0이다. 루트 슬롯을 미설정으로 두지 않는다.
+			const D3D12_GPU_VIRTUAL_ADDRESS tlas = rtActive && impl->accel.InstanceCount() > 0
+				? impl->accel.TlasAddress() : 0;
+			impl->commandList->SetGraphicsRootShaderResourceView(4, tlas);
+		}
 
+		ID3D12PipelineState* currentPso = impl->pso.Get();
+		MaterialHandle currentMaterial = kInvalidMaterial;
+		MeshHandle currentMesh = kInvalidMesh;
 		for (const InstanceData& it : items)
 		{
 			if (it.mesh >= impl->meshes.size()) continue;
 			const Impl::MeshGpu& m = impl->meshes[it.mesh];
+			if (OutsideFrustum(frustum, m.boundsCenter, m.boundsExtents, worlds[it.node]))
+			{
+				++impl->stats.culled;
+				continue;
+			}
 
 			const XMMATRIX world = XMLoadFloat4x4(&worlds[it.node]);
 			XMVECTOR determinant;
@@ -927,12 +1056,36 @@ namespace swc {
 
 			const MaterialHandle materialIndex = it.material < impl->materials.size() ? it.material : 0;
 			const Impl::MaterialGpu& material = impl->materials[materialIndex];
-			impl->commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
-			impl->commandList->SetGraphicsRootDescriptorTable(3, material.textures);
-
-			impl->commandList->IASetVertexBuffers(0, 1, &m.vbv);
-			impl->commandList->IASetIndexBuffer(&m.ibv);
+			ID3D12PipelineState* selectedPso = material.doubleSided
+				? (det < 0.0f ? impl->mirroredDoubleSidedPso.Get() : impl->doubleSidedPso.Get())
+				: (det < 0.0f ? impl->mirroredPso.Get() : impl->pso.Get());
+			if (currentPso != selectedPso)
+			{
+				impl->commandList->SetPipelineState(selectedPso);
+				currentPso = selectedPso;
+			}
+			if (currentMaterial != materialIndex)
+			{
+				impl->commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
+				impl->commandList->SetGraphicsRootDescriptorTable(3, material.textures);
+				currentMaterial = materialIndex;
+			}
+			if (currentMesh != it.mesh)
+			{
+				impl->commandList->IASetVertexBuffers(0, 1, &m.vbv);
+				impl->commandList->IASetIndexBuffer(&m.ibv);
+				currentMesh = it.mesh;
+			}
 			impl->commandList->DrawIndexedInstanced(m.indexCount, 1, 0, 0, 0);
+			++impl->stats.drawCalls;
+			impl->stats.triangles += m.indexCount / 3;
+		}
+		if (view.background)
+		{
+			// 먼 행성 내부의 깊이 비교는 유지하고 이후 맵/캐릭터가 항상 앞에 놓이게 한다.
+			// 배경 패스의 넓은 near/far 범위를 메인 맵의 깊이 범위와 섞지 않는다.
+			const D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+			impl->commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 		}
 	}
 
@@ -962,5 +1115,6 @@ namespace swc {
 	void GRenderer::SetSunDirection(const XMFLOAT3& d) { impl->sunDir = d; }
 	void GRenderer::SetDebugMode(uint32_t m) { impl->debugMode = m; }
 	uint32_t GRenderer::DebugMode() const { return impl->debugMode; }
+	const RenderStats& GRenderer::Stats() const { return impl->stats; }
 	const std::wstring& GRenderer::StatusText() const { return impl->status; }
 }

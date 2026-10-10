@@ -1,5 +1,6 @@
 #pragma once
 #include "../HeightmapData.h"
+#include "../PlanetConst.h"
 
 // ============================================================
 //  Shared/Terrain/TerrainSampler.h — ★ 단일 진실 공급원
@@ -10,7 +11,7 @@
 //
 //  ★ Shared 에 있는 이유 — 서버 권위
 //    서버가 지형을 모르면 NPC 고도와 사격 판정이 화면과 어긋난다.
-//    그래서 클라와 서버가 같은 OBJ 지표면 또는 같은 하이트맵 설정을 사용한다.
+//    그래서 클라와 서버가 같은 GLB/OBJ 지표면 또는 같은 하이트맵 설정을 사용한다.
 //
 //  ★ Height() 가 double 세 개를 받는 이유
 //    Vec3d 를 받게 하면 Vec3d(DirectXMath 의존)가 Shared 로 끌려온다.
@@ -45,7 +46,7 @@ namespace Shared {
 			const TerrainConfig& cfg);
 		void Configure(const PlanetSurface* planetSurface, double planetRadius);
 
-		// 단위 방향 벡터 하나로 지형 높이(m). 기준구 표면 기준.
+		// 평면 맵은 월드 XZ에서 Y 높이, 구면 맵은 단위 방향에서 기준구 위 높이(m).
 		double Height(double upX, double upY, double upZ) const;
 
 		bool HasTerrain() const { return data != nullptr || surface != nullptr; }
@@ -53,7 +54,7 @@ namespace Shared {
 	private:
 		const HeightmapData* data = nullptr;
 		const PlanetSurface* surface = nullptr;
-		double radius = 1600.0;     // Configure() 가 kPlanetRadius 로 덮어쓴다
+		double radius = kPlanetRadius;   // Configure() 가 실제 사용 반경으로 갱신한다
 		TerrainConfig config;
 	};
 }
