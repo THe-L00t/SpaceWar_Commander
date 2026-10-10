@@ -39,19 +39,6 @@ namespace swc {
 		static_assert(Shared::kJointsPerVertex == 4,
 			"SkinVertex 가 조인트 4개 기준으로 선언돼 있다");
 
-		Vertex ToVertex(const Shared::SourceVertex& source)
-		{
-			// 필드별로 옮긴다. 배치가 같아 memcpy 도 되지만, 한쪽 구조가 바뀌면
-			// memcpy 는 조용히 깨지고 이 코드는 컴파일이 깨진다.
-			Vertex vertex;
-			vertex.position = { source.position.x, source.position.y, source.position.z };
-			vertex.normal = { source.normal.x, source.normal.y, source.normal.z };
-			vertex.color = { source.color.x, source.color.y, source.color.z };
-			vertex.uv = { source.uv.x, source.uv.y };
-			vertex.tangent = { source.tangent.x, source.tangent.y, source.tangent.z, source.tangent.w };
-			return vertex;
-		}
-
 		XMFLOAT4X4 ToMatrix(const Shared::Mat4& source)
 		{
 			// 둘 다 행 우선 4x4 다. 16개를 그대로 옮긴다.
@@ -151,7 +138,7 @@ namespace swc {
 
 	} // namespace
 
-	bool BuildModelData(const Shared::ModelSource& source, ModelData& out, std::wstring& error)
+	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error)
 	{
 		error.clear();
 		out = ModelData{};
@@ -199,8 +186,11 @@ namespace swc {
 		}
 
 		// ── 메시 ───────────────────────────────────────────
+		// ★ 정점·인덱스·스킨은 복사하지 않고 «넘겨받는다» (2026-10-09)
+		//   파서가 이미 렌더 배치(Vertex 60B)로 만들었다. 배열을 통째로 옮기므로 이 순간에도
+		//   정점은 한 벌뿐이다. 넘겨준 쪽(source.meshes)은 빈 배열로 남는다.
 		out.meshes.reserve(source.meshes.size());
-		for (const Shared::SourceMesh& sourceMesh : source.meshes)
+		for (Shared::SourceMesh& sourceMesh : source.meshes)
 		{
 			ModelMeshData mesh;
 			mesh.material = sourceMesh.material == Shared::kInvalidIndex
@@ -211,25 +201,9 @@ namespace swc {
 				return false;
 			}
 
-			mesh.mesh.vertices.reserve(sourceMesh.vertices.size());
-			for (const Shared::SourceVertex& vertex : sourceMesh.vertices)
-				mesh.mesh.vertices.push_back(ToVertex(vertex));
-			mesh.mesh.indices = sourceMesh.indices;
-
-			// 스킨 속성은 별도 배열로 옮긴다(지형이 쓰는 Vertex 를 무겁게 하지 않는다).
-			if (sourceMesh.skinned)
-			{
-				mesh.skin.resize(sourceMesh.vertices.size());
-				for (size_t i = 0; i < sourceMesh.vertices.size(); ++i)
-				{
-					const Shared::SourceVertex& vertex = sourceMesh.vertices[i];
-					for (size_t slot = 0; slot < Shared::kJointsPerVertex; ++slot)
-					{
-						mesh.skin[i].joints[slot] = vertex.joints[slot];
-						mesh.skin[i].weights[slot] = vertex.weights[slot];
-					}
-				}
-			}
+			mesh.mesh.vertices = std::move(sourceMesh.vertices);
+			mesh.mesh.indices = std::move(sourceMesh.indices);
+			mesh.skin = std::move(sourceMesh.skin);   // 스킨 메시가 아니면 빈 배열
 
 			out.meshes.push_back(std::move(mesh));
 		}

@@ -94,8 +94,14 @@ namespace swc {
 		// ★ 로딩 스레드에서 파싱 직후 한 번 부른다(렌더용 변환 전). false = 실패, error 에 원인.
 		//   메인 스레드 소유물(Scene·Renderer·GameObject)을 건드리면 안 된다.
 		//   로딩 중 메인이 손대지 않는 대상(예: 로드 전용 PlanetSurface)만 채운다.
-		//   이미 캐시에 있는 파일이면 파싱을 하지 않으므로 이 훅도 불리지 않는다.
+		//   디스크 캐시(ModelCache)에서 읽었을 때도 똑같이 불린다.
+		//   이번 실행에서 이미 등록된 파일(RAM 의 fileCache)이면 파싱도 훅도 없다.
 		std::function<bool(const Shared::ModelSource&, std::wstring& error)> onParsed;
+
+		// ★ 디스크 캐시 태그 (2026-10-10) — collectObject 를 쓰면 반드시 채운다
+		//   함수는 비교할 수 없어서 «어떤 규칙으로 모았는가» 를 문자열로 캐시 머리말에 적는다.
+		//   collectObject 가 있는데 태그가 비어 있으면 캐시를 쓰지 않는다(잘못된 접지면을 읽지 않게).
+		std::string cacheTag;
 	};
 
 	// 모델 파일 하나에서 나온 리소스들. 비어 있는 핸들은 그 파일에 그것이 없다는 뜻이다.
@@ -104,6 +110,7 @@ namespace swc {
 		ModelHandle                  model;        // 메시·재질
 		SkeletonHandle               skeleton;     // 본
 		std::vector<AnimationHandle> animations;   // 클립
+		bool                         fromCache = false;   // 디스크 캐시에서 읽었는가 (확인용)
 	};
 
 	class ResourceManager
@@ -181,7 +188,11 @@ namespace swc {
 			std::unique_ptr<ModelData>        model;
 			std::unique_ptr<SkeletonResource> skeleton;
 			std::vector<AnimationClipData>    clips;
+			bool                              fromCache = false;
 		};
+
+		// 모델 디스크 캐시 폴더 (%LOCALAPPDATA%\SpaceWar\cache). 못 정하면 빈 문자열 = 캐시 안 씀.
+		static std::wstring ModelCacheDirectory();
 
 		// 캐시 키 = 정규화한 절대 경로. 실패면 빈 문자열.
 		static std::wstring ModelKey(const wchar_t* path, std::wstring& error);

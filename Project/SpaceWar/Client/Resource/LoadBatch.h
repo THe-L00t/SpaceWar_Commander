@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -79,6 +80,7 @@ namespace swc {
 		std::wstring                    currentLabel;
 		std::wstring                    error;
 		std::wstring                    failureDetail;
+		std::chrono::steady_clock::time_point startTime{};   // 로그용 (전체 시간)
 	};
 
 } // namespace swc

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <chrono>
 #include "Client/GRenderer.h"
 #include "Client/Sound/SoundManager.h"
 #include "Client/Resource/ResourceManager.h"
@@ -103,7 +104,11 @@ namespace swc {
 		Shared::PlanetSurface  planetSurface;     // OBJ 지표면. 렌더와 서버가 같은 좌표/배율을 사용한다.
 		Shared::TerrainSampler terrain;
 		std::wstring           terrainStatus;
-		LegacyScene            scene;             // → Scene 노드 + Render World 로 나뉜다 (LegacyScene.h)
+
+		// 로드 확인용 — 게임에 들어갈 때 콘솔에 «로드 N초 (행성 파싱/캐시)» 를 찍는다(Client/Log.h).
+		std::chrono::steady_clock::time_point loadStart{};
+		bool                   planetFromCache = false;
+		LegacyScene            scene;            // → Scene 노드 + Render World 로 나뉜다 (LegacyScene.h)
 		Camera                 camera;            // 명세 1절에 자리가 없다
 		PlayerController       controller;        // → Player(6.6) · Game Logic(8절). 입력은 Class Bridge 경유(6.6.3)
 		NodeHandle             player = kInvalidNode;

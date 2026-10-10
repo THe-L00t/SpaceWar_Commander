@@ -40,6 +40,10 @@ namespace Shared {
 		// 지붕·벽까지 접지면으로 읽으면 그 아래를 걷는 플레이어도 지붕 위로 밀려난다.
 		static bool IsGroundObject(std::string_view name);
 
+		// 위 규칙의 이름표. 모델 캐시(ModelCache)의 태그로 쓴다 — 함수는 비교할 수 없으므로
+		// ★ IsGroundObject 의 규칙을 바꾸면 이 문자열의 버전을 올린다. 안 올리면 예전 접지면을 캐시에서 읽는다.
+		static constexpr const char* kGroundRuleTag = "PlanetSurface.IsGroundObject.v1";
+
 		bool Valid() const { return !nodes.empty(); }
 		size_t TriangleCount() const { return triangles.size(); }
 

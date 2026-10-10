@@ -8,6 +8,7 @@
 
 #include "../Vec3.h"
 #include "ModelFormat.h"
+#include "Vertex.h"
 
 // ============================================================
 //  Shared/Model/ModelSource.h — 포맷 중립 중간 표현
@@ -35,27 +36,18 @@
 
 namespace Shared {
 
-	// Client 의 swc::Vertex + 스킨 속성. 스킨은 별도 배열로 올라간다(지형 정점이 무거워지지 않게).
-	struct SourceVertex
-	{
-		Vec3 position{};
-		Vec3 normal{};
-		Vec3 color{ 1.0f, 1.0f, 1.0f };
-		Vec2 uv{};
-		Vec4 tangent{ 1.0f, 0.0f, 0.0f, 1.0f };   // xyz = 접선, w = 종법선 부호
-
-		// 스키닝 — glTF JOINTS_0 / WEIGHTS_0. 스킨이 없는 메시는 전부 0 이다.
-		// weights 합은 리더에서 1 로 정규화한다.
-		std::array<uint16_t, kJointsPerVertex> joints{};
-		std::array<float, kJointsPerVertex>    weights{};
-	};
-
+	// ★ 정점은 Vertex.h 의 Vertex(60B, D3D 입력 배치)다 (2026-10-09)
+	//   리더가 만든 이 배열이 그대로 Resource Manager 의 RAM 사본이 되고 GPU 로 올라간다.
 	struct SourceMesh
 	{
-		std::vector<SourceVertex> vertices;
-		std::vector<uint32_t>     indices;        // 삼각형 목록 (후처리에서 보장)
-		uint32_t                  material = kInvalidIndex;
-		bool                      skinned = false;   // joints/weights 가 의미 있는가
+		std::vector<Vertex>     vertices;
+		std::vector<uint32_t>   indices;        // 삼각형 목록 (후처리에서 보장)
+		uint32_t                material = kInvalidIndex;
+
+		// 스킨 메시면 vertices 와 같은 길이다. 아니면 비어 있다(정적 메시는 24B 를 들이지 않는다).
+		std::vector<SkinVertex> skin;
+
+		bool Skinned() const { return !skin.empty(); }
 	};
 
 	// 텍스처 슬롯 순서는 셰이더의 t1~t5 와 같아야 한다 (Client 의 TextureSlot 과 동일).

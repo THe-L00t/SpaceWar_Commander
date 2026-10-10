@@ -151,14 +151,19 @@ namespace Shared {
 		// ── 스킨 가중치 ─────────────────────────────────
 		for (const SourceMesh& mesh : source.meshes)
 		{
-			if (!mesh.skinned) continue;
+			if (!mesh.Skinned()) continue;
 			if (source.skeleton.Empty())
 			{
 				error = L"스킨 메시인데 스켈레톤이 없습니다.";
 				return false;
 			}
+			if (mesh.skin.size() != mesh.vertices.size())
+			{
+				error = L"스킨 배열 길이가 정점 수와 다릅니다.";
+				return false;
+			}
 			const uint16_t jointCount = static_cast<uint16_t>(source.skeleton.joints.size());
-			for (const SourceVertex& vertex : mesh.vertices)
+			for (const SkinVertex& vertex : mesh.skin)
 			{
 				for (size_t slot = 0; slot < kJointsPerVertex; ++slot)
 				{
@@ -215,6 +220,15 @@ namespace Shared {
 	void GenerateNormals(SourceMesh& mesh)
 	{
 		// 0 인 법선만 채운다. 파일에 법선이 있으면 그것을 믿는다.
+		// ★ 채울 정점이 하나도 없으면 임시 배열을 만들지 않고 바로 끝낸다 (2026-10-09)
+		//   행성 OBJ 처럼 법선이 다 있는 파일에서 정점 1천만 × 12B 누적 배열과 면 순회를 아낀다.
+		bool anyMissing = false;
+		for (const Vertex& vertex : mesh.vertices)
+		{
+			if (Length(vertex.normal) < 1.0e-6f) { anyMissing = true; break; }
+		}
+		if (!anyMissing) return;
+
 		std::vector<Vec3> accumulated(mesh.vertices.size(), Vec3{});
 		std::vector<bool> needs(mesh.vertices.size(), false);
 
@@ -331,7 +345,7 @@ namespace Shared {
 				const SourceMesh& mesh = source.meshes[meshIndex];
 				const uint32_t base = static_cast<uint32_t>(source.collision.vertices.size());
 
-				for (const SourceVertex& vertex : mesh.vertices)
+				for (const Vertex& vertex : mesh.vertices)
 				{
 					const Vec3 p = TransformPoint(global[n], vertex.position);
 					if (!Finite(p)) continue;

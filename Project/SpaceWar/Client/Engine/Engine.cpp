@@ -7,6 +7,7 @@
 #include <DirectXMath.h>
 #include "Client/DummyMesh.h"
 #include "Client/RayTracingParams.h"
+#include "Client/Log.h"
 #include "Shared/Model/ModelSource.h"   // 행성 접지면을 파싱 결과(collected)로 만든다
 
 using namespace DirectX;
@@ -19,6 +20,9 @@ namespace
 	constexpr uint32_t kHeight = 720;
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
+
+	// 콘솔 로그 창 (Client/Log.h). 로드 단계·모델 캐시·파싱 시간을 찍는다.
+	constexpr bool kShowLogConsole = true;
 
 	// 캐릭터 모델. exe 옆 assets\ 기준이다.
 	// ★ 파일명이 Client.vcxproj 의 CopyModelAssets 검사에도 적혀 있다 — 바꿀 때 두 곳.
@@ -142,6 +146,11 @@ namespace swc {
 		if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
 			return false;
 
+		// 로드·캐시 로그를 볼 콘솔 창. 끄려면 kShowLogConsole 을 false 로.
+		if (kShowLogConsole)
+			OpenLogConsole();
+		Log(L"SpaceWar 시작");
+
 		WNDCLASSEX wc = {};
 		wc.cbSize = sizeof(wc);
 		wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -193,6 +202,7 @@ namespace swc {
 		// 게임 씬 리소스는 로딩 스레드로 넘긴다. 끝날 때까지 로딩 씬이 돈다.
 		std::unique_ptr<LoadBatch> gameLoad = std::make_unique<LoadBatch>(L"게임");
 		BuildGameLoad(*gameLoad);
+		loadStart = std::chrono::steady_clock::now();
 		sceneManager.ChangeScene(SceneId::Game, std::move(gameLoad), resources);
 		return true;
 	}
@@ -226,6 +236,8 @@ namespace swc {
 		{
 			return planetSurface.Build(source.collected, error);
 		};
+		// 디스크 캐시 태그 — 접지면 규칙이 바뀌면 PlanetSurface::kGroundRuleTag 버전이 올라가 캐시를 다시 만든다.
+		planetOptions.cacheTag = Shared::PlanetSurface::kGroundRuleTag;
 
 		resources.RequestModelFile(batch, planetAsset,
 			[this, &batch](const ModelFileResources& loaded)
@@ -239,6 +251,8 @@ namespace swc {
 				terrain.Configure(&planetSurface, planet.radius);
 				planet.terrain = &terrain;
 				terrainStatus = L"OBJ 행성 지표면 " + std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
+				// 캐시 여부는 게임에 들어갈 때 콘솔에 찍는다 — 두 번째 실행부터 «캐시» 가 보여야 정상이다.
+				planetFromCache = loaded.fromCache;
 
 				const ModelData* planetData = resources.Get(loaded.model);
 				if (!planetData)
@@ -357,6 +371,12 @@ namespace swc {
 		// 마우스는 게임에 들어갈 때 잡는다. 로딩 중에는 창을 옮기거나 다른 창으로 갈 수 있게 둔다.
 		input.SetCaptured(true);
 		titleTimer = 0.0f;
+
+		// 게임 리소스 로드에 걸린 시간 — 로딩 씬을 띄운 순간부터 게임에 들어온 순간까지.
+		const double seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - loadStart).count();
+		Log(L"[게임] 입장 — 로드 %.2fs (행성 %s) · %s", seconds,
+			planetFromCache ? L"캐시" : L"파싱", terrainStatus.c_str());
 	}
 
 	void Engine::Run()
@@ -803,7 +823,7 @@ namespace swc {
 			renderer.TlasInstanceCount(), renderer.TlasMaxInstances(),
 			renderer.TlasDroppedInstances() ? L" ★유실" : L"");
 
-		wchar_t title[728];
+		wchar_t title[1024];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
 			L"|  %s  |  %s  |  RT %s knee %.2f view %u  |  %s",

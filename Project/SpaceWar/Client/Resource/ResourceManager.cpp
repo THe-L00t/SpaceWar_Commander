@@ -4,8 +4,12 @@
 //   파서가 Shared 에 있는 이유: 서버가 같은 코드로 충돌·높이를 읽는다(명세 §18 원칙 4).
 #include "Shared/Terrain/HeightmapLoader.h"
 #include "Shared/Model/ModelReader.h"
+#include "Shared/Model/ModelCache.h"
 #include "ModelBuilder.h"
 #include "TextureLoader.h"
+#include "Client/Log.h"
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <utility>
 
@@ -16,6 +20,11 @@ namespace {
 	{
 		const size_t slash = path.find_last_of(L"\\/");
 		return (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+	}
+
+	double SecondsSince(std::chrono::steady_clock::time_point start)
+	{
+		return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 	}
 
 }
@@ -148,13 +157,77 @@ namespace swc {
 		options.generateCollision = false;
 		options.collectObject = extra.collectObject;   // 이름으로 고른 면을 같은 파싱에서 함께 모은다
 
+		// ★ 디스크 캐시 먼저 (2026-10-10) — Shared/Model/ModelCache.h
+		//   원본 크기·수정 시각·읽기 옵션·태그가 맞으면 파싱하지 않고 캐시를 그대로 읽는다.
+		//   collectObject 를 쓰는데 태그가 없으면 캐시를 쓰지 않는다(무슨 규칙으로 모았는지 모른다).
 		Shared::ModelSource source;
-		if (!Shared::ModelReader().Load(key.c_str(), source, error, options))
-			return false;
+		Shared::ModelCacheKey cacheKey;
+		std::wstring cachePath;
+		const bool cacheable = !extra.collectObject || !extra.cacheTag.empty();
+		if (cacheable && Shared::MakeModelCacheKey(key, options, extra.cacheTag, cacheKey))
+		{
+			const std::wstring directory = ModelCacheDirectory();
+			if (!directory.empty())
+				cachePath = (std::filesystem::path(directory) / Shared::ModelCacheFileName(cacheKey)).wstring();
+		}
+
+		const std::wstring shortName = FileName(key);
+		auto begin = std::chrono::steady_clock::now();
+
+		std::error_code ec;
+		const bool cacheFileExists = !cachePath.empty() && std::filesystem::exists(cachePath, ec);
+		if (cacheFileExists && Shared::ReadModelCache(cachePath, cacheKey, source))
+		{
+			out.fromCache = true;
+			const double mib = double(std::filesystem::file_size(cachePath, ec)) / (1024.0 * 1024.0);
+			Log(L"[모델] %s — 캐시 읽기 %.1f MiB, %.2fs", shortName.c_str(), mib, SecondsSince(begin));
+		}
+		else
+		{
+			if (cachePath.empty())
+				Log(L"[모델] %s — 캐시 안 씀(%s) → 파싱", shortName.c_str(),
+					cacheable ? L"캐시 폴더 없음" : L"collectObject 에 태그 없음");
+			else
+				Log(L"[모델] %s — %s → 파싱", shortName.c_str(),
+					cacheFileExists ? L"캐시가 낡았거나 깨짐" : L"캐시 없음");
+
+			begin = std::chrono::steady_clock::now();
+			if (!Shared::ModelReader().Load(key.c_str(), source, error, options))
+			{
+				Log(L"[모델] %s — 파싱 실패: %s", shortName.c_str(), error.c_str());
+				return false;
+			}
+			Log(L"[모델] %s — 파싱 %.2fs", shortName.c_str(), SecondsSince(begin));
+
+			// 다음 실행부터는 파싱하지 않는다. 실패해도 게임은 계속된다(다음에 다시 파싱할 뿐이다).
+			if (!cachePath.empty())
+			{
+				begin = std::chrono::steady_clock::now();
+				std::wstring cacheError;
+				if (Shared::WriteModelCache(cachePath, cacheKey, source, cacheError))
+				{
+					const double mib = double(std::filesystem::file_size(cachePath, ec)) / (1024.0 * 1024.0);
+					Log(L"[모델] %s — 캐시 쓰기 %.1f MiB, %.2fs → %s", shortName.c_str(), mib,
+						SecondsSince(begin), cachePath.c_str());
+				}
+				else
+				{
+					Log(L"[모델] %s — 캐시 쓰기 실패: %s", shortName.c_str(), cacheError.c_str());
+				}
+			}
+		}
 
 		// 같은 파싱 결과로 렌더 말고 다른 것도 만든다(예: 행성 접지면). 로딩 스레드다.
-		if (extra.onParsed && !extra.onParsed(source, error))
-			return false;
+		if (extra.onParsed)
+		{
+			begin = std::chrono::steady_clock::now();
+			if (!extra.onParsed(source, error))
+			{
+				Log(L"[모델] %s — 파싱 후 처리 실패: %s", shortName.c_str(), error.c_str());
+				return false;
+			}
+			Log(L"[모델] %s — 파싱 후 처리(접지면 등) %.2fs", shortName.c_str(), SecondsSince(begin));
+		}
 		// 모은 기하는 렌더 변환에 쓰지 않는다. 메모리를 일찍 돌려준다.
 		source.collected = Shared::CollectedGeometry{};
 
@@ -181,9 +254,22 @@ namespace swc {
 		return true;
 	}
 
+	std::wstring ResourceManager::ModelCacheDirectory()
+	{
+		// <windows.h> 를 끌어오지 않으려고 CRT 로 환경 변수를 읽는다.
+		wchar_t* value = nullptr;
+		size_t length = 0;
+		if (_wdupenv_s(&value, &length, L"LOCALAPPDATA") != 0 || !value)
+			return {};
+		std::wstring directory = (std::filesystem::path(value) / L"SpaceWar" / L"cache").wstring();
+		std::free(value);
+		return directory;
+	}
+
 	ModelFileResources ResourceManager::RegisterModelFile(const std::wstring& key, ParsedModelFile&& parsed)
 	{
 		ModelFileResources result;
+		result.fromCache = parsed.fromCache;
 
 		if (parsed.model)
 		{

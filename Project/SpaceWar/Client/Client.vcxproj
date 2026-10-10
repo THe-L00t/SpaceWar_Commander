@@ -123,6 +123,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="Model.cpp" />
     <ClCompile Include="Resource\LoadQueue.cpp" />
     <ClCompile Include="Resource\LoadBatch.cpp" />
+    <ClCompile Include="Log.cpp" />
     <ClCompile Include="Net\Network.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -153,6 +154,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="Scene\LoadingScene.h" />
     <ClInclude Include="UI\UI.h" />
     <ClInclude Include="UISprite.h" />
+    <ClInclude Include="Log.h" />
     <ClInclude Include="Bridge\ClassBridge.h" />
     <ClInclude Include="State\StateManager.h" />
     <ClInclude Include="Animation\Animator.h" />

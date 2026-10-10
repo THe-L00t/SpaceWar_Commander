@@ -17,6 +17,16 @@ namespace Shared {
 
 		namespace fs = std::filesystem;
 
+		// 이 메시의 재질에 노멀맵이 있는가. 탄젠트는 노멀맵을 쓸 때만 필요하다.
+		bool UsesNormalMap(const ModelSource& source, const SourceMesh& mesh)
+		{
+			if (mesh.material == kInvalidIndex || mesh.material >= source.materials.size())
+				return false;
+			const SourceMaterial& material = source.materials[mesh.material];
+			const size_t slot = static_cast<size_t>(SourceTextureSlot::Normal);
+			return !material.texturePaths[slot].empty() || material.embeddedImages[slot] != kInvalidIndex;
+		}
+
 		// 파일 앞부분과 확장자를 읽어 둔다. 판별에 두 가지를 같이 쓴다 —
 		// .glb 는 매직이 있지만 .gltf·.obj(텍스트)는 확장자로 가려야 한다.
 		struct Probe
@@ -149,7 +159,10 @@ namespace Shared {
 		for (SourceMesh& mesh : out.meshes)
 		{
 			GenerateNormals(mesh);
-			if (options.generateTangents && !options.geometryOnly)
+			// ★ 노멀맵이 없는 재질이면 탄젠트를 만들지 않는다 (2026-10-09)
+			//   셰이더는 hasNormalMap 일 때만 탄젠트를 쓴다(GRenderer CreateMaterial). 행성 MTL 은
+			//   텍스처가 하나도 없어 정점 1천만 개분 임시 배열(24B/정점)과 계산이 통째로 빠진다.
+			if (options.generateTangents && !options.geometryOnly && UsesNormalMap(out, mesh))
 				GenerateTangents(mesh);
 		}
 

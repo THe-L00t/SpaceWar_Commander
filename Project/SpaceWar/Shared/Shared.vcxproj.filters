@@ -91,6 +91,9 @@
     <Filter Include="클래스 목록\MeshPostProcess">
       <UniqueIdentifier>{a35e82b1-64c7-4d19-8f06-93b5e2d7140f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\ModelCache">
+      <UniqueIdentifier>{c84d2f19-5e7a-4b31-9a06-e2f7b3518c4d}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\ObjReader">
       <UniqueIdentifier>{3d8b0e52-c147-4a96-b25f-71e0a4c83f29}</UniqueIdentifier>
     </Filter>
@@ -117,11 +120,17 @@
     <ClInclude Include="Model\ModelSource.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="Model\Vertex.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
     <ClInclude Include="Model\ModelReader.h">
       <Filter>클래스 목록\ModelReader</Filter>
     </ClInclude>
     <ClInclude Include="Model\MeshPostProcess.h">
       <Filter>클래스 목록\MeshPostProcess</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\ModelCache.h">
+      <Filter>클래스 목록\ModelCache</Filter>
     </ClInclude>
     <ClInclude Include="Model\Readers\ObjReader.h">
       <Filter>클래스 목록\ObjReader</Filter>
@@ -217,6 +226,9 @@
     </ClCompile>
     <ClCompile Include="Model\MeshPostProcess.cpp">
       <Filter>클래스 목록\MeshPostProcess</Filter>
+    </ClCompile>
+    <ClCompile Include="Model\ModelCache.cpp">
+      <Filter>클래스 목록\ModelCache</Filter>
     </ClCompile>
     <ClCompile Include="Model\Readers\ObjReader.cpp">
       <Filter>클래스 목록\ObjReader</Filter>

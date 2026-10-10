@@ -631,9 +631,9 @@ namespace Shared {
 		//  파일의 와인딩 규약을 믿지 않고 법선과 맞춘다(ObjReader·옛 FBX 경로와 같은 방법).
 		void OrientTriangle(SourceMesh& mesh, size_t first)
 		{
-			const SourceVertex& a = mesh.vertices[mesh.indices[first]];
-			const SourceVertex& b = mesh.vertices[mesh.indices[first + 1]];
-			const SourceVertex& c = mesh.vertices[mesh.indices[first + 2]];
+			const Vertex& a = mesh.vertices[mesh.indices[first]];
+			const Vertex& b = mesh.vertices[mesh.indices[first + 1]];
+			const Vertex& c = mesh.vertices[mesh.indices[first + 2]];
 
 			const Vec3 edge1{ b.position.x - a.position.x, b.position.y - a.position.y, b.position.z - a.position.z };
 			const Vec3 edge2{ c.position.x - a.position.x, c.position.y - a.position.y, c.position.z - a.position.z };
@@ -1009,15 +1009,16 @@ namespace Shared {
 				}
 
 				SourceMesh mesh;
-				mesh.skinned = skinned;
 				mesh.material = primitive.Has("material") && !options.geometryOnly
 					? primitive["material"].AsUint() : kInvalidIndex;
 				mesh.vertices.resize(vertexCount);
 				mesh.indices = std::move(indices);
+				// 스킨은 정점 옆 별도 배열이다 — 스킨 메시일 때만 만든다(Vertex.h).
+				if (skinned) mesh.skin.resize(vertexCount);
 
 				for (size_t i = 0; i < vertexCount; ++i)
 				{
-					SourceVertex& vertex = mesh.vertices[i];
+					Vertex& vertex = mesh.vertices[i];
 					vertex.position = { positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2] };
 					if (!normals.empty())
 						vertex.normal = { normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2] };
@@ -1035,11 +1036,12 @@ namespace Shared {
 						for (size_t slot = 0; slot < kJointsPerVertex; ++slot)
 							sum += weights[i * 4 + slot];
 						const float inv = sum > 1.0e-6f ? 1.0f / sum : 0.0f;
+						SkinVertex& skinVertex = mesh.skin[i];
 						for (size_t slot = 0; slot < kJointsPerVertex; ++slot)
 						{
-							vertex.joints[slot] = static_cast<uint16_t>(
+							skinVertex.joints[slot] = static_cast<uint16_t>(
 								(std::min)(joints[i * 4 + slot], uint32_t(0xFFFF)));
-							vertex.weights[slot] = weights[i * 4 + slot] * inv;
+							skinVertex.weights[slot] = weights[i * 4 + slot] * inv;
 						}
 					}
 				}

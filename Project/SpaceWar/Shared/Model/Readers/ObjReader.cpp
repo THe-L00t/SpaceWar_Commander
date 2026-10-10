@@ -206,18 +206,97 @@ namespace Shared {
 			}
 		};
 
-		struct VertexKeyHash
+		// ★ 평평한 해시 테이블 (2026-10-10) — 열린 주소법 + 선형 탐사
+		//   예전에는 메시마다 std::unordered_map 을 두었다. 원소마다 노드를 따로 할당해서
+		//   행성 OBJ(고유 조합 884만)에서 할당 884만 번 · 노드 약 48B + 버킷 배열로 0.5~0.7GiB 가 들었다.
+		//   여기서는 (메시, v, vt, vn) → 정점 번호를 20B 칸 배열 하나에 담는다. 할당은 테이블을
+		//   키울 때(2배씩)만 일어나고, 행성 기준 칸 2^24 개 × 20B = 320MiB 다.
+		//   메시를 키에 넣어 테이블 하나로 모든 메시를 처리한다(재질이 다르면 같은 조합도 다른 정점).
+		class VertexDedupe
 		{
-			size_t operator()(const VertexKey& key) const
+		public:
+			VertexDedupe() { Rebuild(kInitialSlots); }
+
+			// key 가 이미 있으면 그 정점 번호, 없으면 candidate 를 넣고 그대로 돌려준다.
+			uint32_t FindOrInsert(const VertexKey& key, uint32_t mesh, uint32_t candidate, bool& inserted)
 			{
-				size_t hash = 1469598103934665603ull;
-				for (uint32_t part : { key.position, key.uv, key.normal })
+				if ((count + 1) * 10 > slots.size() * 7)   // 채움률 70% 를 넘기 전에 키운다
+					Rebuild(slots.size() * 2);
+
+				size_t at = Hash(key, mesh) & mask;
+				for (;;)
 				{
-					hash ^= part;
-					hash *= 1099511628211ull;
+					Slot& slot = slots[at];
+					if (slot.vertex == kEmpty)
+					{
+						slot = Slot{ key.position, key.uv, key.normal, mesh, candidate };
+						++count;
+						inserted = true;
+						return candidate;
+					}
+					if (slot.position == key.position && slot.uv == key.uv &&
+						slot.normal == key.normal && slot.mesh == mesh)
+					{
+						inserted = false;
+						return slot.vertex;
+					}
+					at = (at + 1) & mask;
 				}
-				return hash;
 			}
+
+			// 파싱이 끝나면 바로 버린다(ObjReader::Read 끝부분).
+			void Release()
+			{
+				std::vector<Slot>().swap(slots);
+				count = 0;
+				mask = 0;
+			}
+
+		private:
+			struct Slot
+			{
+				uint32_t position = 0;
+				uint32_t uv = 0;
+				uint32_t normal = 0;
+				uint32_t mesh = 0;
+				uint32_t vertex = kEmpty;
+			};
+			static_assert(sizeof(Slot) == 20, "칸 하나 = 20바이트");
+
+			static constexpr uint32_t kEmpty = 0xFFFFFFFFu;
+			static constexpr size_t   kInitialSlots = size_t(1) << 16;
+
+			static size_t Hash(const VertexKey& key, uint32_t mesh)
+			{
+				// 64비트 섞기(splitmix 계열). 칸 번호는 하위 비트를 쓰므로 상위 비트까지 고르게 섞는다.
+				uint64_t h = (uint64_t(key.position) << 32) ^ key.uv;
+				h ^= (uint64_t(key.normal) << 32) ^ (uint64_t(mesh) * 0x9E3779B97F4A7C15ull);
+				h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ull;
+				h ^= h >> 27; h *= 0x94D049BB133111EBull;
+				h ^= h >> 31;
+				return size_t(h);
+			}
+
+			void Rebuild(size_t slotCount)
+			{
+				std::vector<Slot> old;
+				old.swap(slots);
+				slots.assign(slotCount, Slot{});
+				mask = slotCount - 1;
+				count = 0;
+				for (const Slot& slot : old)
+				{
+					if (slot.vertex == kEmpty) continue;
+					size_t at = Hash(VertexKey{ slot.position, slot.uv, slot.normal }, slot.mesh) & mask;
+					while (slots[at].vertex != kEmpty) at = (at + 1) & mask;
+					slots[at] = slot;
+					++count;
+				}
+			}
+
+			std::vector<Slot> slots;
+			size_t            count = 0;
+			size_t            mask = 0;
 		};
 
 		// ── MTL ─────────────────────────────────────────────
@@ -369,7 +448,7 @@ namespace Shared {
 		// 메시는 (노드, 재질) 조합마다 하나다. 면이 하나라도 올 때 만든다 —
 		// 그래야 쓰이지 않은 usemtl·빈 오브젝트 때문에 빈 메시가 남지 않는다.
 		std::unordered_map<uint64_t, uint32_t> submeshByKey;
-		std::vector<std::unordered_map<VertexKey, uint32_t, VertexKeyHash>> dedupe;
+		VertexDedupe dedupe;   // 모든 메시가 같이 쓴다 — 키에 메시 번호가 들어간다
 
 		std::vector<Corner> corners;
 		size_t lineNumber = 0;
@@ -528,13 +607,11 @@ namespace Shared {
 					SourceMesh mesh;
 					mesh.material = materialKey;
 					out.meshes.push_back(std::move(mesh));
-					dedupe.emplace_back();
 					submeshByKey.emplace(submeshKey, meshIndex);
 					out.nodes[currentNode].meshes.push_back(meshIndex);
 				}
 
 				SourceMesh& mesh = out.meshes[meshIndex];
-				auto& keys = dedupe[meshIndex];
 
 				// 다각형은 부채꼴로 쪼갠다(볼록 가정). 설계안 3장의 삼각화 단계다.
 				for (size_t corner1 = 1; corner1 + 1 < corners.size(); ++corner1)
@@ -542,7 +619,7 @@ namespace Shared {
 					const Corner triangle[3] = { corners[0], corners[corner1], corners[corner1 + 1] };
 
 					VertexKey key[3]{};
-					SourceVertex vertex[3]{};
+					Vertex vertex[3]{};
 					size_t positionIndex[3]{};
 					bool hasFileNormals = true;
 
@@ -614,18 +691,14 @@ namespace Shared {
 					for (int slot = 0; slot < 3; ++slot)
 					{
 						const int i = order[slot];
-						uint32_t vertexIndex;
-						if (auto it = keys.find(key[i]); it != keys.end())
-						{
-							vertexIndex = it->second;
-						}
-						else
+						bool inserted = false;
+						const uint32_t vertexIndex = dedupe.FindOrInsert(key[i], meshIndex,
+							static_cast<uint32_t>(mesh.vertices.size()), inserted);
+						if (inserted)
 						{
 							if (mesh.vertices.size() >= kMaxVertices)
 								return fail(L"OBJ 메시의 정점이 너무 많습니다");
-							vertexIndex = static_cast<uint32_t>(mesh.vertices.size());
 							mesh.vertices.push_back(vertex[i]);
-							keys.emplace(key[i], vertexIndex);
 						}
 						mesh.indices.push_back(vertexIndex);
 					}
@@ -664,6 +737,27 @@ namespace Shared {
 
 			// 모르는 키워드는 조용히 넘긴다. OBJ 는 확장이 많고, 모르는 줄이 오류일 이유가 없다.
 		}
+
+		// ★ 파싱이 끝났으니 중간 자료를 바로 버린다 (2026-10-09)
+		//   파일 텍스트(행성 656MB) · 원본 v/vt/vn 배열 · 정점 중복 제거 해시는 더 쓰지 않는다.
+		//   함수가 끝날 때까지 기다리지 않고 지금 버려야, 아래 정점 배열 정리(shrink)와 겹치지 않는다.
+		std::string().swap(text);
+		std::vector<Vec3>().swap(positions);
+		std::vector<Vec2>().swap(uvs);
+		std::vector<Vec3>().swap(normals);
+		dedupe.Release();
+		std::unordered_map<uint64_t, uint32_t>().swap(submeshByKey);
+		std::vector<uint32_t>().swap(collectRemap);
+
+		// push_back 으로 자란 배열은 용량이 실제 크기의 최대 2배까지 잡혀 있다.
+		// 메시 하나씩 줄여 여분을 돌려준다(이 배열이 그대로 Resource Manager 의 사본이 된다).
+		for (SourceMesh& mesh : out.meshes)
+		{
+			mesh.vertices.shrink_to_fit();
+			mesh.indices.shrink_to_fit();
+		}
+		out.collected.positions.shrink_to_fit();
+		out.collected.indices.shrink_to_fit();
 
 		if (out.meshes.empty())
 		{

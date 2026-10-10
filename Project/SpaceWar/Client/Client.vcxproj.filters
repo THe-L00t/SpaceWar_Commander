@@ -96,6 +96,9 @@
     <Filter Include="클래스 목록\LoadBatch">
       <UniqueIdentifier>{e3c86f15-49a2-4d7b-b0e1-2f8a5c9d6b70}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Log">
+      <UniqueIdentifier>{9d3e7a52-1c84-4f06-b2e9-6a07c45d18f3}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
     </Filter>
@@ -184,6 +187,9 @@
     </ClCompile>
     <ClCompile Include="Resource\LoadBatch.cpp">
       <Filter>클래스 목록\LoadBatch</Filter>
+    </ClCompile>
+    <ClCompile Include="Log.cpp">
+      <Filter>클래스 목록\Log</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -312,6 +318,9 @@
     </ClInclude>
     <ClInclude Include="UISprite.h">
       <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Log.h">
+      <Filter>클래스 목록\Log</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
