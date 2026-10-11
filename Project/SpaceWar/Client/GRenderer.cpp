@@ -7,6 +7,7 @@
 #include <dxgi1_6.h>
 #include <wrl.h>
 #include <cstring>
+#include <algorithm>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -137,6 +138,8 @@ namespace swc {
 		static const UINT FrameCount = 2;
 		static const UINT MaxInstances = 4096;
 		static const UINT FrameCBSize = 256;   // CBV 는 256바이트 정렬
+		// 한 프레임에 그릴 수 있는 인스턴스 상한. 64바이트 × 16384 = 1MiB / 프레임 슬롯.
+		static const UINT MaxDrawInstances = 16384;
 
 		struct MeshGpu
 		{
@@ -161,6 +164,23 @@ namespace swc {
 		ComPtr<ID3D12PipelineState>        pso;
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
+
+		// ── 인스턴싱 (2026-10-11, integrate-client2 e09639d 이식) ──
+		//  같은 메시를 쓰는 노드를 모아 DrawIndexedInstanced 한 번으로 그린다.
+		//  인스턴스마다의 월드 행렬은 이 버퍼(t6, StructuredBuffer)에 담고,
+		//  묶음마다 루트 SRV 주소를 그 묶음의 첫 인스턴스로 옮긴다(SV_InstanceID 는 0부터).
+		//  프레임 슬롯은 TLAS 인스턴스 버퍼와 같은 이유로 둘이다(비행 중 프레임 대비).
+		ComPtr<ID3D12Resource>             instanceBuffer;
+		uint8_t*                           instanceData = nullptr;
+		UINT                               instanceCursor = 0;   // 이번 프레임에 쓴 인스턴스 수
+
+		// Render 에서 프레임마다 다시 쓰는 작업 배열 — 할당을 반복하지 않게 남겨 둔다.
+		struct VisibleDraw
+		{
+			MeshHandle mesh = kInvalidMesh;
+			NodeHandle node = kInvalidNode;
+		};
+		std::vector<VisibleDraw> visibleDraws;
 
 		std::vector<MeshGpu> meshes;
 
@@ -340,16 +360,34 @@ namespace swc {
 				return false;
 		}
 
+		// 인스턴스 월드 행렬 버퍼 (UPLOAD, 영속 매핑) — 프레임 슬롯 FrameCount 개
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(UINT64(sizeof(XMFLOAT4X4)) * Impl::MaxDrawInstances * Impl::FrameCount);
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->instanceBuffer))))
+			{
+				impl->status = L"인스턴스 버퍼 생성 실패.";
+				return false;
+			}
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->instanceBuffer->Map(0, &noRead, reinterpret_cast<void**>(&impl->instanceData))))
+			{
+				impl->status = L"인스턴스 버퍼 매핑 실패.";
+				return false;
+			}
+		}
+
 		// Root signature
-		//   b1 = 32비트 상수 16개 (월드 행렬) / b0 = 프레임 CBV / t0 = TLAS (루트 SRV)
+		//   t6 = 인스턴스 월드 행렬 (루트 SRV) / b0 = 프레임 CBV / t0 = TLAS (루트 SRV)
 		//   TLAS 를 루트 SRV 로 바인딩하면 셰이더 가시 디스크립터 힙이 필요 없다.
+		//   (인스턴싱 전에는 b1 루트 상수 16개로 월드 행렬을 그리기마다 넘겼다.)
 		{
 			D3D12_ROOT_PARAMETER params[3] = {};
 
-			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			params[0].Constants.ShaderRegister = 1;
-			params[0].Constants.RegisterSpace = 0;
-			params[0].Constants.Num32BitValues = 16;
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+			params[0].Descriptor.ShaderRegister = 6;
+			params[0].Descriptor.RegisterSpace = 0;
 			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
 			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -524,6 +562,7 @@ namespace swc {
 
 	void GRenderer::BeginFrame()
 	{
+		impl->instanceCursor = 0;
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 
@@ -589,18 +628,52 @@ namespace swc {
 		if (impl->rtSupported && impl->accel.InstanceCount() > 0)
 			impl->commandList->SetGraphicsRootShaderResourceView(2, impl->accel.TlasAddress());
 
+		// ── 같은 메시끼리 묶는다 ──
+		//  glTF 는 같은 메시를 여러 노드가 참조한다. 메시 데이터와 BLAS 는 이미 하나씩만 있으니,
+		//  그리기도 같은 메시를 쓰는 노드를 모아 한 번에 낸다. 불투명만이라 순서가 바뀌어도 깊이 결과는 같다.
+		//  stable_sort — 같은 묶음 안에서는 Extract 순서를 지킨다.
+		std::vector<Impl::VisibleDraw>& draws = impl->visibleDraws;
+		draws.clear();
 		for (const RenderItem& it : items)
 		{
 			if (it.mesh >= impl->meshes.size()) continue;
-			const Impl::MeshGpu& m = impl->meshes[it.mesh];
+			draws.push_back({ it.mesh, it.node });
+		}
+		std::stable_sort(draws.begin(), draws.end(),
+			[](const Impl::VisibleDraw& a, const Impl::VisibleDraw& b) { return a.mesh < b.mesh; });
 
-			XMFLOAT4X4 world;
-			XMStoreFloat4x4(&world, XMMatrixTranspose(XMLoadFloat4x4(&worlds[it.node])));
-			impl->commandList->SetGraphicsRoot32BitConstants(0, 16, &world, 0);
+		const UINT64 slotOffset = UINT64(impl->frameIndex) * Impl::MaxDrawInstances * sizeof(XMFLOAT4X4);
+		uint8_t* const slotData = impl->instanceData + slotOffset;
+		const D3D12_GPU_VIRTUAL_ADDRESS slotAddress = impl->instanceBuffer->GetGPUVirtualAddress() + slotOffset;
 
+		for (size_t begin = 0; begin < draws.size();)
+		{
+			const MeshHandle mesh = draws[begin].mesh;
+			size_t end = begin + 1;
+			while (end < draws.size() && draws[end].mesh == mesh)
+				++end;
+
+			// 상한을 넘는 인스턴스는 그리지 않는다(TLAS 상한 4096 보다 넉넉하다).
+			const UINT room = Impl::MaxDrawInstances - impl->instanceCursor;
+			const UINT count = (std::min)(UINT(end - begin), room);
+			if (count == 0) break;
+
+			const UINT firstInstance = impl->instanceCursor;
+			for (UINT i = 0; i < count; ++i)
+			{
+				XMFLOAT4X4 world;
+				XMStoreFloat4x4(&world, XMMatrixTranspose(XMLoadFloat4x4(&worlds[draws[begin + i].node])));
+				memcpy(slotData + size_t(firstInstance + i) * sizeof(XMFLOAT4X4), &world, sizeof(world));
+			}
+			impl->instanceCursor += count;
+
+			const Impl::MeshGpu& m = impl->meshes[mesh];
 			impl->commandList->IASetVertexBuffers(0, 1, &m.vbv);
 			impl->commandList->IASetIndexBuffer(&m.ibv);
-			impl->commandList->DrawIndexedInstanced(m.indexCount, 1, 0, 0, 0);
+			impl->commandList->SetGraphicsRootShaderResourceView(0,
+				slotAddress + UINT64(firstInstance) * sizeof(XMFLOAT4X4));
+			impl->commandList->DrawIndexedInstanced(m.indexCount, count, 0, 0, 0);
+			begin = end;
 		}
 	}
 

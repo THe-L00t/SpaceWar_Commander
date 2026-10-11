@@ -29,10 +29,11 @@ cbuffer FrameCB : register(b0)
 	float3   _pad2;
 };
 
-cbuffer ObjectCB : register(b1)
-{
-	float4x4 gWorld;
-};
+// ── 인스턴스 월드 행렬 (2026-10-11) ──
+//  같은 메시를 쓰는 노드를 한 번에 그린다. 렌더러가 묶음마다 루트 SRV 주소를
+//  그 묶음의 첫 인스턴스로 옮겨 주므로 SV_InstanceID(0부터)로 바로 읽으면 된다.
+//  행렬 배치는 기본(column_major)이고, CPU 가 전치해서 올린다 — 예전 ObjectCB 와 같다.
+StructuredBuffer<float4x4> gWorlds : register(t6);
 
 #if RT_SUPPORTED
 RaytracingAccelerationStructure gScene : register(t0);
@@ -66,13 +67,14 @@ struct VOut
 	float3 col   : COLOR;
 };
 
-VOut VSMain(VIn i)
+VOut VSMain(VIn i, uint instance : SV_InstanceID)
 {
+	const float4x4 world = gWorlds[instance];
 	VOut o;
-	float4 wp = mul(float4(i.pos, 1.0), gWorld);
+	float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
 	o.pos   = mul(wp, gViewProj);
-	o.nrm   = mul(float4(i.nrm, 0.0), gWorld).xyz;
+	o.nrm   = mul(float4(i.nrm, 0.0), world).xyz;
 	o.col   = i.col;
 	return o;
 }
