@@ -113,12 +113,17 @@ namespace srv {
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  그 방향의 지면 위로 옮긴다.
+	//  같은 XZ 또는 구면 방향의 지면 위로 옮긴다.
 	//
 	//  ★ 플레이어 착지(클라 PlayerController)·위치 검사(서버 main.cpp)와 같은 계산이다.
-	//    기준구 반지름 + 지형 높이 + kGroundOffset. 하나라도 다르면 NPC 가 묻히거나 뜬다.
+	//    지형 높이 + kGroundOffset. 구면 모드에서만 기준구 반지름을 더한다.
 	Shared::Vec3 NpcWorld::OnGround(const Shared::Vec3& position) const
 	{
+		if constexpr (Shared::kUsePlanarMap)
+		{
+			const double height = terrain ? terrain->Height(position.x, position.y, position.z) : 0.0;
+			return { position.x, float(height + Shared::kGroundOffset), position.z };
+		}
 		const Shared::Vec3 center = PlanetCenter();
 		const Shared::Vec3 up = Normalize(Sub(position, center));
 
@@ -133,7 +138,8 @@ namespace srv {
 	Shared::Vec3 NpcWorld::RingPosition(const Shared::Vec3& playerPos, float angle) const
 	{
 		const Shared::Vec3 center = PlanetCenter();
-		const Shared::Vec3 up = Normalize(Sub(playerPos, center));
+		const Shared::Vec3 up = Shared::kUsePlanarMap
+			? Shared::Vec3{ 0.0f, 1.0f, 0.0f } : Normalize(Sub(playerPos, center));
 
 		// 접평면의 기준축 두 개. up 과 나란하지 않은 아무 벡터에서 만든다.
 		const Shared::Vec3 seed = (std::fabs(up.z) < 0.9f)
@@ -291,8 +297,9 @@ namespace srv {
 
 			if (Length(toTarget) <= kStopDistance) continue;   // 충분히 붙었다
 
-			// 구 위를 걷는다: 접평면 성분만 남긴다.
-			const Shared::Vec3 up = Normalize(Sub(e.npc.position, center));
+			// 평면 맵은 XZ, 구면 맵은 접평면 성분만 남긴다.
+			const Shared::Vec3 up = Shared::kUsePlanarMap
+				? Shared::Vec3{ 0.0f, 1.0f, 0.0f } : Normalize(Sub(e.npc.position, center));
 			const Shared::Vec3 tangent = Sub(toTarget, Scale(up, Dot(toTarget, up)));
 			const float        tangentLen = Length(tangent);
 

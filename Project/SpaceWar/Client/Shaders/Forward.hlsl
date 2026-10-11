@@ -34,10 +34,23 @@ cbuffer FrameCB : register(b0)
 	float3   _pad2;
 };
 
-cbuffer ObjectCB : register(b1)
+// ── 인스턴스 (수정방향 3.2, 2026-10-11) ──
+//  같은 (PSO, 재질, 메시)를 쓰는 인스턴스를 ExecuteIndirect 한 번으로 그린다.
+//  인스턴스 수는 Cull.hlsl 이 보이는 것만 세어 간접 인자에 넣었다.
+//  gVisible[gInstanceBase + SV_InstanceID] = 그 묶음에서 보이는 인스턴스 번호.
+//  ★ row_major — CPU 의 XMFLOAT4X4 를 전치 없이 그대로 올린다. mul(v, M) 행벡터 규약은 예전과 같다.
+cbuffer DrawCB : register(b1)
 {
-	float4x4 gWorld;
+	uint gInstanceBase;      // 이 묶음의 보이는 목록 시작 번호 (루트 상수 1개)
 };
+
+struct InstanceGpu           // GRenderer 의 Impl::InstanceGpu 와 같은 128바이트
+{
+	row_major float4x4 world;
+	row_major float4x4 prevWorld;   // 모션 벡터용 — 아직 읽지 않는다
+};
+StructuredBuffer<InstanceGpu> gInstances : register(t6);
+StructuredBuffer<uint>        gVisible   : register(t7);
 
 // ── 재질 (GRenderer 의 MaterialConstants 와 16바이트 단위로 같아야 한다) ──
 cbuffer MaterialCB : register(b2)
@@ -89,17 +102,18 @@ struct VOut
 	float4 tan   : TANGENT;
 };
 
-VOut VSMain(VIn i)
+VOut VSMain(VIn i, uint instance : SV_InstanceID)
 {
+	const float4x4 world = gInstances[gVisible[gInstanceBase + instance]].world;
 	VOut o;
-	float4 wp = mul(float4(i.pos, 1.0), gWorld);
+	float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
 	o.pos   = mul(wp, gViewProj);
-	o.nrm   = mul(float4(i.nrm, 0.0), gWorld).xyz;
+	o.nrm   = mul(float4(i.nrm, 0.0), world).xyz;
 	o.col   = i.col;
 	o.uv    = i.uv;
 	// 접선도 월드로 옮긴다. 부호(w)는 그대로 넘긴다.
-	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), gWorld).xyz, i.tan.w);
+	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), world).xyz, i.tan.w);
 	return o;
 }
 
@@ -150,6 +164,12 @@ float3 SpecularGGX(float NdotL, float NdotV, float NdotH, float rough, float3 F)
 // ★ 녹색 채널을 뒤집는 이유
 //   Meshy/Blender 는 +Y(OpenGL) 규약으로 노멀맵을 굽고, 로더는 UV 의 V 를 뒤집어 읽는다.
 //   V 를 뒤집으면 접선 공간의 Y 축도 뒤집히므로 녹색을 그대로 쓰면 요철이 반대로 보인다.
+//
+// ★★ 반전은 여기 한 곳에서만 한다 (2026-10-07)
+//   로더에서 픽셀의 녹색을 또 뒤집으면 두 번이 되어 반전이 상쇄된다. 실제로 그랬다 —
+//   FbxModelLoader 가 로드 때 255-G 를 하고 있었고, 그래서 FBX 모델의 요철이 반대로 보였다.
+//   지금은 FBX 경로와 자체 파서 경로(ModelBuilder) 둘 다 픽셀을 건드리지 않는다.
+//   ※ -Y(DirectX) 규약 원본을 받게 되면 이 줄을 지우는 대신 재질 플래그로 가려야 한다.
 float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
 {
 	float3 T = tangent.xyz - N * dot(N, tangent.xyz);   // 그람-슈미트 직교화
@@ -188,7 +208,7 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 }
 #endif
 
-float4 PSMain(VOut i) : SV_TARGET
+float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 {
 	// ── 재질 ────────────────────────────────────────────────
 	//  텍스처가 없는 재질에는 흰색·평면 노멀 폴백이 묶여 있어 분기 없이 곱해도 된다.
@@ -199,6 +219,7 @@ float4 PSMain(VOut i) : SV_TARGET
 	float3 emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
 
 	float3 N = normalize(i.nrm);
+	if (!frontFace) N = -N;
 	if (gHasNormalMap != 0)
 		N = ApplyNormalMap(N, i.tan, i.uv);
 

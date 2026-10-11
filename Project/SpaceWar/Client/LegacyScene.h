@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <vector>
 #include <DirectXMath.h>
 #include "Handles.h"
@@ -16,7 +17,7 @@
 //
 //  ★ 구조 자체는 유지한다
 //  「렌더러 수정방향」 §5 «그대로 둘 것»: Scene 의 SoA 노드와 Extract 구조.
-//  3.2 에서 prevWorld 배열이 추가되고 Extract 가 InstanceData 를 채우게 된다.
+//  3.2 에서 prevWorld 배열이 추가되고 Extract 가 InstanceData 를 채우게 된다(2026-10-11 반영).
 //  없애는 것이 아니라 소유자가 갈리는 것이다.
 // ============================================================
 
@@ -24,23 +25,38 @@ namespace swc {
 	class LegacyScene
 	{
 	public:
+		LegacyScene();
+
 		NodeHandle AddNode(NodeHandle, MeshHandle, MaterialHandle);
 
 		void SetLocalTransform(NodeHandle, const DirectX::XMMATRIX&);
 		void SetMesh(NodeHandle, MeshHandle);
+		void SetVisible(NodeHandle, bool);
 
 		void UpdateWorldTransforms();
-		void Extract(std::vector<InstanceData>&) const;
+		// 렌더 추출 ④ — 보이는 메시 노드의 InstanceData 와 구성 버전을 채운다. 뷰는 호출자가 채운다.
+		void Extract(FramePacket&) const;
 
 		size_t NodeCount() const { return parent.size(); }
-		const DirectX::XMFLOAT4X4* WorldData() const { return world.data(); }
 
 	private:
 		std::vector<NodeHandle>          parent;
 		std::vector<DirectX::XMFLOAT4X4> local;
 		std::vector<DirectX::XMFLOAT4X4> world;
+		std::vector<DirectX::XMFLOAT4X4> prevWorld;    // 이전 프레임 world (수정방향 3.2)
 		std::vector<MeshHandle>          mesh;
 		std::vector<MaterialHandle>      material;
+		std::vector<uint8_t>             visible;
+		std::vector<uint8_t>             worldVisible;
+		std::vector<uint8_t>             localDirty;
+		std::vector<uint8_t>             worldDirty;   // 이번 갱신에서 부모 변경을 자식에게 전달한다.
+		std::vector<uint8_t>             prevPending;  // world 가 바뀐 다음 프레임에 prevWorld 를 따라잡는다.
+		std::vector<uint32_t>            flags;        // InstanceFlags — world 가 바뀔 때만 다시 정한다.
+
+		// FramePacket::layoutVersion = (sceneId << 32) | layoutVersion.
+		//  렌더러는 이 값이 바뀔 때만 그리기 묶음을 다시 만든다.
+		uint32_t sceneId = 0;
+		uint32_t layoutVersion = 0;
 	};
 
 }

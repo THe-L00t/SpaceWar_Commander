@@ -30,6 +30,8 @@ namespace swc {
 		Vec3d LookDirection() const;
 
 		const DirectX::XMFLOAT4X4& ViewProj() const { return viewProj; }
+		const DirectX::XMFLOAT4X4& BackgroundViewProj() const { return backgroundViewProj; }
+		float VerticalFov() const { return fov; }
 		const DirectX::XMFLOAT3& EyePosition() const { return eyePosition; }
 
 	private:
@@ -49,5 +51,6 @@ namespace swc {
 
 		DirectX::XMFLOAT3   eyePosition{ 0.0f, 0.0f, 0.0f };
 		DirectX::XMFLOAT4X4 viewProj{};
+		DirectX::XMFLOAT4X4 backgroundViewProj{};
 	};
 }

@@ -94,12 +94,13 @@ namespace swc {
 
 		Vec3d eye = focus - dir * double(distance);
 
-		// 지표면 위 최소 고도 유지 (월드 Y 가 아니라 고도 기준)
-		const Vec3d eyeUp = Normalize(eye - planet.center);
+		// 지표면 위 최소 고도 유지. 평면 맵은 해당 XZ의 지면 Y로 보정한다.
+		const Vec3d eyeUp = planet.Up(eye);
+		const Vec3d surfacePoint = Shared::kUsePlanarMap ? eye : eyeUp;
 		const double eyeAlt = planet.Altitude(eye);
-		const double minAlt = planet.SurfaceHeight(eyeUp) + double(kMinEyeAlt);
+		const double minAlt = planet.SurfaceHeight(surfacePoint) + double(kMinEyeAlt);
 		if (eyeAlt < minAlt)
-			eye = planet.PositionAt(eyeUp, minAlt);
+			eye = planet.PositionAt(surfacePoint, minAlt);
 
 		eyePosition = eye.ToFloat3();
 
@@ -109,5 +110,8 @@ namespace swc {
 			XMLoadFloat3(&eyePosition), XMLoadFloat3(&focusF), XMLoadFloat3(&upF));
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH(fov, aspect, 0.1f, 20000.0f);
 		XMStoreFloat4x4(&viewProj, view * proj);
+		// 원거리 배경만 별도 near 평면을 사용하고 같은 FOV·카메라 방향을 유지한다.
+		const XMMATRIX backgroundProj = XMMatrixPerspectiveFovLH(fov, aspect, 10.0f, 20000.0f);
+		XMStoreFloat4x4(&backgroundViewProj, view * backgroundProj);
 	}
 }

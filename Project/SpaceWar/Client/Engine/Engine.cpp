@@ -1,11 +1,15 @@
 #include "Engine.h"
+#include <memory>
 
 #include <shellapi.h>
 #include <objbase.h>
 #include <cstdio>
+#include <psapi.h>
 #include <DirectXMath.h>
 #include "Client/DummyMesh.h"
 #include "Client/RayTracingParams.h"
+#include "Client/Log.h"
+#include "Shared/Model/ModelSource.h"   // 행성 접지면을 파싱 결과(collected)로 만든다
 
 using namespace DirectX;
 
@@ -18,10 +22,26 @@ namespace
 
 	constexpr float kMouseSensitivity = 0.0022f;   // Raw 카운트 -> 라디안
 
+	// 콘솔 로그 창 (Client/Log.h). 로드 단계·모델 캐시·파싱 시간을 찍는다.
+	constexpr bool kShowLogConsole = true;
+
 	// 캐릭터 모델. exe 옆 assets\ 기준이다.
 	// ★ 파일명이 Client.vcxproj 의 CopyModelAssets 검사에도 적혀 있다 — 바꿀 때 두 곳.
 	constexpr const wchar_t* kCharacterModelAsset =
-		L"model\\Meshy_AI_01_Arc_Sentinel_0918131203_texture.fbx";
+		L"model\\character\\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj";
+
+	// 맵 GLB 에서 뒷면을 제거할 닫힌 지표면 노드 (client2 2f15728). 표시 지형이며,
+	// 같은 메시를 쓰는 충돌 노드(Shared::kPlanetSurfaceNode)는 화면에 그리지 않는다.
+	constexpr std::string_view kClosedTerrainNode = "Terrain_Expedition_Planet_Closed";
+
+	// ── 로딩 ────────────────────────────────────────────────
+	//  로딩 화면 이미지. exe 옆 assets\ 기준 (Client.vcxproj 빌드 후 복사).
+	constexpr const wchar_t* kLoadingBackgroundAsset = L"ui\\loading_background.png";
+	constexpr const wchar_t* kLoadingSpinnerAsset = L"ui\\loading_spinner.png";
+
+	// 프레임당 메인에서 마무리할 로딩 완료분 수 (「멀티스레딩 분류 명세서」 ⑥ 업로드 예산).
+	// 행성 모델 GPU 업로드처럼 무거운 것이 한 프레임에 겹치지 않게 1 로 둔다.
+	constexpr size_t kLoadFinishesPerFrame = 1;
 
 	// ── 사격 효과 (임시) ───────────────────────────────────
 	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
@@ -77,7 +97,7 @@ namespace
 	}
 
 	// 쓰지 않는 노드를 화면 밖으로 치워 두는 변환.
-	// 행성 지름이 3.2km 이므로 1만 km 아래는 절대 보이지 않는다.
+	// 현재 행성 크기보다 충분히 먼 1만 km 아래로 이동한다.
 	DirectX::XMMATRIX ParkedTransform()
 	{
 		return DirectX::XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
@@ -97,6 +117,43 @@ namespace
 		return p + L"assets\\" + relative;
 	}
 
+	// 좌표만 받는 원격 캐릭터도 현재 지면의 위쪽에 몸통을 정렬한다.
+	XMMATRIX CharacterTransform(const swc::Planet& planet, const float position[3])
+	{
+		const swc::Vec3d p{ position[0], position[1], position[2] };
+		const swc::Vec3d up = planet.Up(p);
+		const swc::Vec3d forward = swc::ProjectOntoPlane({ 0.0, 0.0, 1.0 }, up);
+		const swc::Vec3d right = swc::Cross(up, forward);
+		XMMATRIX m;
+		m.r[0] = XMVectorSet(float(right.x), float(right.y), float(right.z), 0.0f);
+		m.r[1] = XMVectorSet(float(up.x), float(up.y), float(up.z), 0.0f);
+		m.r[2] = XMVectorSet(float(forward.x), float(forward.y), float(forward.z), 0.0f);
+		m.r[3] = XMVectorSet(position[0], position[1], position[2], 1.0f);
+		return m;
+	}
+
+	// 로딩 중 임시 메모리와 실행 후 상주량을 구분한다 (client2 2f15728).
+	// 우리 로그(Client/Log.h)로 찍는다 — 콘솔 창과 VS 출력창에 함께 나온다.
+	void LogMemory(const wchar_t* stage, size_t cachedModels, const swc::ModelData* model = nullptr)
+	{
+		PROCESS_MEMORY_COUNTERS_EX memory{};
+		memory.cb = sizeof(memory);
+		if (!K32GetProcessMemoryInfo(GetCurrentProcess(),
+			reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) return;
+		size_t modelBytes = 0;
+		if (model)
+		{
+			for (const auto& mesh : model->meshes)
+				modelBytes += mesh.mesh.vertices.capacity() * sizeof(swc::Vertex) +
+					mesh.mesh.indices.capacity() * sizeof(uint32_t);
+			for (const auto& texture : model->textures) modelBytes += texture.pixels.capacity();
+		}
+		constexpr double kMiB = 1024.0 * 1024.0;
+		swc::Log(L"[Memory] %s: private=%.1f MiB, workingSet=%.1f MiB, peakWorkingSet=%.1f MiB, cpuModel=%.1f MiB, cachedModels=%zu",
+			stage, double(memory.PrivateUsage) / kMiB, double(memory.WorkingSetSize) / kMiB,
+			double(memory.PeakWorkingSetSize) / kMiB, double(modelBytes) / kMiB, cachedModels);
+	}
+
 	LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 		if (g_input && g_input->HandleMessage(msg, wParam, lParam))
@@ -114,14 +171,27 @@ namespace
 namespace swc {
 
 	Engine::Engine() = default;
-	Engine::~Engine() = default;
 
-	// 시작 순서 — 「멀티스레딩 분류 명세서」 9.1: Renderer 초기화 → 서버 접속 → 게임 루프
+	// ★ 로딩 스레드를 멤버 소멸보다 먼저 멈춘다
+	//   로딩 중에 창을 닫으면 로딩 스레드가 planet·terrain 을 읽고 있을 수 있다.
+	//   그 멤버들은 resources 보다 뒤에 선언돼 먼저 소멸하므로, 여기서 join 해 둔다.
+	Engine::~Engine()
+	{
+		resources.StopLoader();
+	}
+
+	// 시작 순서 — 「멀티스레딩 분류 명세서」 9.1:
+	//   파일 I/O 스레드 → Renderer 초기화 → 로딩 씬 → (로딩 스레드에서) 게임 리소스 → 서버 접속 → 게임 루프
 	bool Engine::Initialize(HINSTANCE hInstance, int showCommand)
 	{
 		// WIC(하이트맵 로더)가 COM 객체다. 이게 없으면 CO_E_NOTINITIALIZED 로 조용히 실패한다.
 		if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
 			return false;
+
+		// 로드·캐시 로그를 볼 콘솔 창. 끄려면 kShowLogConsole 을 false 로.
+		if (kShowLogConsole)
+			OpenLogConsole();
+		Log(L"SpaceWar 시작");
 
 		WNDCLASSEX wc = {};
 		wc.cbSize = sizeof(wc);
@@ -139,84 +209,31 @@ namespace swc {
 			CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
 			nullptr, nullptr, hInstance, nullptr);
 
+		// 창은 맨 먼저 띄운다 — 렌더러·로딩 화면 초기화 동안에도 실행됐다는 것이 보이게.
+		ShowWindow(hwnd, showCommand);
+		UpdateWindow(hwnd);
+
+		// 9.1 시작 순서 3 — 파일 I/O 스레드를 Renderer 보다 먼저 띄운다.
+		if (!resources.StartLoader())
+		{
+			MessageBox(hwnd, L"로딩 스레드를 만들지 못했습니다.", L"초기화 실패", MB_OK | MB_ICONERROR);
+			return false;
+		}
+
 		if (!renderer.Initialize(hwnd, kWidth, kHeight))
 		{
 			MessageBox(hwnd, renderer.StatusText().c_str(), L"렌더러 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
 
-		// planet — 반지름 1.6km (Planet.h kPlanetRadius), 중심 (0,-R,0), 월드 원점 = 스폰 지점
-
-		// ── 하이트맵 1장을 스폰 위치에 적용 ──
-		//  ★ 서버도 같은 파일(Shared::kTerrainTileAsset)을 같은 설정으로 읽는다. 여기만 바꾸면 안 된다.
-		const HeightmapHandle tile = resources.LoadHeightmap(
-			AssetPath(Shared::kTerrainTileAsset).c_str());
-		if (const Shared::HeightmapData* hm = resources.Get(tile))
+		// 로딩 씬 — 이 이미지가 없으면 띄우지 않는다. 검은 화면으로 조용히 넘어가면
+		// «로딩이 멈췄다» 와 «로딩 화면이 안 나온다» 를 구분할 수 없다.
+		std::wstring loadingError;
+		if (!sceneManager.Initialize(renderer, resources,
+			AssetPath(kLoadingBackgroundAsset), AssetPath(kLoadingSpinnerAsset), loadingError))
 		{
-			terrain.Configure(hm, planet.radius, {});   // 1km / 60m / 10% 감쇠 (TerrainConfig 기본값)
-			planet.terrain = &terrain;
-
-			wchar_t buf[96];
-			swprintf_s(buf, L"지형 %ux%u mean %.3f", hm->size, hm->size, hm->mean);
-			terrainStatus = buf;
-		}
-		else
-		{
-			terrainStatus = L"지형 실패: " + resources.LastError();
-		}
-
-		// ── 캐릭터 모델 (FBX) ──────────────────────────────────
-		//  ★ 한 번만 읽고 GPU 자원을 만든다. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다
-		//    (그래서 BLAS 도 하나다). 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
-		//    «모델이 안 나온다» 를 빌드 문제로 착각한다.
-		//  ★ 렌더러 초기화 뒤에 와야 한다. GPU 메시·텍스처·재질을 만들기 때문이다.
-		const ModelHandle modelHandle = resources.LoadModel(AssetPath(kCharacterModelAsset).c_str());
-		const ModelData* modelData = resources.Get(modelHandle);
-		if (!modelData)
-		{
-			MessageBox(hwnd, resources.LastError().c_str(), L"FBX 모델 로드 실패", MB_OK | MB_ICONERROR);
+			MessageBox(hwnd, loadingError.c_str(), L"로딩 화면 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
-		}
-		if (!characterModel.Initialize(*modelData, renderer))
-		{
-			MessageBox(hwnd, characterModel.LastError().c_str(), L"모델 초기화 실패", MB_OK | MB_ICONERROR);
-			return false;
-		}
-
-		// 지면 = 큐브 구 6면 전체 메시 (파일 없이 코드로 생성)
-		// 면당 321 격자 → 정점 간격 약 7.9m, 정점 61.8만 / 삼각형 123만.
-		// 513 이면 4.9m 간격이지만 삼각형 315만이라 BLAS 부담이 크다.
-		constexpr int kPlanetFaceGrid = 321;
-		MeshData groundData = MakeCubeSphere(planet, kPlanetFaceGrid,
-			{ 0.15f, 0.30f, 0.18f });
-		// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
-		MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
-
-		const MeshHandle groundMesh = renderer.CreateMesh(
-			groundData.vertices.data(), groundData.vertices.size(),
-			groundData.indices.data(), groundData.indices.size());
-		if (groundMesh == kInvalidMesh)
-		{
-			MessageBox(hwnd, renderer.StatusText().c_str(), L"지형 메시 생성 실패", MB_OK | MB_ICONERROR);
-			return false;
-		}
-		tracerMesh = renderer.CreateMesh(
-			tracerData.vertices.data(), tracerData.vertices.size(),
-			tracerData.indices.data(), tracerData.indices.size());
-
-		scene.AddNode(kInvalidNode, groundMesh, 0);
-
-		// 모델은 루트(이동) + 표시 보정 + FBX 노드 계층으로 펼쳐진다. 반환값이 이동 루트다.
-		// 화면 밖으로 치울 때도 이 루트만 옮기면 자식이 따라온다.
-		player = characterModel.Instantiate(scene);
-
-		// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
-		freeTracerNodes.reserve(kTracerPool);
-		for (size_t i = 0; i < kTracerPool; ++i)
-		{
-			const NodeHandle tracer = scene.AddNode(kInvalidNode, tracerMesh, 0);
-			scene.SetLocalTransform(tracer, ParkedTransform());
-			freeTracerNodes.push_back(tracer);
 		}
 
 		g_input = &input;
@@ -224,31 +241,241 @@ namespace swc {
 
 		camera.SetAspect(float(kWidth) / float(kHeight));
 
-		// 스폰 = 월드 원점(구 표면). 몸통 중심을 1m 띄워 발이 땅에 닿게 한다
-		// (모델도 중심 기준으로 1m 내려 배치된다 — Model.cpp kGroundOffset).
-		controller.SetPlanet(&planet);
-		controller.Spawn(planet.PositionAt({ 0.0, 1.0, 0.0 }, 1.0), { 0.0, 0.0, 1.0 });
-		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+		// 게임 씬 리소스는 로딩 스레드로 넘긴다. 끝날 때까지 로딩 씬이 돈다.
+		std::unique_ptr<LoadBatch> gameLoad = std::make_unique<LoadBatch>(L"게임");
+		BuildGameLoad(*gameLoad);
+		loadStart = std::chrono::steady_clock::now();
+		sceneManager.ChangeScene(SceneId::Game, std::move(gameLoad), resources);
+		return true;
+	}
 
-		// ── 서버 접속 ───────────────────────────────────────────
-		const NetOptions netOpt = ParseCommandLine();
-		netStatus = L"오프라인";
-		if (netOpt.online)
+	// ── 게임 씬 로드 묶음 ───────────────────────────────────────
+	//  단계 0 (로딩 스레드) 맵 GLB 파싱 «한 번» → 같은 결과로 접지면(PlanetSurface)과 렌더 메시를 함께 만든다
+	//                       → (메인) 지형 연결 · GPU 업로드 · 씬 배치 · RAM 사본 해제
+	//         (로딩 스레드) 하늘 행성 LOD2·LOD3   → (메인) LOD 마다 GPU 업로드 · RAM 사본 해제
+	//         (로딩 스레드) 캐릭터 모델 파싱       → (메인) GPU 업로드 · 애니메이션 · RAM 사본 해제
+	//  단계 1 (메인)        예광탄 · 플레이어 노드 · 스폰(지형을 쓰므로 단계 0 뒤) · 서버 접속
+	//
+	//  ★ GPU 업로드는 메인에서 한다 — 렌더 몫(명세 ⑥). 한 프레임에 하나씩(kLoadFinishesPerFrame).
+	//  ★ 접지면은 로딩 스레드가 «자기 결과 슬롯» 에 만든다 (onParsed 훅, 2026-10-11)
+	//    멀티스레딩 명세 §9.2·§9.3: 로딩 콜백은 게임 쪽 데이터를 건드리지 않고, 잡은 자기 결과 슬롯에만 쓴다.
+	//    슬롯은 이 요청이 소유하고(shared_ptr), finish(메인)가 완료 큐 ⑥ 을 지난 뒤 planetSurface 로 옮겨 온다.
+	//  ★ 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
+	//    «모델이 안 나온다» 를 빌드 문제로 착각한다. 실패하면 묶음이 실패로 끝나고 오류 창이 뜬다.
+	void Engine::BuildGameLoad(LoadBatch& batch)
+	{
+		// ── Separated Planet 구면 맵 (GLB) ─────────────────────
+		// 지표면 판정은 Shared가 맡고 렌더는 기존 ResourceManager → Model 경로를 사용한다.
+		// GLB의 미터 단위와 노드별 변환을 유지한다. 반지름 650m, 중심 (0,-R,0) (Shared/PlanetConst.h)
+		LogMemory(L"before map load", resources.ModelCount());
+		const std::wstring planetAsset = AssetPath(Shared::kPlanetModelAsset);
+
+		// ★ 맵은 한 번만 파싱한다 (2026-10-09)
+		//   렌더 메시를 읽는 같은 파싱에서 접지 노드(지형 충돌 메시·보행로·착륙 플랫폼)의 면만
+		//   collected 로 따로 모은다(collectObject). 그걸로 로딩 스레드에서 접지면 BVH 를 바로 만든다.
+		ModelRequestOptions planetOptions;
+		planetOptions.collectObject = &Shared::PlanetSurface::IsGroundObject;
+		auto parsedSurface = std::make_shared<Shared::PlanetSurface>();   // 로딩 스레드의 결과 슬롯
+		planetOptions.onParsed = [parsedSurface](Shared::ModelSource& source, std::wstring& error)
 		{
-			std::wstring err;
-			if (network.Connect(netOpt.host, netOpt.port, err))
-				netStatus = L"접속됨";
-			else
-				netStatus = L"접속 실패: " + err;
+			// ★ 닫힌 지표면만 뒷면을 제거한다 (client2 2f15728) — 원본 GLB 는 모든 재질이 양면이다.
+			//   건물·나무의 양면 재질은 그대로 둔다. 캐시를 읽은 뒤에도 매번 여기를 지나므로
+			//   이 규칙은 캐시 태그와 무관하다.
+			for (const Shared::SourceNode& node : source.nodes)
+			{
+				if (node.name != kClosedTerrainNode) continue;
+				for (const uint32_t mesh : node.meshes)
+				{
+					const uint32_t material = source.meshes[mesh].material;
+					if (material < source.materials.size())
+						source.materials[material].doubleSided = false;
+				}
+			}
+			return parsedSurface->Build(source.collected, error);
+		};
+		// 디스크 캐시 태그 — 접지면 규칙이 바뀌면 PlanetSurface::kGroundRuleTag 버전이 올라가 캐시를 다시 만든다.
+		planetOptions.cacheTag = Shared::PlanetSurface::kGroundRuleTag;
+
+		resources.RequestModelFile(batch, planetAsset,
+			[this, &batch, parsedSurface](const ModelFileResources& loaded)
+			{
+				// 접지면 — 로딩 스레드가 파싱 직후 결과 슬롯에 만들어 두었다. 여기(메인)서 넘겨받는다.
+				planetSurface = std::move(*parsedSurface);
+				if (!planetSurface.Valid())
+				{
+					batch.SetFailureDetail(L"행성 지표면 로드 실패: " + resources.LastError());
+					return false;
+				}
+				terrain.Configure(&planetSurface, planet.radius);
+				planet.terrain = &terrain;
+				terrainStatus = (Shared::kUsePlanarMap ? L"GLB 평면 지형 " : L"GLB 구면 지형 ") +
+					std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
+				// 캐시 여부는 게임에 들어갈 때 콘솔에 찍는다 — 두 번째 실행부터 «캐시» 가 보여야 정상이다.
+				planetFromCache = loaded.fromCache;
+
+				const ModelData* planetData = resources.Get(loaded.model);
+				if (!planetData)
+				{
+					batch.SetFailureDetail(L"맵 모델 로드 실패: " + resources.LastError());
+					return false;
+				}
+				LogMemory(L"map parsed", resources.ModelCount(), planetData);
+				const float planetScale = Shared::kUsePlanarMap
+					? 1.0f : float(planet.radius / Shared::kPlanetModelReferenceRadius);
+				XMFLOAT4X4 planetVisual;
+				XMStoreFloat4x4(&planetVisual, XMMatrixScaling(planetScale, planetScale, planetScale));
+				if (!planetModel.Initialize(*planetData, renderer, planetVisual))
+				{
+					batch.SetFailureDetail(L"맵 모델 초기화 실패: " + planetModel.LastError());
+					return false;
+				}
+				// Model이 노드/핸들을 보관하므로 GPU 업로드 후 CPU 메시/픽셀은 필요 없다.
+				LogMemory(L"map GPU uploaded", resources.ModelCount(), planetData);
+				resources.ReleaseModel(loaded.model);
+				LogMemory(L"map CPU released", resources.ModelCount());
+				const NodeHandle planetNode = planetModel.Instantiate(scene);
+				if (planetNode == kInvalidNode)
+				{
+					batch.SetFailureDetail(L"행성 모델을 장면에 등록하지 못했습니다.");
+					return false;
+				}
+				scene.SetLocalTransform(planetNode,
+					XMMatrixTranslation(float(planet.center.x), float(planet.center.y), float(planet.center.z)));
+				return true;
+			},
+			std::move(planetOptions));
+
+		// ── 하늘의 원거리 행성 (GLB LOD2/LOD3, client2 2f15728) ──
+		//  LOD 마다 따로 요청한다 — 파싱은 로딩 스레드, GPU 업로드는 메인에서 한 프레임에 하나씩.
+		//  한 단계씩 올리고 바로 CPU 사본을 버려 두 LOD 의 RAM 피크가 겹치지 않는다.
+		for (size_t lod = 0; lod < SkyPlanet::kLodCount; ++lod)
+		{
+			resources.RequestModelFile(batch, AssetPath(SkyPlanet::LodAsset(lod)),
+				[this, &batch, lod](const ModelFileResources& loaded)
+				{
+					const ModelData* data = resources.Get(loaded.model);
+					if (!data)
+					{
+						batch.SetFailureDetail(L"하늘 행성 로드 실패: " + resources.LastError());
+						return false;
+					}
+					const bool added = skyPlanet.AddLod(lod, *data, renderer);
+					resources.ReleaseModel(loaded.model);
+					if (!added)
+					{
+						batch.SetFailureDetail(L"하늘 행성 초기화 실패: " + skyPlanet.LastError());
+						return false;
+					}
+					LogMemory(L"sky planet CPU released", resources.ModelCount());
+					return true;
+				});
 		}
 
-		ShowWindow(hwnd, showCommand);
-		return true;
+		// ── 캐릭터 모델 (OBJ) ──────────────────────────────────
+		//  ★ 한 번만 읽고 GPU 자원을 만든다. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다
+		//    (그래서 BLAS 도 하나다).
+		//  ★ 파일 하나에서 메시·스켈레톤·클립이 함께 나온다 (명세 §4 — 종류별로 다른 핸들).
+		//    지금 에셋은 OBJ 라 메시만 나오고, .glb 로 바꾸면 스켈레톤·클립도 같이 채워진다.
+		resources.RequestModelFile(batch, AssetPath(kCharacterModelAsset),
+			[this, &batch](const ModelFileResources& loaded)
+			{
+				const ModelData* modelData = resources.Get(loaded.model);
+				if (!modelData)
+				{
+					batch.SetFailureDetail(L"캐릭터 모델 로드 실패: " + resources.LastError());
+					return false;
+				}
+				if (!characterModel.Initialize(*modelData, renderer))
+				{
+					batch.SetFailureDetail(L"모델 초기화 실패: " + characterModel.LastError());
+					return false;
+				}
+				// GPU 업로드가 끝났으므로 CPU 메시·픽셀을 버린다. 스켈레톤·클립은 남는다(Animator 가 쓴다).
+				resources.ReleaseModel(loaded.model);
+				LogMemory(L"character CPU released", resources.ModelCount());
+
+				// 스킨이 있는 모델이면 재생 인스턴스를 만들고 첫 클립을 돌린다 (명세 §14).
+				// OBJ 캐릭터는 뼈가 없어 여기를 지나가지 않는다 — .glb 로 내보내면 살아난다.
+				if (loaded.skeleton.Valid())
+				{
+					playerAnimation = animator.Create(loaded.skeleton);
+					if (!loaded.animations.empty())
+						animator.Play(playerAnimation, loaded.animations.front());
+				}
+				return true;
+			});
+
+		// ── 단계 1: 씬 구성 · 스폰 · 서버 접속 (메인) ──
+		batch.NextStage();
+		batch.Add(L"씬 구성", nullptr,
+			[this](bool)
+			{
+				// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
+				MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
+				tracerMesh = renderer.CreateMesh(
+					tracerData.vertices.data(), tracerData.vertices.size(),
+					tracerData.indices.data(), tracerData.indices.size());
+
+				// 모델은 루트(이동) + 표시 보정 + OBJ 오브젝트 노드로 펼쳐진다. 반환값이 이동 루트다.
+				// 화면 밖으로 치울 때도 이 루트만 옮기면 자식이 따라온다.
+				player = characterModel.Instantiate(scene);
+
+				// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
+				freeTracerNodes.reserve(kTracerPool);
+				for (size_t i = 0; i < kTracerPool; ++i)
+				{
+					const NodeHandle tracer = scene.AddNode(kInvalidNode, tracerMesh, 0);
+					scene.SetLocalTransform(tracer, ParkedTransform());
+					freeTracerNodes.push_back(tracer);
+				}
+
+				// 공통 시작 방향(Landing L1)을 사용하고 실제 지면·플랫폼 높이에 맞춘다 (client2 2f15728).
+				// (모델도 중심 기준으로 1m 내려 배치된다 — Model.cpp kGroundOffset).
+				controller.SetPlanet(&planet);
+				const Vec3d spawn = Shared::kUsePlanarMap
+					? Vec3d{ Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ }
+					: planet.PositionAt(Normalize({ Shared::kPlanetSpawnUpX,
+						Shared::kPlanetSpawnUpY, Shared::kPlanetSpawnUpZ }), Shared::kGroundOffset);
+				controller.Spawn(spawn, { 0.0, 0.0, 1.0 });
+				spawnPosition = controller.Position();
+				camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+				return true;
+			});
+
+		// ★ 접속은 메인에서 한다 — 네트워크 스레드(M4)가 생기기 전까지 Network 는 메인 것이다.
+		//   서버가 없으면 대개 바로 거절되지만, 응답 없는 주소면 그동안 스피너가 멈춘다.
+		batch.Add(L"서버 접속", nullptr,
+			[this](bool)
+			{
+				const NetOptions netOpt = ParseCommandLine();
+				netStatus = L"오프라인";
+				if (netOpt.online)
+				{
+					std::wstring err;
+					if (network.Connect(netOpt.host, netOpt.port, err))
+						netStatus = L"접속됨";
+					else
+						netStatus = L"접속 실패: " + err;
+				}
+				return true;   // 접속 실패는 오프라인으로 계속한다 — 지금까지와 같은 동작
+			});
+	}
+
+	void Engine::EnterGame()
+	{
+		// 마우스는 게임에 들어갈 때 잡는다. 로딩 중에는 창을 옮기거나 다른 창으로 갈 수 있게 둔다.
+		input.SetCaptured(true);
+		titleTimer = 0.0f;
+
+		// 게임 리소스 로드에 걸린 시간 — 로딩 씬을 띄운 순간부터 게임에 들어온 순간까지.
+		const double seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - loadStart).count();
+		Log(L"[게임] 입장 — 로드 %.2fs (행성 %s) · %s", seconds,
+			planetFromCache ? L"캐시" : L"파싱", terrainStatus.c_str());
 	}
 
 	void Engine::Run()
 	{
-		input.SetCaptured(true);
 		timer.Reset();
 
 		for (;;)
@@ -260,19 +487,46 @@ namespace swc {
 			timer.Tick();
 			const float dt = timer.DeltaTime();
 
+			// ⑥ 로딩 완료분 — 업로드 예산만큼만 메인에서 마무리한다(게임 중에도 매 프레임).
+			resources.PumpLoaded(kLoadFinishesPerFrame);
+			sceneManager.Update(dt, resources);
+
+			if (sceneManager.LoadFailed())
+			{
+				MessageBox(hwnd, sceneManager.LoadError().c_str(), L"로딩 실패", MB_OK | MB_ICONERROR);
+				break;
+			}
+			if (sceneManager.TakeEntered() == SceneId::Game)
+				EnterGame();
+
+			if (sceneManager.IsLoading())
+			{
+				RenderLoading();
+				UpdateLoadingTitle(dt);
+				continue;
+			}
+
 			HandleSystemKeys();
 			UpdatePlayer(dt);
 			UpdateFire(dt);
 			UpdateNetwork(dt);
+
+			// 애니메이션 포즈 — 게임 단계의 «출력» 이다 (멀티스레딩 명세 3.2 ③).
+			//  총구 위치·히트박스가 포즈를 쓰므로 렌더보다 먼저, 상태가 다 정해진 뒤에 돌린다.
+			//  나중에 캐릭터 범위 단위 잡으로 쪼갠다(M5).
+			animator.Update(resources, dt);
+
 			RenderFrame();
 			UpdateTitle(dt);
 		}
 	}
 
-	// 종료 순서 — 9.1: 네트워크를 먼저 끊는다. GPU 자원은 멤버 소멸 때 Renderer 가 맨 마지막에 푼다.
+	// 종료 순서 — 9.1: 네트워크를 먼저 끊고, 파일 I/O 스레드를 멈춘다(대기 요청 취소 + join).
+	//   GPU 자원은 멤버 소멸 때 Renderer 가 맨 마지막에 푼다.
 	void Engine::Shutdown()
 	{
 		network.Disconnect();
+		resources.StopLoader();
 		g_input = nullptr;
 		input.SetCaptured(false);
 		CoUninitialize();
@@ -304,7 +558,7 @@ namespace swc {
 		}
 
 		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
-		// 11번째(10) 는 재질 확인용 — 거칠기·금속성 (2026-09-26 FBX 이식에서 추가)
+		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
 			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);
 		if (input.WasPressed('R'))
@@ -508,7 +762,7 @@ namespace swc {
 			}
 
 			scene.SetLocalTransform(found->second,
-				XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
+				CharacterTransform(planet, v.pos));
 		}
 
 		// ── NPC 노드 갱신 ───────────────────────────────
@@ -559,7 +813,7 @@ namespace swc {
 
 			// 고도까지 서버가 지형으로 정해 보낸다. 받은 좌표를 그대로 그린다.
 			scene.SetLocalTransform(found->second,
-				XMMatrixTranslation(v.pos[0], v.pos[1], v.pos[2]));
+				CharacterTransform(planet, v.pos));
 		}
 	}
 
@@ -567,19 +821,61 @@ namespace swc {
 	void Engine::RenderFrame()
 	{
 		scene.UpdateWorldTransforms();
-		scene.Extract(items);
+		scene.Extract(packet);
+		packet.view = RenderView{ };
+		packet.view.viewProj = camera.ViewProj();
+		packet.view.eyePosition = camera.EyePosition();
+
+		uiSprites.clear();
+		sceneManager.ExtractUI(uiSprites);
 
 		renderer.BeginFrame();
-		RenderView view{ };
-		view.viewProj = camera.ViewProj();
-		view.eyePosition = camera.EyePosition();
-		renderer.Render(view, items, scene.WorldData());
+		skyPlanet.Render(renderer, camera, kHeight);
+		renderer.Render(packet);
+		renderer.DrawSprites(uiSprites);
 		renderer.EndFrame();
+	}
+
+	// 로딩 씬 — 3D 는 그리지 않고 UI(배경 + 스피너)만 그린다.
+	void Engine::RenderLoading()
+	{
+		uiSprites.clear();
+		sceneManager.ExtractUI(uiSprites);
+
+		renderer.BeginFrame();
+		renderer.DrawSprites(uiSprites);
+		renderer.EndFrame();
+	}
+
+	// 로딩 진행을 창 제목으로 확인 — 화면에는 글자를 그릴 수단이 아직 없다.
+	void Engine::UpdateLoadingTitle(float dt)
+	{
+		titleTimer += dt;
+		if (titleTimer < 0.25f)
+			return;
+		titleTimer = 0.0f;
+
+		const LoadBatch* batch = sceneManager.CurrentBatch();
+		if (!batch)
+			return;
+
+		wchar_t title[256];
+		swprintf_s(title, L"SpaceWar   로딩 중  %zu/%zu  (%.0f%%)  %s",
+			batch->FinishedCount(), batch->TaskCount(), batch->Progress() * 100.0f,
+			batch->CurrentLabel().c_str());
+		SetWindowText(hwnd, title);
 	}
 
 	// 델타타임 / 하이브리드 상태를 창 제목으로 확인
 	void Engine::UpdateTitle(float dt)
 	{
+		// 게임 기능을 사용한 뒤에도 상주량이 계속 늘어나는지 출력창에서 비교한다.
+		memoryLogTimer += dt;
+		if (memoryLogTimer >= 30.0f)
+		{
+			memoryLogTimer = 0.0f;
+			LogMemory(L"runtime", resources.ModelCount());
+		}
 		titleTimer += dt;
 		if (titleTimer < 0.5f)
 			return;
@@ -592,9 +888,9 @@ namespace swc {
 			: !renderer.SupportsRaytracing() ? L"미지원"
 			: (rt.enabled ? L"ON" : L"OFF");
 
-		// 구면 이동 검증용: 고도 / 접지 / 스폰에서의 거리
+		// 이동 검증용: 고도 / 접지 / 실제 스폰에서의 거리
 		const Vec3d& p = controller.Position();
-		const double distFromSpawn = Length(p);
+		const double distFromSpawn = Length(p - spawnPosition);
 
 		// 네트워크 상태 — 보낸 수 / 에코 받은 수 / 마지막 에코 좌표
 		wchar_t netText[240];
@@ -619,16 +915,36 @@ namespace swc {
 			swprintf_s(netText, L"%s", netStatus.c_str());
 		}
 
-		wchar_t title[600];
+		// 가속 구조 계측 — scratch 는 빌드 뒤 해제되므로 로드가 끝나면 0 이어야 정상이다.
+		wchar_t blasText[128];
+		swprintf_s(blasText,
+			L"BLAS %zu개 %.0fMB(압축 -%.0fMB, scratch %.0fMB)  TLAS %u/%u%s",
+			renderer.BlasCount(),
+			double(renderer.BlasResultBytes())     / (1024.0 * 1024.0),
+			double(renderer.BlasCompactionSaved()) / (1024.0 * 1024.0),
+			double(renderer.BlasScratchBytes())    / (1024.0 * 1024.0),
+			renderer.TlasInstanceCount(), renderer.TlasMaxInstances(),
+			renderer.TlasDroppedInstances() ? L" ★유실" : L"");
+
+		// 래스터 제출량 (client2 2f15728) — 프러스텀 컬링으로 빠진 메시 수와 제출 삼각형.
+		//  Draw = 인스턴싱 묶음(실제 DrawIndexedInstanced 횟수), Inst = 그 안의 인스턴스 합.
+		const RenderStats& renderStats = renderer.Stats();
+		wchar_t title[1280];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-			L"|  %s  |  %s  |  RT %s knee %.2f view %u",
+			L"|  %s  |  %s  |  RT %s knee %.2f view %u  |  %s  "
+			L"|  행성 LOD%u %.0fpx  |  Draw %zu Inst %zu/%zu Cull %zu Tri %.2fM%s",
 			timer.Fps(), dt * 1000.0f,
 			controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 			distFromSpawn, controller.Speed(),
 			netText,
 			terrainStatus.c_str(),
-			rtState, rt.rouletteKnee, renderer.DebugMode());
+			rtState, rt.rouletteKnee, renderer.DebugMode(),
+			blasText,
+			skyPlanet.SelectedLod(), skyPlanet.DiameterPixels(),
+			renderStats.drawCalls, renderStats.instances, renderStats.submitted, renderStats.culled,
+			double(renderStats.triangles) / 1000000.0,
+			renderStats.dropped ? L" ★인스턴스 유실" : L"");
 		SetWindowText(hwnd, title);
 	}
 
