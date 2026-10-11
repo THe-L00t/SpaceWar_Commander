@@ -257,9 +257,9 @@ namespace swc {
 	//  단계 1 (메인)        예광탄 · 플레이어 노드 · 스폰(지형을 쓰므로 단계 0 뒤) · 서버 접속
 	//
 	//  ★ GPU 업로드는 메인에서 한다 — 렌더 몫(명세 ⑥). 한 프레임에 하나씩(kLoadFinishesPerFrame).
-	//  ★ planetSurface 는 로딩 스레드가 채운다 (onParsed 훅)
-	//    로딩 중 메인은 로딩 씬만 그리므로 planetSurface 를 건드리지 않는다. 다 채운 뒤에야
-	//    finish(메인)가 지형에 연결한다 — 완료 큐의 락이 그 순서를 보장한다.
+	//  ★ 접지면은 로딩 스레드가 «자기 결과 슬롯» 에 만든다 (onParsed 훅, 2026-10-11)
+	//    멀티스레딩 명세 §9.2·§9.3: 로딩 콜백은 게임 쪽 데이터를 건드리지 않고, 잡은 자기 결과 슬롯에만 쓴다.
+	//    슬롯은 이 요청이 소유하고(shared_ptr), finish(메인)가 완료 큐 ⑥ 을 지난 뒤 planetSurface 로 옮겨 온다.
 	//  ★ 모델이 없으면 게임을 띄우지 않는다 — 큐브로 조용히 돌아가면
 	//    «모델이 안 나온다» 를 빌드 문제로 착각한다. 실패하면 묶음이 실패로 끝나고 오류 창이 뜬다.
 	void Engine::BuildGameLoad(LoadBatch& batch)
@@ -275,7 +275,8 @@ namespace swc {
 		//   collected 로 따로 모은다(collectObject). 그걸로 로딩 스레드에서 접지면 BVH 를 바로 만든다.
 		ModelRequestOptions planetOptions;
 		planetOptions.collectObject = &Shared::PlanetSurface::IsGroundObject;
-		planetOptions.onParsed = [this](Shared::ModelSource& source, std::wstring& error)
+		auto parsedSurface = std::make_shared<Shared::PlanetSurface>();   // 로딩 스레드의 결과 슬롯
+		planetOptions.onParsed = [parsedSurface](Shared::ModelSource& source, std::wstring& error)
 		{
 			// ★ 닫힌 지표면만 뒷면을 제거한다 (client2 2f15728) — 원본 GLB 는 모든 재질이 양면이다.
 			//   건물·나무의 양면 재질은 그대로 둔다. 캐시를 읽은 뒤에도 매번 여기를 지나므로
@@ -290,15 +291,16 @@ namespace swc {
 						source.materials[material].doubleSided = false;
 				}
 			}
-			return planetSurface.Build(source.collected, error);
+			return parsedSurface->Build(source.collected, error);
 		};
 		// 디스크 캐시 태그 — 접지면 규칙이 바뀌면 PlanetSurface::kGroundRuleTag 버전이 올라가 캐시를 다시 만든다.
 		planetOptions.cacheTag = Shared::PlanetSurface::kGroundRuleTag;
 
 		resources.RequestModelFile(batch, planetAsset,
-			[this, &batch](const ModelFileResources& loaded)
+			[this, &batch, parsedSurface](const ModelFileResources& loaded)
 			{
-				// 접지면 — 로딩 스레드가 파싱 직후 만들어 두었다.
+				// 접지면 — 로딩 스레드가 파싱 직후 결과 슬롯에 만들어 두었다. 여기(메인)서 넘겨받는다.
+				planetSurface = std::move(*parsedSurface);
 				if (!planetSurface.Valid())
 				{
 					batch.SetFailureDetail(L"행성 지표면 로드 실패: " + resources.LastError());
