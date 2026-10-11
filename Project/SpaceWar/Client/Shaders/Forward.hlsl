@@ -34,10 +34,17 @@ cbuffer FrameCB : register(b0)
 	float3   _pad2;
 };
 
-cbuffer ObjectCB : register(b1)
+// ── 인스턴스 행렬 (GRenderer 의 ObjectConstants 와 같은 128바이트) ──
+//  같은 (PSO, 재질, 메시)를 쓰는 노드를 한 번에 그린다(2026-10-11).
+//  렌더러가 묶음마다 루트 SRV 주소를 그 묶음의 첫 인스턴스로 옮겨 주므로
+//  SV_InstanceID(0부터)로 바로 읽으면 된다.
+//  행렬 배치는 기본(column_major)이고, CPU 가 전치해서 올린다 — 예전 ObjectCB 와 같다.
+struct ObjectData
 {
-	float4x4 gWorld;
+	float4x4 world;
+	float4x4 normalWorld;
 };
+StructuredBuffer<ObjectData> gObjects : register(t6);
 
 // ── 재질 (GRenderer 의 MaterialConstants 와 16바이트 단위로 같아야 한다) ──
 cbuffer MaterialCB : register(b2)
@@ -89,17 +96,18 @@ struct VOut
 	float4 tan   : TANGENT;
 };
 
-VOut VSMain(VIn i)
+VOut VSMain(VIn i, uint instance : SV_InstanceID)
 {
+	const float4x4 world = gObjects[instance].world;
 	VOut o;
-	float4 wp = mul(float4(i.pos, 1.0), gWorld);
+	float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
 	o.pos   = mul(wp, gViewProj);
-	o.nrm   = mul(float4(i.nrm, 0.0), gWorld).xyz;
+	o.nrm   = mul(float4(i.nrm, 0.0), world).xyz;
 	o.col   = i.col;
 	o.uv    = i.uv;
 	// 접선도 월드로 옮긴다. 부호(w)는 그대로 넘긴다.
-	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), gWorld).xyz, i.tan.w);
+	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), world).xyz, i.tan.w);
 	return o;
 }
 

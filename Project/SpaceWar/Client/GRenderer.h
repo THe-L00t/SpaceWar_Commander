@@ -20,7 +20,9 @@ namespace swc {
 	{
 		size_t submitted = 0;
 		size_t culled = 0;
-		size_t drawCalls = 0;
+		size_t drawCalls = 0;    // 인스턴싱 묶음 수 — 같은 (PSO, 재질, 메시)는 한 번에 그린다
+		size_t instances = 0;    // 그려진 인스턴스 수(컬링 뒤)
+		size_t dropped = 0;      // 인스턴스 버퍼가 넘쳐 못 그린 수 — 0 이어야 정상
 		uint64_t triangles = 0;
 	};
 

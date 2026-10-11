@@ -237,6 +237,8 @@ namespace swc {
 		// UI SRV 힙 크기. 텍스처 핸들 i 의 UI 용 SRV = 슬롯 i (CreateTexture 가 만든다).
 		// 넘는 텍스처는 UI 로 그릴 수 없다(재질용 SRV 는 따로 materialHeap 에 있다).
 		static const UINT MaxUiTextures = 4096;
+		// 한 프레임(배경 + 메인 패스)에 그릴 수 있는 인스턴스 상한. 128바이트 × 16384 = 2MiB / 프레임 슬롯.
+		static const UINT MaxDrawInstances = 16384;
 
 		struct MeshGpu
 		{
@@ -281,10 +283,30 @@ namespace swc {
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
 
+		// ── 인스턴싱 (2026-10-11) ──
+		//  같은 (PSO, 재질, 메시)를 쓰는 노드를 모아 DrawIndexedInstanced 한 번으로 그린다.
+		//  인스턴스마다의 월드/법선 행렬은 이 버퍼(t6, StructuredBuffer)에 담고,
+		//  묶음마다 루트 SRV 주소를 그 묶음의 첫 인스턴스로 옮긴다(SV_InstanceID 는 0부터).
+		//  프레임 슬롯은 TLAS 인스턴스 버퍼와 같은 이유로 둘이다(비행 중 프레임 대비).
+		ComPtr<ID3D12Resource>             instanceBuffer;
+		uint8_t*                           instanceData = nullptr;
+		UINT                               instanceCursor = 0;   // 이번 프레임에 쓴 인스턴스 수
+
 		std::vector<MeshGpu> meshes;
 		std::vector<TextureGpu> textures;
 		std::vector<MaterialGpu> materials;
 		std::array<TextureHandle, kMaterialTextureCount> fallbackTextures{};
+
+		// Render 에서 프레임마다 다시 쓰는 작업 배열 — 할당을 반복하지 않게 남겨 둔다.
+		struct VisibleDraw
+		{
+			uint32_t pso = 0;                    // 0 기본 · 1 양면 · 2 반전 · 3 반전 양면
+			MaterialHandle material = 0;
+			MeshHandle mesh = kInvalidMesh;
+			uint32_t object = 0;                 // visibleObjects 인덱스
+		};
+		std::vector<VisibleDraw> visibleDraws;
+		std::vector<ObjectConstants> visibleObjects;
 		UINT materialDescriptorSize = 0;
 		bool frameOpen = false;
 
@@ -514,6 +536,24 @@ namespace swc {
 				return false;
 		}
 
+		// 인스턴스 행렬 버퍼 (UPLOAD, 영속 매핑) — 프레임 슬롯 FrameCount 개
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(UINT64(sizeof(ObjectConstants)) * Impl::MaxDrawInstances * Impl::FrameCount);
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->instanceBuffer))))
+			{
+				impl->status = L"인스턴스 버퍼 생성 실패.";
+				return false;
+			}
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->instanceBuffer->Map(0, &noRead, reinterpret_cast<void**>(&impl->instanceData))))
+			{
+				impl->status = L"인스턴스 버퍼 매핑 실패.";
+				return false;
+			}
+		}
+
 		// RT 초기화 결과를 확정한 다음 루트 시그니처와 셰이더 경로를 선택한다.
 		if (impl->rtSupported && !impl->accel.Initialize(impl->device.Get(), Impl::MaxInstances))
 		{
@@ -522,15 +562,15 @@ namespace swc {
 		}
 
 		// Root signature
-		//   b1 = 월드/법선 행렬, b0 = 프레임, b2 = 재질, t1~t5 = 텍스처, t0 = TLAS.
-		//   RT 포함 32 + 2 + 12 + 1 + 2 = 49 DWORD로 루트 상수 한도 안에 둔다.
+		//   t6 = 인스턴스 월드/법선 행렬(루트 SRV), b0 = 프레임, b2 = 재질, t1~t5 = 텍스처, t0 = TLAS.
+		//   RT 포함 2 + 2 + 12 + 1 + 2 = 19 DWORD.
+		//   (인스턴싱 전에는 b1 루트 상수 32개로 행렬을 그리기마다 넘겼다.)
 		{
 			D3D12_ROOT_PARAMETER params[5] = {};
 
-			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			params[0].Constants.ShaderRegister = 1;
-			params[0].Constants.RegisterSpace = 0;
-			params[0].Constants.Num32BitValues = 32;
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+			params[0].Descriptor.ShaderRegister = 6;
+			params[0].Descriptor.RegisterSpace = 0;
 			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
 			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -1120,6 +1160,7 @@ namespace swc {
 	{
 		impl->frameOpen = true;
 		impl->stats = RenderStats{};
+		impl->instanceCursor = 0;
 		++impl->frameCounter;   // 배경/메인 패스가 같은 프레임의 룰렛 패턴을 사용한다.
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
@@ -1199,9 +1240,13 @@ namespace swc {
 			impl->commandList->SetGraphicsRootShaderResourceView(4, tlas);
 		}
 
-		ID3D12PipelineState* currentPso = impl->pso.Get();
-		MaterialHandle currentMaterial = kInvalidMaterial;
-		MeshHandle currentMesh = kInvalidMesh;
+		// ── ① 컬링 + 인스턴스 행렬 계산 ──
+		//  glTF 는 같은 메시를 여러 노드가 참조한다(나무·가로등·잔해). 메시 데이터와 BLAS 는
+		//  이미 하나씩만 있으니, 그리기도 (PSO, 재질, 메시)가 같은 노드끼리 묶어 한 번에 낸다.
+		std::vector<Impl::VisibleDraw>& draws = impl->visibleDraws;
+		std::vector<ObjectConstants>& objects = impl->visibleObjects;
+		draws.clear();
+		objects.clear();
 		for (const InstanceData& it : items)
 		{
 			if (it.mesh >= impl->meshes.size()) continue;
@@ -1221,33 +1266,81 @@ namespace swc {
 			XMStoreFloat4x4(&object.world, XMMatrixTranspose(world));
 			// 법선 행렬은 inverse-transpose. 셰이더 업로드 전치까지 적용하면 inverse가 남는다.
 			XMStoreFloat4x4(&object.normalWorld, inverseWorld);
-			impl->commandList->SetGraphicsRoot32BitConstants(0, 32, &object, 0);
 
 			const MaterialHandle materialIndex = it.material < impl->materials.size() ? it.material : 0;
-			const Impl::MaterialGpu& material = impl->materials[materialIndex];
-			ID3D12PipelineState* selectedPso = material.doubleSided
-				? (det < 0.0f ? impl->mirroredDoubleSidedPso.Get() : impl->doubleSidedPso.Get())
-				: (det < 0.0f ? impl->mirroredPso.Get() : impl->pso.Get());
+			Impl::VisibleDraw draw;
+			draw.pso = (impl->materials[materialIndex].doubleSided ? 1u : 0u) | (det < 0.0f ? 2u : 0u);
+			draw.material = materialIndex;
+			draw.mesh = it.mesh;
+			draw.object = uint32_t(objects.size());
+			draws.push_back(draw);
+			objects.push_back(object);
+		}
+
+		// ── ② 정렬: PSO → 재질 → 메시. 같은 묶음이 붙고 상태 변경도 줄어든다 ──
+		//  불투명만 그리므로 순서가 바뀌어도 깊이 테스트 결과는 같다.
+		//  stable_sort — 같은 묶음 안에서는 Extract 순서를 지킨다(프레임마다 결과가 흔들리지 않게).
+		std::stable_sort(draws.begin(), draws.end(),
+			[](const Impl::VisibleDraw& a, const Impl::VisibleDraw& b)
+			{
+				if (a.pso != b.pso) return a.pso < b.pso;
+				if (a.material != b.material) return a.material < b.material;
+				return a.mesh < b.mesh;
+			});
+
+		// ── ③ 묶음마다 인스턴스 행렬을 버퍼에 쓰고 한 번에 그린다 ──
+		ID3D12PipelineState* const psoByKey[4] = {
+			impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get() };
+		const UINT64 slotOffset = UINT64(impl->frameIndex) * Impl::MaxDrawInstances * sizeof(ObjectConstants);
+		uint8_t* const slotData = impl->instanceData + slotOffset;
+		const D3D12_GPU_VIRTUAL_ADDRESS slotAddress = impl->instanceBuffer->GetGPUVirtualAddress() + slotOffset;
+
+		ID3D12PipelineState* currentPso = impl->pso.Get();
+		MaterialHandle currentMaterial = kInvalidMaterial;
+		for (size_t begin = 0; begin < draws.size();)
+		{
+			const Impl::VisibleDraw& first = draws[begin];
+			size_t end = begin + 1;
+			while (end < draws.size() && draws[end].pso == first.pso &&
+				draws[end].material == first.material && draws[end].mesh == first.mesh)
+				++end;
+
+			const UINT wanted = UINT(end - begin);
+			const UINT room = Impl::MaxDrawInstances - impl->instanceCursor;
+			const UINT count = (std::min)(wanted, room);
+			impl->stats.dropped += wanted - count;
+			if (count == 0) { begin = end; continue; }
+
+			const UINT firstInstance = impl->instanceCursor;
+			for (UINT i = 0; i < count; ++i)
+				memcpy(slotData + size_t(firstInstance + i) * sizeof(ObjectConstants),
+					&objects[draws[begin + i].object], sizeof(ObjectConstants));
+			impl->instanceCursor += count;
+
+			ID3D12PipelineState* selectedPso = psoByKey[first.pso];
 			if (currentPso != selectedPso)
 			{
 				impl->commandList->SetPipelineState(selectedPso);
 				currentPso = selectedPso;
 			}
-			if (currentMaterial != materialIndex)
+			const Impl::MaterialGpu& material = impl->materials[first.material];
+			if (currentMaterial != first.material)
 			{
 				impl->commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
 				impl->commandList->SetGraphicsRootDescriptorTable(3, material.textures);
-				currentMaterial = materialIndex;
+				currentMaterial = first.material;
 			}
-			if (currentMesh != it.mesh)
-			{
-				impl->commandList->IASetVertexBuffers(0, 1, &m.vbv);
-				impl->commandList->IASetIndexBuffer(&m.ibv);
-				currentMesh = it.mesh;
-			}
-			impl->commandList->DrawIndexedInstanced(m.indexCount, 1, 0, 0, 0);
+			// 정렬 키에 메시가 있으므로 묶음이 바뀌면 메시도 거의 매번 바뀐다 — 그냥 매번 묶는다.
+			const Impl::MeshGpu& m = impl->meshes[first.mesh];
+			impl->commandList->IASetVertexBuffers(0, 1, &m.vbv);
+			impl->commandList->IASetIndexBuffer(&m.ibv);
+			impl->commandList->SetGraphicsRootShaderResourceView(0,
+				slotAddress + UINT64(firstInstance) * sizeof(ObjectConstants));
+			impl->commandList->DrawIndexedInstanced(m.indexCount, count, 0, 0, 0);
 			++impl->stats.drawCalls;
-			impl->stats.triangles += m.indexCount / 3;
+			impl->stats.instances += count;
+			impl->stats.triangles += uint64_t(m.indexCount / 3) * count;
+			begin = end;
 		}
 		if (view.background)
 		{
