@@ -145,7 +145,7 @@ namespace swc {
 		std::vector<Tracer>     tracers;
 		std::vector<NodeHandle> freeTracerNodes;
 
-		std::vector<InstanceData> items;
+		FramePacket               packet;       // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫
 		float                     titleTimer = 0.0f;
 		float                     memoryLogTimer = 0.0f;

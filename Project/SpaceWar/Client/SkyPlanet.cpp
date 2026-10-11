@@ -56,7 +56,7 @@ namespace swc {
 		for (const NodeHandle root : roots)
 			if (root == kInvalidNode) return true;
 		// Extract가 프레임마다 새 메모리를 할당하지 않도록 처음에 공간을 확보한다.
-		items.reserve(scene.NodeCount());
+		packet.instances.reserve(scene.NodeCount());
 		radius = kWorldRadius;
 		initialized = true;
 		return true;
@@ -94,14 +94,14 @@ namespace swc {
 				scene.SetVisible(roots[i], i + 2 == selectedLod);
 		}
 		scene.UpdateWorldTransforms();
-		scene.Extract(items);
+		scene.Extract(packet);
 
 		// 배경은 10m near 평면으로 먼저 그려 먼 구조물의 깊이 정밀도를 유지한다.
 		// 렌더러가 배경 뒤 깊이를 초기화하므로 맵·캐릭터는 언제나 행성보다 앞에 표시된다.
-		RenderView view{};
-		view.viewProj = camera.BackgroundViewProj();
-		view.eyePosition = eye;
-		view.background = true;
-		renderer.Render(view, items, scene.WorldData());
+		packet.view = RenderView{};
+		packet.view.viewProj = camera.BackgroundViewProj();
+		packet.view.eyePosition = eye;
+		packet.view.background = true;
+		renderer.Render(packet);
 	}
 }

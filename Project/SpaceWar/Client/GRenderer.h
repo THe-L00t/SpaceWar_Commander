@@ -15,14 +15,15 @@ struct HWND__;
 using HWND = HWND__*;
 
 namespace swc {
-	// CPU에서 확인한 래스터 제출량. GPU 실행 시간이나 실제 FPS 측정값은 아니다.
+	// 래스터 제출량. GPU 실행 시간이나 실제 FPS 측정값은 아니다.
+	//  culled·instances·triangles 는 GPU 컬링 결과를 EndFrame 에서 읽어 채운다(그 전에는 0).
 	struct RenderStats
 	{
-		size_t submitted = 0;
-		size_t culled = 0;
-		size_t drawCalls = 0;    // 인스턴싱 묶음 수 — 같은 (PSO, 재질, 메시)는 한 번에 그린다
+		size_t submitted = 0;    // 패킷의 인스턴스 수
+		size_t culled = 0;       // GPU 컬링으로 빠진 인스턴스 수
+		size_t drawCalls = 0;    // ExecuteIndirect 수 = 그리기 묶음 수(같은 PSO·재질·메시)
 		size_t instances = 0;    // 그려진 인스턴스 수(컬링 뒤)
-		size_t dropped = 0;      // 인스턴스 버퍼가 넘쳐 못 그린 수 — 0 이어야 정상
+		size_t dropped = 0;      // 버퍼·묶음 상한을 넘어 못 그린 수 — 0 이어야 정상
 		uint64_t triangles = 0;
 	};
 
@@ -41,8 +42,9 @@ namespace swc {
 		MaterialHandle CreateMaterial(const MaterialData&, const std::array<TextureHandle, kMaterialTextureCount>&);
 
 		void BeginFrame();
-		// BeginFrame마다 배경(background=true), 메인 패스를 각 한 번 호출한다.
-		void Render(const RenderView&, const std::vector<InstanceData>&, const DirectX::XMFLOAT4X4*);
+		// BeginFrame마다 배경(view.background=true), 메인 패스를 각 한 번 호출한다.
+		//  프레임 패킷이 유일한 입력이다 — 렌더러는 Scene 을 직접 읽지 않는다(수정방향 3.2).
+		void Render(const FramePacket&);
 		// UI 를 화면 맨 위에 덮어 그린다. BeginFrame 과 EndFrame 사이, Render 뒤에 부른다.
 		void DrawSprites(const std::vector<UISprite>&);
 		void EndFrame();

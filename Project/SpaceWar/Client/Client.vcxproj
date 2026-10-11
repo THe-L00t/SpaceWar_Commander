@@ -129,6 +129,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
+    <None Include="Shaders\Cull.hlsl" />
     <None Include="..\..\assets\model\character\*.obj" />
     <None Include="..\..\assets\model\character\*.mtl" />
     <None Include="..\..\assets\model\character\*.png" />

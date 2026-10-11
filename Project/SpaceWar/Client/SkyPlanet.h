@@ -33,7 +33,7 @@ namespace swc {
 		std::array<Model, kLodCount> models;
 		std::array<NodeHandle, kLodCount> roots{ kInvalidNode, kInvalidNode };
 		LegacyScene scene;
-		std::vector<InstanceData> items;
+		FramePacket packet;
 		DirectX::XMFLOAT3 center{ 0.0f, 1800.0f, 4200.0f };
 		float radius = 350.0f;
 		float diameterPixels = 0.0f;

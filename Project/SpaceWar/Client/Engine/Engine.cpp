@@ -821,17 +821,17 @@ namespace swc {
 	void Engine::RenderFrame()
 	{
 		scene.UpdateWorldTransforms();
-		scene.Extract(items);
+		scene.Extract(packet);
+		packet.view = RenderView{ };
+		packet.view.viewProj = camera.ViewProj();
+		packet.view.eyePosition = camera.EyePosition();
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);
 
 		renderer.BeginFrame();
 		skyPlanet.Render(renderer, camera, kHeight);
-		RenderView view{ };
-		view.viewProj = camera.ViewProj();
-		view.eyePosition = camera.EyePosition();
-		renderer.Render(view, items, scene.WorldData());
+		renderer.Render(packet);
 		renderer.DrawSprites(uiSprites);
 		renderer.EndFrame();
 	}

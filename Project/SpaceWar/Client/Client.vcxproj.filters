@@ -336,6 +336,9 @@
     <None Include="Shaders\Forward.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\Cull.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
     <None Include="..\..\assets\model\character\*.obj">
       <Filter>설정 및 리소스</Filter>
     </None>
