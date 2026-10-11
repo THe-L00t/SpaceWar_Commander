@@ -925,12 +925,13 @@ namespace swc {
 			renderer.TlasDroppedInstances() ? L" ★유실" : L"");
 
 		// 래스터 제출량 (client2 2f15728) — 프러스텀 컬링으로 빠진 메시 수와 제출 삼각형.
+		//  Draw = 인스턴싱 묶음(실제 DrawIndexedInstanced 횟수), Inst = 그 안의 인스턴스 합.
 		const RenderStats& renderStats = renderer.Stats();
 		wchar_t title[1280];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
 			L"|  %s  |  %s  |  RT %s knee %.2f view %u  |  %s  "
-			L"|  행성 LOD%u %.0fpx  |  Draw %zu/%zu Cull %zu Tri %.2fM",
+			L"|  행성 LOD%u %.0fpx  |  Draw %zu Inst %zu/%zu Cull %zu Tri %.2fM%s",
 			timer.Fps(), dt * 1000.0f,
 			controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 			distFromSpawn, controller.Speed(),
@@ -939,8 +940,9 @@ namespace swc {
 			rtState, rt.rouletteKnee, renderer.DebugMode(),
 			blasText,
 			skyPlanet.SelectedLod(), skyPlanet.DiameterPixels(),
-			renderStats.drawCalls, renderStats.submitted, renderStats.culled,
-			double(renderStats.triangles) / 1000000.0);
+			renderStats.drawCalls, renderStats.instances, renderStats.submitted, renderStats.culled,
+			double(renderStats.triangles) / 1000000.0,
+			renderStats.dropped ? L" ★인스턴스 유실" : L"");
 		SetWindowText(hwnd, title);
 	}
 
