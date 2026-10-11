@@ -226,7 +226,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	}
 	float sendAccumulator = 0.0f;
 
-	std::vector<swc::RenderItem> items;
+	swc::FramePacket packet;   // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 
 	ShowWindow(hwnd, nCmdShow);
 	input.SetCaptured(true);
@@ -354,13 +354,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 		scene.SetLocalTransform(player, controller.WorldMatrix());
 		scene.UpdateWorldTransforms();
-		scene.Extract(items);
+		scene.Extract(packet);
+		packet.view = swc::RenderView{ };
+		packet.view.viewProj = camera.ViewProj();
+		packet.view.eyePosition = camera.EyePosition();
 
 		renderer.BeginFrame();
-		swc::RenderView view{ };
-		view.viewProj = camera.ViewProj();
-		view.eyePosition = camera.EyePosition();
-		renderer.Render(view, items, scene.WorldData());
+		renderer.Render(packet);
 		renderer.EndFrame();
 
 		// 델타타임 / 하이브리드 상태를 창 제목으로 확인

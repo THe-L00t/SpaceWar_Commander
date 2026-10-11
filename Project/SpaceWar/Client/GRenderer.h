@@ -21,7 +21,8 @@ namespace swc {
 		bool Initialize(HWND, uint32_t, uint32_t);
 		MeshHandle CreateMesh(const Vertex*, size_t, const uint32_t*, size_t);
 		void BeginFrame();
-		void Render(const RenderView&, const std::vector<RenderItem>&, const DirectX::XMFLOAT4X4*);
+		// 프레임 패킷이 유일한 입력이다 — 렌더러는 Scene 을 직접 읽지 않는다(수정방향 3.2).
+		void Render(const FramePacket&);
 		void EndFrame();
 
 		// ── 하이브리드 제어 (DX 타입 노출 없음) ──

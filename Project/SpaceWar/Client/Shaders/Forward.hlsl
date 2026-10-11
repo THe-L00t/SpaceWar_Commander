@@ -29,11 +29,23 @@ cbuffer FrameCB : register(b0)
 	float3   _pad2;
 };
 
-// ── 인스턴스 월드 행렬 (2026-10-11) ──
-//  같은 메시를 쓰는 노드를 한 번에 그린다. 렌더러가 묶음마다 루트 SRV 주소를
-//  그 묶음의 첫 인스턴스로 옮겨 주므로 SV_InstanceID(0부터)로 바로 읽으면 된다.
-//  행렬 배치는 기본(column_major)이고, CPU 가 전치해서 올린다 — 예전 ObjectCB 와 같다.
-StructuredBuffer<float4x4> gWorlds : register(t6);
+// ── 인스턴스 (수정방향 3.2, 2026-10-11 — integrate-client2 5b17e73 이식) ──
+//  같은 메시를 쓰는 인스턴스를 ExecuteIndirect 한 번으로 그린다.
+//  인스턴스 수는 Cull.hlsl 이 보이는 것만 세어 간접 인자에 넣었다.
+//  gVisible[gInstanceBase + SV_InstanceID] = 그 묶음에서 보이는 인스턴스 번호.
+//  ★ row_major — CPU 의 XMFLOAT4X4 를 전치 없이 그대로 올린다. mul(v, M) 행벡터 규약은 예전과 같다.
+cbuffer DrawCB : register(b1)
+{
+	uint gInstanceBase;      // 이 묶음의 보이는 목록 시작 번호 (루트 상수 1개)
+};
+
+struct InstanceGpu           // GRenderer 의 Impl::InstanceGpu 와 같은 128바이트
+{
+	row_major float4x4 world;
+	row_major float4x4 prevWorld;   // 모션 벡터용 — 아직 읽지 않는다
+};
+StructuredBuffer<InstanceGpu> gInstances : register(t6);
+StructuredBuffer<uint>        gVisible   : register(t7);
 
 #if RT_SUPPORTED
 RaytracingAccelerationStructure gScene : register(t0);
@@ -69,7 +81,7 @@ struct VOut
 
 VOut VSMain(VIn i, uint instance : SV_InstanceID)
 {
-	const float4x4 world = gWorlds[instance];
+	const float4x4 world = gInstances[gVisible[gInstanceBase + instance]].world;
 	VOut o;
 	float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
