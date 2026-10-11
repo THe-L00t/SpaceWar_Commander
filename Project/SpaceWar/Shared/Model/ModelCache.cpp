@@ -24,6 +24,7 @@ namespace Shared {
 			kReadAnimation = 1u << 3,
 			kSplitByObject = 1u << 4,
 			kCollectObject = 1u << 5,
+			kHideAuthoringHelpers = 1u << 6,
 		};
 
 		uint64_t Fnv1a(const void* data, size_t size, uint64_t hash = 1469598103934665603ull)
@@ -218,6 +219,7 @@ namespace Shared {
 				w.Pod(material.emissive);
 				w.Pod(material.roughness);
 				w.Pod(material.metallic);
+				w.Pod(material.doubleSided);
 				for (const std::string& path : material.texturePaths) w.String(path);
 				w.Pod(material.embeddedImages);
 			}
@@ -310,6 +312,7 @@ namespace Shared {
 				r.Pod(material.emissive);
 				r.Pod(material.roughness);
 				r.Pod(material.metallic);
+				r.Pod(material.doubleSided);
 				for (std::string& path : material.texturePaths) r.String(path);
 				r.Pod(material.embeddedImages);
 				if (!r.ok) return false;
@@ -416,6 +419,7 @@ namespace Shared {
 		if (options.readAnimation)         flags |= kReadAnimation;
 		if (options.splitByObject)         flags |= kSplitByObject;
 		if (options.collectObject)         flags |= kCollectObject;
+		if (options.hideAuthoringHelpers)  flags |= kHideAuthoringHelpers;
 		out.optionFlags = flags;
 		return true;
 	}

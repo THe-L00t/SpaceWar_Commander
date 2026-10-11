@@ -64,6 +64,8 @@ namespace Shared {
 		Vec3  emissive{};
 		float roughness = 0.65f;
 		float metallic = 0.0f;
+		// glTF doubleSided. 참이면 렌더러가 뒷면을 제거하지 않는다 (client2 2f15728). OBJ 는 늘 거짓.
+		bool  doubleSided = false;
 
 		// 모델 파일이 있는 폴더 기준 상대 경로. 빈 문자열이면 그 슬롯은 없다.
 		// glTF 의 내장 이미지(.glb buffer / base64)는 ModelBuilder 가 쓸 수 있도록
@@ -147,7 +149,8 @@ namespace Shared {
 	//   렌더 메시는 재질 기준으로 합쳐져 오브젝트 이름이 사라진다. 그래도 «이름으로 골라야 하는»
 	//   기하(행성 접지면)가 필요해서, 리더가 한 번 훑는 동안 고른 오브젝트의 면을 여기에 따로 모은다.
 	//   그래서 같은 파일을 렌더용·접지용으로 두 번 파싱하지 않아도 된다.
-	//   위치와 삼각형만 있다. 와인딩은 렌더 메시와 같다. 지금은 OBJ 리더만 채운다.
+	//   위치와 삼각형만 있다. 와인딩은 렌더 메시와 같다.
+	//   OBJ 는 o/g 이름, glTF 는 노드 이름으로 고른다. glTF 는 노드의 월드 변환을 적용한 좌표다(2026-10-11).
 	struct CollectedGeometry
 	{
 		std::vector<Vec3>        positions;
@@ -207,8 +210,15 @@ namespace Shared {
 		// ★ 이름으로 오브젝트를 골라 그 면을 ModelSource::collected 에 따로 모은다 (2026-10-09)
 		//   splitByObject 를 켜지 않아도 된다 — 렌더 메시는 재질 기준 그대로 두고,
 		//   같은 한 번의 파싱에서 접지면만 추린다(Shared::PlanetSurface::IsGroundObject 를 넘긴다).
-		//   비어 있으면 아무것도 모으지 않는다. 지금은 OBJ 리더만 지원한다(o/g 이름).
+		//   비어 있으면 아무것도 모으지 않는다. OBJ 는 o/g 이름, glTF 는 노드 이름으로 고른다.
+		//   ★ 표시하지 않는 노드(아래 hideAuthoringHelpers)도 고를 수 있다 — 충돌 전용 메시가 그렇다.
 		std::function<bool(std::string_view)> collectObject;
+
+		// ★ glTF 의 제작용 보조 노드를 화면 메시에서 뺀다 (2026-10-11, client2 2f15728 의 규칙)
+		//   충돌 프록시(COL_)·제작 안내(Guide_)·라벨 등. 노드는 남겨 계층·변환을 유지하고 메시만 뗀다.
+		//   아무 노드도 쓰지 않게 된 메시는 버린다 — 법선·탄젠트 계산·캐시·GPU 업로드에서 모두 빠진다.
+		//   규칙은 GltfReader.cpp 의 IsAuthoringHelperNode. 규칙을 바꾸면 kModelCacheVersion 을 올린다.
+		bool hideAuthoringHelpers = true;
 	};
 
 } // namespace Shared

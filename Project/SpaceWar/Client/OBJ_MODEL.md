@@ -1,6 +1,6 @@
 # OBJ 모델 로딩
 
-캐릭터와 행성은 프로젝트의 자체 파서 `Shared/Model`(`ObjReader`)로 읽습니다. 2026-10-08 통합에서 클라 전용 `ObjModelLoader`를 걷어내고 Shared 의 파서 하나로 모았습니다 — 서버도 같은 코드로 행성 접지면을 읽습니다. 외부 모델 라이브러리의 설치, 다운로드, 헤더·라이브러리 경로 설정은 필요하지 않습니다. 기존 Direct3D와 Windows SDK의 빌드 환경은 유지합니다.
+캐릭터는 프로젝트의 자체 파서 `Shared/Model`(`ObjReader`)로 읽습니다. 맵은 2026-10-11부터 GLB이며 같은 파서의 `GltfReader`로 읽습니다(`PLANET_MODEL.md`). 2026-10-08 통합에서 클라 전용 `ObjModelLoader`를 걷어내고 Shared 의 파서 하나로 모았습니다 — 서버도 같은 코드로 행성 접지면을 읽습니다. 외부 모델 라이브러리의 설치, 다운로드, 헤더·라이브러리 경로 설정은 필요하지 않습니다. 기존 Direct3D와 Windows SDK의 빌드 환경은 유지합니다.
 
 ## 파일 배치
 
@@ -12,21 +12,23 @@ Project/assets/model/
 │  ├─ Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj
 │  ├─ Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl
 │  └─ Meshy_AI_01_Arc_Sentinel_1005152429_texture.png
-└─ planet/
-   ├─ future_ruins_realistic.obj
-   └─ future_ruins_realistic.mtl
+├─ map/
+│  └─ future_ruins_planet_separated.glb
+└─ sky_planet/
+   ├─ LOD2/future_ruins_fps_lod2.glb
+   └─ LOD3/future_ruins_fps_lod3.glb
 ```
 
 OBJ의 `mtllib`이 MTL을 가리키고, MTL의 이미지 경로가 실제 파일을 가리켜야 합니다. 모델을 다른 파일로 교체할 때는 OBJ, MTL, 텍스처를 함께 갱신합니다. 확장자를 바꾸는 대신 모델 제작 도구에서 OBJ로 내보내야 합니다.
 
-Client의 빌드 후 대상이 OBJ·MTL·이미지를 실행 파일 옆 `assets/model`에 복사합니다. Server는 지형 조회에 필요한 행성 OBJ만 복사합니다. 다른 PC에서 Git LFS로 관리하는 모델을 받았다면 실제 파일이 내려왔는지 확인하세요.
+Client는 캐릭터 OBJ·MTL·이미지와 맵·하늘 행성 GLB를 실행 파일 옆 `assets/model`에 복사합니다. Server는 지형 조회에 필요한 같은 맵 GLB를 복사합니다. 다른 PC에서 Git LFS로 관리하는 모델을 받았다면 실제 파일이 내려왔는지 확인하세요.
 
 ## 기존 구조와 연결
 
 - `Engine`: 에셋 경로와 모델 배치 변환을 지정합니다.
 - `ResourceManager → Shared::ModelReader → ModelBuilder`: 포맷 중립 `ModelSource`를 거쳐 CPU 데이터인 `ModelData`(메시·재질)·`SkeletonResource`(본)·`AnimationClipData`(클립)를 만들고 GPU 업로드 전까지 캐시합니다.
 - `Model → LegacyScene → GRenderer`: 기존 방식으로 GPU 버퍼를 만들고 표시합니다.
-- `Shared::PlanetSurface → TerrainSampler`: 행성 OBJ의 접지 삼각형과 지면 높이를 클라이언트·서버에서 공유합니다.
+- `Shared::PlanetSurface → TerrainSampler`: 맵 GLB의 접지 삼각형과 지면 높이를 클라이언트·서버에서 공유합니다.
 
 OBJ의 오브젝트와 재질 구분을 기존 `ModelData`의 노드·메시·재질로 옮깁니다. 모델 파일의 수명이나 외부 라이브러리 객체가 장면에 남지 않습니다. 플레이어·원격 플레이어·NPC는 같은 캐릭터 데이터와 기존 이동·회전 코드를 사용합니다.
 

@@ -12,6 +12,9 @@
     .cpp / .h 를 같이 넣는다.
   -->
   <ItemGroup>
+    <Filter Include="클래스 목록\SkyPlanet">
+      <UniqueIdentifier>{a8c62127-494c-4755-978b-83f78bd7ee61}</UniqueIdentifier>
+    </Filter>
     <Filter Include="소스코드">
       <UniqueIdentifier>{a62690b0-bb26-47a1-9f49-f2dd1e9400cf}</UniqueIdentifier>
     </Filter>
@@ -167,6 +170,9 @@
     <ClCompile Include="Net\Network.cpp">
       <Filter>클래스 목록\Network</Filter>
     </ClCompile>
+    <ClCompile Include="SkyPlanet.cpp">
+      <Filter>클래스 목록\SkyPlanet</Filter>
+    </ClCompile>
     <ClCompile Include="Model.cpp">
       <Filter>클래스 목록\Model</Filter>
     </ClCompile>
@@ -252,6 +258,9 @@
     </ClInclude>
     <ClInclude Include="Net\Network.h">
       <Filter>클래스 목록\Network</Filter>
+    </ClInclude>
+    <ClInclude Include="SkyPlanet.h">
+      <Filter>클래스 목록\SkyPlanet</Filter>
     </ClInclude>
     <ClInclude Include="Model.h">
       <Filter>클래스 목록\Model</Filter>
@@ -342,6 +351,15 @@
     <None Include="..\..\assets\model\planet\*.mtl">
       <Filter>설정 및 리소스</Filter>
     </None>
+    <None Include="..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="SKY_PLANET.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
     <None Include="PLANET_MODEL.md">
       <Filter>설정 및 리소스</Filter>
     </None>
@@ -350,6 +368,11 @@
     </None>
     <None Include="Shaders\UI.hlsl">
       <Filter>셰이더</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">
+      <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>
 </Project>

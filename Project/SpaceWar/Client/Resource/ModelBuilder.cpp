@@ -152,8 +152,16 @@ namespace swc {
 		// ── 재질·텍스처 ────────────────────────────────────
 		TextureCache textures(out, source);
 		out.materials.reserve(source.materials.size());
-		for (const Shared::SourceMaterial& sourceMaterial : source.materials)
+
+		// 화면 메시가 쓰지 않는 재질(숨긴 충돌 프록시 등)의 텍스처는 디코딩하지 않는다 (client2 2f15728).
+		// 재질 번호는 그대로 둬야 하므로 재질 자체는 남기고 텍스처만 건너뛴다.
+		std::vector<bool> materialUsed(source.materials.size(), false);
+		for (const Shared::SourceMesh& sourceMesh : source.meshes)
+			if (sourceMesh.material < materialUsed.size()) materialUsed[sourceMesh.material] = true;
+
+		for (size_t materialIndex = 0; materialIndex < source.materials.size(); ++materialIndex)
 		{
+			const Shared::SourceMaterial& sourceMaterial = source.materials[materialIndex];
 			MaterialData material;
 			material.name = sourceMaterial.name;
 			material.baseColor = { sourceMaterial.baseColor.x, sourceMaterial.baseColor.y,
@@ -162,8 +170,9 @@ namespace swc {
 				sourceMaterial.emissive.z };
 			material.roughness = sourceMaterial.roughness;
 			material.metallic = sourceMaterial.metallic;
+			material.doubleSided = sourceMaterial.doubleSided;
 
-			for (size_t slot = 0; slot < kMaterialTextureCount; ++slot)
+			for (size_t slot = 0; materialUsed[materialIndex] && slot < kMaterialTextureCount; ++slot)
 			{
 				const TextureSlot which = static_cast<TextureSlot>(slot);
 				// 외부 파일이 먼저다. 없으면 내장 이미지를 본다.

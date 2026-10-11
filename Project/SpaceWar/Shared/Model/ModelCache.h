@@ -13,7 +13,7 @@
 //
 //  ★ 무효화 — 아래 하나라도 다르면 캐시를 버리고 원본을 다시 파싱한다(그리고 새로 쓴다)
 //    · 원본 파일 크기·수정 시각
-//    · 읽기 옵션(geometryOnly·generateCollision·generateTangents·readAnimation·splitByObject)
+//    · 읽기 옵션(geometryOnly·generateCollision·generateTangents·readAnimation·splitByObject·hideAuthoringHelpers)
 //    · 태그(collectObject 처럼 함수라 비교할 수 없는 선택을 호출 쪽이 문자열로 적은 것)
 //    · kModelCacheVersion · sizeof(Vertex) · sizeof(SkinVertex)
 //  ★ kModelCacheVersion 은 «결과가 달라지는» 변경마다 올린다
@@ -27,7 +27,8 @@
 namespace Shared {
 
 	// 결과가 달라지는 변경을 하면 올린다(위 주석).
-	inline constexpr uint32_t kModelCacheVersion = 1;
+	// 2 = SourceMaterial::doubleSided · KHR_materials_emissive_strength · glTF 보조 노드 숨김·노드 collectObject (2026-10-11)
+	inline constexpr uint32_t kModelCacheVersion = 2;
 
 	struct ModelCacheKey
 	{

@@ -96,7 +96,9 @@ namespace swc {
 		//   로딩 중 메인이 손대지 않는 대상(예: 로드 전용 PlanetSurface)만 채운다.
 		//   디스크 캐시(ModelCache)에서 읽었을 때도 똑같이 불린다.
 		//   이번 실행에서 이미 등록된 파일(RAM 의 fileCache)이면 파싱도 훅도 없다.
-		std::function<bool(const Shared::ModelSource&, std::wstring& error)> onParsed;
+		//   렌더용 변환 전이라 source 를 고칠 수 있다(예: 맵 규칙으로 재질의 양면 설정을 바꾼다 — 2026-10-11).
+		//   고친 결과는 디스크 캐시에 들어가지 않는다(캐시는 훅 전에 쓴다).
+		std::function<bool(Shared::ModelSource&, std::wstring& error)> onParsed;
 
 		// ★ 디스크 캐시 태그 (2026-10-10) — collectObject 를 쓰면 반드시 채운다
 		//   함수는 비교할 수 없어서 «어떤 규칙으로 모았는가» 를 문자열로 캐시 머리말에 적는다.

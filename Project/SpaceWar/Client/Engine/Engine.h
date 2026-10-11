@@ -22,6 +22,7 @@
 #include "Client/GameTimer.h"
 #include "Client/LegacyScene.h"
 #include "Client/Model.h"
+#include "Client/SkyPlanet.h"
 #include "Client/Camera.h"
 #include "Client/PlayerController.h"
 #include "Client/Planet.h"
@@ -101,7 +102,7 @@ namespace swc {
 
 		// ── 아직 자리로 옮기지 않은 것 ──────────────────────────
 		Planet                 planet;            // 맵 정보 → Scene 이 가진다 (2026-09-18 결정)
-		Shared::PlanetSurface  planetSurface;     // OBJ 지표면. 렌더와 서버가 같은 좌표/배율을 사용한다.
+		Shared::PlanetSurface  planetSurface;     // GLB 지형. 렌더와 서버가 같은 구면 좌표를 사용한다.
 		Shared::TerrainSampler terrain;
 		std::wstring           terrainStatus;
 
@@ -112,11 +113,13 @@ namespace swc {
 		Camera                 camera;            // 명세 1절에 자리가 없다
 		PlayerController       controller;        // → Player(6.6) · Game Logic(8절). 입력은 Class Bridge 경유(6.6.3)
 		NodeHandle             player = kInvalidNode;
+		Vec3d                  spawnPosition;     // 접지 보정한 시작 위치. 표시 시 재조회하지 않는다.
 
 		// 캐릭터 모델. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다.
 		// 명세 1절에 Model 자리가 없다 — 리소스(ModelData)를 GPU 자원 + Scene 노드로 펼치는 어댑터다.
 		Model                  characterModel;
-		Model                  planetModel;       // 정적 맵 메시/재질. 행성 중심에 한 번 배치한다.
+		Model                  planetModel;       // 정적 맵 메시/재질. GLB 노드는 같은 GPU 메시를 공유한다.
+		SkyPlanet              skyPlanet;         // 충돌 맵과 분리한 하늘 행성의 LOD 표시.
 
 		// 플레이어 캐릭터의 재생 인스턴스 (명세 §14). 스킨이 있는 모델(.glb)일 때만 유효하다.
 		// 지금 캐릭터는 OBJ(뼈 없음)라 무효로 남고, Animator 는 아무 일도 하지 않는다.
@@ -145,6 +148,7 @@ namespace swc {
 		std::vector<InstanceData> items;
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫
 		float                     titleTimer = 0.0f;
+		float                     memoryLogTimer = 0.0f;
 
 		// 마우스를 다시 잡으려고 누른 클릭이 그대로 사격이 되지 않게 한 프레임 막는다.
 		bool                      suppressFire = false;

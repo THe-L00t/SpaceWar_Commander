@@ -64,6 +64,15 @@ namespace Shared {
 	{
 		for (float t = kMarchStart; t < distance; t += kMarchStep)
 		{
+			if constexpr (kUsePlanarMap)
+			{
+				const double x = double(origin.x) + double(direction.x) * t;
+				const double y = double(origin.y) + double(direction.y) * t;
+				const double z = double(origin.z) + double(direction.z) * t;
+				const double height = terrain ? terrain->Height(x, y, z) : 0.0;
+				if (y < height - kMarchTolerance) return true;
+				continue;
+			}
 			const double px = double(origin.x) + double(direction.x) * t - kPlanetCenterX;
 			const double py = double(origin.y) + double(direction.y) * t - kPlanetCenterY;
 			const double pz = double(origin.z) + double(direction.z) * t - kPlanetCenterZ;

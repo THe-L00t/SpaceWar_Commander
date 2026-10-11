@@ -4,11 +4,12 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "../PlanetConst.h"
 
 // ============================================================
-//  Shared/Terrain/PlanetSurface.h — OBJ 행성의 접지 표면
+//  Shared/Terrain/PlanetSurface.h — 모델 맵의 접지 표면
 //
-//  클라이언트와 서버가 같은 OBJ의 지면 부분을 읽는다.
+//  클라이언트와 서버가 같은 맵 파일(현재 GLB)의 지면 부분을 읽는다.
 //  렌더 재질·텍스처를 제외하고 위치와 삼각형만 보관한다.
 //  한 번 만든 BVH는 이후 읽기만 하므로 서버의 여러 스레드가 공유할 수 있다.
 //
@@ -20,6 +21,8 @@
 //    렌더 메시를 읽는 같은 파싱에서 ReadOptions::collectObject = IsGroundObject 로
 //    접지 오브젝트의 면을 ModelSource::collected 에 함께 모은 뒤 Build 로 넘긴다(클라).
 //    서버처럼 렌더가 필요 없으면 Load(path) 가 같은 방식으로 읽는다.
+//  ★ 구면 맵은 Height()의 방사 방향 조회, 평면 맵(kUsePlanarMap)은 HeightAt()의 수직 조회 (client2 2f15728)
+//    GLB 는 노드 이름으로 고르고, 리더가 노드의 월드 변환을 적용한 좌표를 넘긴다.
 // ============================================================
 
 namespace Shared {
@@ -42,13 +45,18 @@ namespace Shared {
 
 		// 위 규칙의 이름표. 모델 캐시(ModelCache)의 태그로 쓴다 — 함수는 비교할 수 없으므로
 		// ★ IsGroundObject 의 규칙을 바꾸면 이 문자열의 버전을 올린다. 안 올리면 예전 접지면을 캐시에서 읽는다.
-		static constexpr const char* kGroundRuleTag = "PlanetSurface.IsGroundObject.v1";
+		//   v2 = Separated Planet GLB 규칙(2026-10-11). 평면/구면에 따라 규칙이 갈리므로 태그도 가른다.
+		static constexpr const char* kGroundRuleTag = kUsePlanarMap
+			? "PlanetSurface.IsGroundObject.v2.planar" : "PlanetSurface.IsGroundObject.v2.sphere";
 
 		bool Valid() const { return !nodes.empty(); }
 		size_t TriangleCount() const { return triangles.size(); }
 
 		// 입력은 DirectX 좌표계의 방향. 반환값은 기준구 위 높이(m)다.
 		double Height(double upX, double upY, double upZ, double planetRadius) const;
+
+		// 평면 맵의 월드 X/Z 에서 지면 Y(m). 맵 밖이면 0이다.
+		double HeightAt(double worldX, double worldZ) const;
 
 	private:
 		struct Position

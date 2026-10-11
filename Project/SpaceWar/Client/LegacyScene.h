@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <vector>
 #include <DirectXMath.h>
 #include "Handles.h"
@@ -28,6 +29,7 @@ namespace swc {
 
 		void SetLocalTransform(NodeHandle, const DirectX::XMMATRIX&);
 		void SetMesh(NodeHandle, MeshHandle);
+		void SetVisible(NodeHandle, bool);
 
 		void UpdateWorldTransforms();
 		void Extract(std::vector<InstanceData>&) const;
@@ -41,6 +43,10 @@ namespace swc {
 		std::vector<DirectX::XMFLOAT4X4> world;
 		std::vector<MeshHandle>          mesh;
 		std::vector<MaterialHandle>      material;
+		std::vector<uint8_t>             visible;
+		std::vector<uint8_t>             worldVisible;
+		std::vector<uint8_t>             localDirty;
+		std::vector<uint8_t>             worldDirty;   // 이번 갱신에서 부모 변경을 자식에게 전달한다.
 	};
 
 }

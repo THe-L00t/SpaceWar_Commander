@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 #include <memory>
 #include <string>
@@ -14,6 +15,15 @@ struct HWND__;
 using HWND = HWND__*;
 
 namespace swc {
+	// CPU에서 확인한 래스터 제출량. GPU 실행 시간이나 실제 FPS 측정값은 아니다.
+	struct RenderStats
+	{
+		size_t submitted = 0;
+		size_t culled = 0;
+		size_t drawCalls = 0;
+		uint64_t triangles = 0;
+	};
+
 	class GRenderer
 	{
 	public:
@@ -29,6 +39,7 @@ namespace swc {
 		MaterialHandle CreateMaterial(const MaterialData&, const std::array<TextureHandle, kMaterialTextureCount>&);
 
 		void BeginFrame();
+		// BeginFrame마다 배경(background=true), 메인 패스를 각 한 번 호출한다.
 		void Render(const RenderView&, const std::vector<InstanceData>&, const DirectX::XMFLOAT4X4*);
 		// UI 를 화면 맨 위에 덮어 그린다. BeginFrame 과 EndFrame 사이, Render 뒤에 부른다.
 		void DrawSprites(const std::vector<UISprite>&);
@@ -45,6 +56,7 @@ namespace swc {
 		void SetSunDirection(const DirectX::XMFLOAT3&);
 		void SetDebugMode(uint32_t);
 		uint32_t DebugMode() const;
+		const RenderStats& Stats() const;
 
 		// 초기화 실패 원인 / 어댑터 이름 등
 		const std::wstring& StatusText() const;

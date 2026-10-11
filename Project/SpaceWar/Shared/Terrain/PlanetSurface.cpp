@@ -4,6 +4,7 @@
 #include "../Model/ModelReader.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <new>
@@ -32,15 +33,15 @@ namespace Shared {
 
 	bool PlanetSurface::IsGroundObject(std::string_view name)
 	{
-		// 이 모델의 객체 이름으로 지면·도로·보도·입구만 고른다.
-		if (name == "Planet_Core" || name == "Fragmented_Planet_Armor") return true;
-		constexpr std::string_view keywords[] = {
-			"Asphalt", "Sidewalk", "Paving", "Ramp", "Subgrade", "Approaches",
-			"Foundations", "Curbs", "Lane_Lines", "Surface_Gravel"
-		};
-		for (const std::string_view keyword : keywords)
-			if (name.find(keyword) != std::string_view::npos) return true;
-		return false;
+		// Ruins Enhanced / Separated Planet GLB 의 노드 이름 규칙 (client2 2f15728).
+		// 지형 충돌 메시(표시 지형과 같은 메시) + 보행로 + 보이는 착륙 플랫폼.
+		if (name == kPlanetSurfaceNode) return true;
+		if constexpr (kUsePlanarMap) return false;
+		// 구면 자산의 보행로와 착륙 플랫폼은 지면보다 약간 높다.
+		// COL_Landing 프록시는 부모·자식 변환이 상쇄돼 중심 근처에 놓이므로 고르지 않는다.
+		constexpr std::string_view platformSuffix = "_Platform";
+		return name.starts_with("Walkable_Path_") ||
+			(name.starts_with("Landing_L") && name.ends_with(platformSuffix));
 	}
 
 	bool PlanetSurface::Load(const wchar_t* path, std::wstring& error)
@@ -83,8 +84,9 @@ namespace Shared {
 		{
 			PlanetSurface built;
 
+			// 보행로·플랫폼만 있는 파일을 행성 지면으로 받아들이지 않는다.
 			const bool coreHasFaces = std::find(ground.objects.begin(), ground.objects.end(),
-				std::string("Planet_Core")) != ground.objects.end();
+				std::string(kPlanetSurfaceNode)) != ground.objects.end();
 
 			if (ground.positions.size() >= std::numeric_limits<uint32_t>::max())
 			{
@@ -113,10 +115,19 @@ namespace Shared {
 				const Position& c = built.positions[triangle.vertices[2]];
 				const double bx = double(b.x) - a.x, by = double(b.y) - a.y, bz = double(b.z) - a.z;
 				const double cx = double(c.x) - a.x, cy = double(c.y) - a.y, cz = double(c.z) - a.z;
-				const double nx = by * cz - bz * cy;
-				const double ny = bz * cx - bx * cz;
-				const double nz = bx * cy - by * cx;
-				if (nx * nx + ny * ny + nz * nz <= 1.0e-20) continue;   // 퇴화 삼각형
+				if constexpr (kUsePlanarMap)
+				{
+					// 평면 높이 조회(HeightAt)에서 수직 벽은 지면을 만들지 못한다.
+					if (std::fabs(bx * cz - bz * cx) <= 1.0e-12) continue;
+				}
+				else
+				{
+					// 구면의 옆면도 보행면이다. X/Z 투영 대신 3D 면적만 검사한다.
+					const double nx = by * cz - bz * cy;
+					const double ny = bz * cx - bx * cz;
+					const double nz = bx * cy - by * cx;
+					if (nx * nx + ny * ny + nz * nz <= 1.0e-20) continue;   // 퇴화 삼각형
+				}
 				if (built.triangles.size() >= std::numeric_limits<uint32_t>::max() / 2)
 				{
 					error = L"행성 접지 삼각형 수가 지원 범위를 초과했습니다.";
@@ -127,7 +138,8 @@ namespace Shared {
 
 			if (!coreHasFaces || built.triangles.empty())
 			{
-				error = L"Planet_Core 지표면 또는 접지 삼각형이 없습니다.";
+				error = L"지형 노드(" + std::wstring(kPlanetSurfaceNode, kPlanetSurfaceNode + std::char_traits<char>::length(kPlanetSurfaceNode)) +
+					L") 또는 접지 삼각형이 없습니다.";
 				return false;
 			}
 
@@ -311,6 +323,49 @@ namespace Shared {
 		}
 		return bestDistance > 0.0
 			? bestDistance * (planetRadius / kPlanetModelReferenceRadius) - planetRadius : 0.0;
+	}
+
+	double PlanetSurface::HeightAt(double worldX, double worldZ) const
+	{
+		if (!Valid() || !std::isfinite(worldX) || !std::isfinite(worldZ)) return 0.0;
+		double bestHeight = -std::numeric_limits<double>::infinity();
+		std::array<uint32_t, 64> stack{};
+		size_t stackSize = 1;
+		stack[0] = 0;
+		constexpr double tolerance = 1.0e-8;
+		while (stackSize != 0)
+		{
+			const Node& node = nodes[stack[--stackSize]];
+			if (worldX < double(node.lo.x) - tolerance || worldX > double(node.hi.x) + tolerance ||
+				worldZ < double(node.lo.z) - tolerance || worldZ > double(node.hi.z) + tolerance ||
+				node.hi.y <= bestHeight) continue;
+			if (node.count != 0)
+			{
+				for (uint32_t i = node.first; i < node.first + node.count; ++i)
+				{
+					const Triangle& triangle = triangles[i];
+					const Position& a = positions[triangle.vertices[0]];
+					const Position& b = positions[triangle.vertices[1]];
+					const Position& c = positions[triangle.vertices[2]];
+					const double bx = double(b.x) - a.x, bz = double(b.z) - a.z;
+					const double cx = double(c.x) - a.x, cz = double(c.z) - a.z;
+					const double determinant = bx * cz - bz * cx;
+					if (std::fabs(determinant) <= 1.0e-12) continue;
+					const double dx = worldX - a.x, dz = worldZ - a.z;
+					const double u = (dx * cz - dz * cx) / determinant;
+					const double v = (bx * dz - bz * dx) / determinant;
+					if (u < -tolerance || v < -tolerance || u + v > 1.0 + tolerance) continue;
+					const double height = a.y + u * (double(b.y) - a.y) + v * (double(c.y) - a.y);
+					bestHeight = std::max(bestHeight, height);
+				}
+			}
+			else
+			{
+				stack[stackSize++] = node.left;
+				stack[stackSize++] = node.right;
+			}
+		}
+		return std::isfinite(bestHeight) ? bestHeight : 0.0;
 	}
 
 } // namespace Shared

@@ -69,7 +69,7 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\..\assets\model\planet\future_ruins_realistic.obj">
+    <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">
       <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>

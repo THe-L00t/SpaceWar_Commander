@@ -627,6 +627,20 @@ namespace Shared {
 			return true;
 		}
 
+		// ── 제작용 보조 노드 ────────────────────────────
+		//  화면에 그리지 않는 노드 이름 규칙 (client2 2f15728 GlbModelLoader 의 HiddenNode 를 옮겼다).
+		//  충돌 프록시와 제작 안내·주석 메시다. 노드 계층은 유지하고 메시만 뗀다(ReadOptions::hideAuthoringHelpers).
+		//  ★ 바꾸면 ModelCache.h 의 kModelCacheVersion 을 올린다 — 안 올리면 예전 결과를 캐시에서 읽는다.
+		bool IsAuthoringHelperNode(const std::string& name)
+		{
+			constexpr const char* prefixes[] = {
+				"COL_", "Guide_", "Future_", "Landing_Label_", "Landing_Region_Label_",
+				"Objective_Future_", "Planned_Risk_", "Reserved_Objective_" };
+			for (const char* prefix : prefixes)
+				if (name.rfind(prefix, 0) == 0) return true;
+			return name == "Character_Scale_1_8m";
+		}
+
 		// ── 와인딩 ──────────────────────────────────────
 		//  파일의 와인딩 규약을 믿지 않고 법선과 맞춘다(ObjReader·옛 FBX 경로와 같은 방법).
 		void OrientTriangle(SourceMesh& mesh, size_t first)
@@ -1088,6 +1102,81 @@ namespace Shared {
 			out.nodes.push_back(std::move(node));
 		}
 
+		// ── 6-1) 이름으로 고른 노드의 면을 모은다 (ReadOptions::collectObject, 2026-10-11) ──
+		//  노드마다 변환이 달라(같은 메시를 여러 노드가 쓴다) 월드 좌표로 펼쳐 담는다.
+		//  메시 정점은 노드 로컬 좌표다. 부모가 먼저 오므로 월드 = 로컬 · 부모월드 를 앞에서부터 쌓는다.
+		//  아래 6-2 에서 숨길 노드(충돌 전용)도 여기서는 고를 수 있다 — 숨기기 전에 모은다.
+		if (options.collectObject && !out.nodes.empty())
+		{
+			std::vector<Mat4> world(out.nodes.size());
+			for (size_t i = 0; i < out.nodes.size(); ++i)
+			{
+				const SourceNode& node = out.nodes[i];
+				world[i] = node.parent == kInvalidIndex ? node.local : Multiply(node.local, world[node.parent]);
+			}
+
+			CollectedGeometry& collected = out.collected;
+			for (size_t i = 0; i < out.nodes.size(); ++i)
+			{
+				const SourceNode& node = out.nodes[i];
+				if (node.meshes.empty() || !options.collectObject(node.name)) continue;
+
+				const float* m = world[i].m;
+				bool contributed = false;
+				for (const uint32_t meshIndex : node.meshes)
+				{
+					const SourceMesh& mesh = out.meshes[meshIndex];
+					if (mesh.indices.empty()) continue;
+					if (collected.positions.size() + mesh.vertices.size() > kMaxVertices)
+					{
+						error = L"glTF 에서 모은 접지 정점이 너무 많습니다.";
+						return false;
+					}
+					const uint32_t base = static_cast<uint32_t>(collected.positions.size());
+					collected.positions.reserve(collected.positions.size() + mesh.vertices.size());
+					for (const Vertex& vertex : mesh.vertices)
+					{
+						const Vec3& p = vertex.position;   // 행 벡터: p' = p · M
+						collected.positions.push_back({
+							p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12],
+							p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13],
+							p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14] });
+					}
+					collected.indices.reserve(collected.indices.size() + mesh.indices.size());
+					for (const uint32_t index : mesh.indices)
+						collected.indices.push_back(base + index);
+					contributed = true;
+				}
+				if (contributed &&
+					std::find(collected.objects.begin(), collected.objects.end(), node.name) == collected.objects.end())
+					collected.objects.push_back(node.name);
+			}
+		}
+
+		// ── 6-2) 제작용 보조 노드를 화면에서 뺀다 (ReadOptions::hideAuthoringHelpers) ──
+		//  노드는 남기고(자식의 변환이 이어진다) 메시 참조만 뗀다. 그 뒤 아무도 쓰지 않는 메시는 버린다.
+		if (options.hideAuthoringHelpers && !out.meshes.empty())
+		{
+			for (SourceNode& node : out.nodes)
+				if (IsAuthoringHelperNode(node.name)) node.meshes.clear();
+
+			std::vector<uint32_t> remap(out.meshes.size(), kInvalidIndex);
+			for (const SourceNode& node : out.nodes)
+				for (const uint32_t meshIndex : node.meshes) remap[meshIndex] = 0;
+
+			uint32_t kept = 0;
+			for (size_t i = 0; i < out.meshes.size(); ++i)
+			{
+				if (remap[i] == kInvalidIndex) continue;
+				remap[i] = kept;
+				if (kept != i) out.meshes[kept] = std::move(out.meshes[i]);
+				++kept;
+			}
+			out.meshes.resize(kept);
+			for (SourceNode& node : out.nodes)
+				for (uint32_t& meshIndex : node.meshes) meshIndex = remap[meshIndex];
+		}
+
 		// ── 7) 재질·텍스처 ─────────────────────────────
 		if (!options.geometryOnly)
 		{
@@ -1214,11 +1303,15 @@ namespace Shared {
 				const JsonValue& emissive = source["emissiveFactor"];
 				if (emissive.IsArray() && emissive.Size() == 3)
 				{
+					// KHR_materials_emissive_strength — 1 을 넘는 발광 세기를 따로 적는다 (client2 2f15728).
+					const float strength = static_cast<float>((std::max)(0.0,
+						source["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"].AsNumber(1.0)));
 					material.emissive = {
-						static_cast<float>(emissive.At(0).AsNumber()),
-						static_cast<float>(emissive[1].AsNumber()),
-						static_cast<float>(emissive[2].AsNumber()) };
+						static_cast<float>(emissive.At(0).AsNumber()) * strength,
+						static_cast<float>(emissive[1].AsNumber()) * strength,
+						static_cast<float>(emissive[2].AsNumber()) * strength };
 				}
+				material.doubleSided = source["doubleSided"].AsBool();
 
 				// ★ glTF 는 금속도와 거칠기를 한 텍스처(B=금속, G=거칠기)에 담는다.
 				//   우리 셰이더는 슬롯이 따로라 같은 이미지를 두 슬롯에 걸어 둔다.
