@@ -1,7 +1,6 @@
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32")
 #include <windows.h>
-#include <objbase.h>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -12,7 +11,7 @@
 #include "Shared/PlanetConst.h"
 #include "Shared/GameLogic/GameLogic.h"
 #include "Shared/Physics/PhysicsCalculator.h"
-#include "Shared/Terrain/HeightmapLoader.h"
+#include "Shared/Terrain/PlanetSurface.h"
 #include "Shared/Terrain/TerrainSampler.h"
 #include "AI/NpcWorld.h"
 
@@ -257,6 +256,8 @@ private:
 		//  고친 좌표를 저장하고 뿌리므로 NPC 추격도 다른 플레이어 화면도 서버 판정을 따른다.
 		//  보낸 당사자에게는 아직 알리지 않는다.
 		float pos[3] = { pMove->pos[0], pMove->pos[1], pMove->pos[2] };
+		for (const float component : pos)
+			if (!std::isfinite(component)) return;
 		if (ClampToGround(pos))
 		{
 			printf("[위치 보정] 플레이어 %u : 지형 아래 ( %8.2f, %8.2f, %8.2f ) -> ( %8.2f, %8.2f, %8.2f )\n",
@@ -316,16 +317,15 @@ std::vector<FireRequest>	g_fireQueue;
 volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
 
 //지형. 시작할 때 한 번 읽고 그 뒤로는 읽기만 하므로 스레드 간에 락이 필요 없다.
-Shared::HeightmapData	g_heightmap;
+Shared::PlanetSurface	g_planetSurface;
 Shared::TerrainSampler	g_terrain;
 
 /////////////////////////////////////////////////////////////////////////
-//  지형을 읽는다. 클라와 같은 파일(Shared::kTerrainTileAsset)을 같은 설정으로.
+//  클라이언트와 같은 맵(Shared::kPlanetModelAsset)의 접지 삼각형을 읽는다.
 //
-//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 이벤트가 png 를 복사해 둔다.
+//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 대상이 맵 파일을 복사해 둔다.
 //    작업 디렉터리 기준으로 찾으면 VS 에서 켤 때와 exe 를 직접 켤 때가 갈린다.
-//  ★ WIC 로더가 COM 객체라 CoInitializeEx 가 먼저 있어야 한다.
-//    읽고 나면 COM 은 더 쓰지 않으므로 바로 해제한다.
+//  ★ 서버는 Shared에서 접지 삼각형만 읽으며 렌더 재질·텍스처를 불러오지 않는다.
 bool LoadTerrain()
 {
 	wchar_t szExe[MAX_PATH] = { 0 };
@@ -335,17 +335,10 @@ bool LoadTerrain()
 	const size_t nSlash = path.find_last_of(L"\\/");
 	path = (nSlash == std::wstring::npos) ? std::wstring() : path.substr(0, nSlash + 1);
 	path += L"assets\\";
-	path += Shared::kTerrainTileAsset;
-
-	if (FAILED(::CoInitializeEx(NULL, COINIT_MULTITHREADED)))
-	{
-		puts("ERROR: COM 을 초기화할 수 없습니다.");
-		return false;
-	}
+	path += Shared::kPlanetModelAsset;
 
 	std::wstring error;
-	const bool bLoaded = Shared::LoadHeightmapPng(path.c_str(), g_heightmap, error);
-	::CoUninitialize();
+	const bool bLoaded = g_planetSurface.Load(path.c_str(), error);
 
 	if (!bLoaded)
 	{
@@ -357,9 +350,12 @@ bool LoadTerrain()
 		return false;
 	}
 
-	g_terrain.Configure(&g_heightmap, Shared::kPlanetRadius, Shared::TerrainConfig{});
-	printf("지형 %ux%u (mean %.3f) 을 읽었습니다.\n",
-		g_heightmap.size, g_heightmap.size, g_heightmap.mean);
+	g_terrain.Configure(&g_planetSurface, Shared::kPlanetRadius);
+	if constexpr (Shared::kUsePlanarMap)
+		printf("평면 맵 접지 삼각형 %zu개를 읽었습니다.\n", g_planetSurface.TriangleCount());
+	else
+		printf("행성 접지 삼각형 %zu개를 읽었습니다. (반지름 %.0fm)\n",
+			g_planetSurface.TriangleCount(), Shared::kPlanetRadius);
 	return true;
 }
 
@@ -372,6 +368,13 @@ bool LoadTerrain()
 //  ★ 위쪽은 검사하지 않는다 — 점프와 절벽 낙하로 정상적으로 뜬다.
 bool ClampToGround(float pos[3])
 {
+	if constexpr (Shared::kUsePlanarMap)
+	{
+		const double floorHeight = g_terrain.Height(pos[0], pos[1], pos[2]) + Shared::kGroundOffset;
+		if (double(pos[1]) >= floorHeight - GROUND_TOLERANCE) return false;
+		pos[1] = float(floorHeight);
+		return true;
+	}
 	const double dx = (double)pos[0] - Shared::kPlanetCenterX;
 	const double dy = (double)pos[1] - Shared::kPlanetCenterY;
 	const double dz = (double)pos[2] - Shared::kPlanetCenterZ;
@@ -635,18 +638,30 @@ void TakeFires(std::vector<FireRequest> &out)
 }
 
 /////////////////////////////////////////////////////////////////////////
-//  시작 위치 — 월드 원점 방향(0,1,0) 의 지면 위.
+//  시작 위치 — 공통 Landing L1 방향의 실제 지면 위.
 //
-//  ★ 클라 스폰과 같은 규약이다: 기준구 반지름 + 지형 높이 + kGroundOffset.
+//  ★ 클라와 같은 스폰 좌표·지형 높이·kGroundOffset을 사용한다.
 //    클라가 자기 판단으로 되살아나지 않고 이 좌표를 받아 옮겨간다(서버 권위).
 void SpawnPoint(float outPos[3])
 {
-	const double height = g_terrain.Height(0.0, 1.0, 0.0);
+	if constexpr (Shared::kUsePlanarMap)
+	{
+		outPos[0] = float(Shared::kMapSpawnX);
+		outPos[1] = float(g_terrain.Height(Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ) + Shared::kGroundOffset);
+		outPos[2] = float(Shared::kMapSpawnZ);
+		return;
+	}
+	const double length = std::sqrt(Shared::kPlanetSpawnUpX * Shared::kPlanetSpawnUpX +
+		Shared::kPlanetSpawnUpY * Shared::kPlanetSpawnUpY + Shared::kPlanetSpawnUpZ * Shared::kPlanetSpawnUpZ);
+	const double ux = Shared::kPlanetSpawnUpX / length;
+	const double uy = Shared::kPlanetSpawnUpY / length;
+	const double uz = Shared::kPlanetSpawnUpZ / length;
+	const double height = g_terrain.Height(ux, uy, uz);
 	const double radius = Shared::kPlanetRadius + height + Shared::kGroundOffset;
 
-	outPos[0] = (float)Shared::kPlanetCenterX;
-	outPos[1] = (float)(Shared::kPlanetCenterY + radius);
-	outPos[2] = (float)Shared::kPlanetCenterZ;
+	outPos[0] = float(Shared::kPlanetCenterX + ux * radius);
+	outPos[1] = float(Shared::kPlanetCenterY + uy * radius);
+	outPos[2] = float(Shared::kPlanetCenterZ + uz * radius);
 }
 
 void BroadcastHealth(UINT32 nPlayerId, UINT32 nAttackerId, float fHealth)

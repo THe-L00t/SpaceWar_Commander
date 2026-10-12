@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <algorithm>
+#include <array>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -29,6 +31,55 @@ namespace {
 		const size_t slash = p.find_last_of(L"\\/");
 		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
 		return p + L"Shaders\\" + name;
+	}
+
+	struct FrustumPlane
+	{
+		double x = 0.0, y = 0.0, z = 0.0, d = 0.0;
+	};
+
+	struct Frustum
+	{
+		std::array<FrustumPlane, 6> planes{};
+		bool valid = false;
+	};
+
+	Frustum MakeFrustum(const XMFLOAT4X4& m)
+	{
+		// 행벡터 view * projection, D3D 클립 범위: -w <= x,y <= w, 0 <= z <= w.
+		// 행이 아니라 열을 조합한다. 카메라별로 한 프레임에 한 번만 계산한다.
+		Frustum frustum;
+		frustum.planes = {{
+			{ double(m._14) + m._11, double(m._24) + m._21, double(m._34) + m._31, double(m._44) + m._41 },
+			{ double(m._14) - m._11, double(m._24) - m._21, double(m._34) - m._31, double(m._44) - m._41 },
+			{ double(m._14) + m._12, double(m._24) + m._22, double(m._34) + m._32, double(m._44) + m._42 },
+			{ double(m._14) - m._12, double(m._24) - m._22, double(m._34) - m._32, double(m._44) - m._42 },
+			{ m._13, m._23, m._33, m._43 },
+			{ double(m._14) - m._13, double(m._24) - m._23, double(m._34) - m._33, double(m._44) - m._43 }
+		}};
+		for (FrustumPlane& plane : frustum.planes)
+		{
+			const double length = std::sqrt(plane.x * plane.x + plane.y * plane.y + plane.z * plane.z);
+			if (!std::isfinite(length) || length <= 0.0 || !std::isfinite(plane.d)) return frustum;
+			plane.x /= length; plane.y /= length; plane.z /= length; plane.d /= length;
+		}
+		frustum.valid = true;
+		return frustum;
+	}
+
+	// 인스턴스별 프러스텀 검사는 GPU(Cull.hlsl)로 옮겼다(2026-10-11, 멀티스레딩 명세 §2 원칙 5).
+	//  CPU 는 평면 6개만 만들어 넘긴다.
+
+	D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource,
+		D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+	{
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = resource;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = before;
+		barrier.Transition.StateAfter = after;
+		return barrier;
 	}
 
 	struct AdapterPick
@@ -135,12 +186,6 @@ namespace swc {
 		float      pad2[3];
 	};
 
-	struct ObjectConstants
-	{
-		XMFLOAT4X4 world;
-		XMFLOAT4X4 normalWorld;
-	};
-
 	// Forward.hlsl의 MaterialCB와 16바이트 단위로 맞춘다.
 	struct MaterialConstants
 	{
@@ -148,8 +193,30 @@ namespace swc {
 		XMFLOAT3 emissive; float roughness;
 		float metallic; uint32_t hasNormalMap; float pad[2];
 	};
-	static_assert(sizeof(ObjectConstants) == 32 * sizeof(uint32_t));
 	static_assert(sizeof(MaterialConstants) == 12 * sizeof(uint32_t));
+
+	// Cull.hlsl 의 CullCB 와 같은 순서. 루트 상수 26개.
+	struct CullConstants
+	{
+		XMFLOAT4 planes[6];      // xyz = 법선, w = d (정규화)
+		uint32_t entryCount;
+		uint32_t cullEnabled;    // 0 이면 전부 보이는 것으로 둔다(프러스텀을 못 만들었을 때)
+	};
+	static_assert(sizeof(CullConstants) == 26 * sizeof(uint32_t));
+
+	// UI.hlsl 의 SpriteCB 와 순서가 같아야 한다. 루트 상수 16개(64바이트).
+	struct SpriteConstants
+	{
+		XMFLOAT2 center;
+		XMFLOAT2 halfSize;
+		XMFLOAT2 uvMin;
+		XMFLOAT2 uvMax;
+		XMFLOAT4 tint;
+		float    rotation;
+		XMFLOAT2 invViewport;
+		float    pad0;
+	};
+	static_assert(sizeof(SpriteConstants) == 16 * sizeof(uint32_t), "SpriteCB 는 루트 상수 16개");
 
 	struct GRenderer::Impl
 	{
@@ -157,14 +224,25 @@ namespace swc {
 		static const UINT MaxInstances = 4096;
 		static const UINT FrameCBSize = 256;   // CBV 는 256바이트 정렬
 		static const UINT MaxMaterials = 4096;
+		// UI SRV 힙 크기. 텍스처 핸들 i 의 UI 용 SRV = 슬롯 i (CreateTexture 가 만든다).
+		// 넘는 텍스처는 UI 로 그릴 수 없다(재질용 SRV 는 따로 materialHeap 에 있다).
+		static const UINT MaxUiTextures = 4096;
+		// 패스 하나에 그릴 수 있는 인스턴스·묶음 상한. 패스 자원은 (프레임 슬롯 × 패스)마다 하나다.
+		//  인스턴스 128 B × 8192 = 1 MiB. TLAS 상한(MaxInstances 4096)보다 넉넉하다.
+		static const UINT MaxDrawInstances = 8192;
+		static const UINT MaxBatches = 4096;
+		static const UINT PassCount = 2;        // 0 = 배경(하늘 행성), 1 = 메인
+		static const UINT CullGroupSize = 64;   // Cull.hlsl 의 numthreads 와 같아야 한다
 
 		struct MeshGpu
 		{
-			ComPtr<ID3D12Resource> vertexBuffer;
-			ComPtr<ID3D12Resource> indexBuffer;
+			// 정점과 인덱스는 하나의 DEFAULT 버퍼를 나눠 써서 힙 정렬 낭비를 줄인다.
+			ComPtr<ID3D12Resource> buffer;
 			D3D12_VERTEX_BUFFER_VIEW vbv = {};
 			D3D12_INDEX_BUFFER_VIEW ibv = {};
 			UINT indexCount = 0;
+			XMFLOAT3 boundsCenter{};
+			XMFLOAT3 boundsExtents{};
 			uint32_t blasIndex = AccelStructure::kInvalidBlas;
 		};
 
@@ -176,6 +254,7 @@ namespace swc {
 
 		struct MaterialGpu
 		{
+			bool doubleSided = false;
 			MaterialConstants constants{};
 			D3D12_GPU_DESCRIPTOR_HANDLE textures{};
 		};
@@ -192,8 +271,73 @@ namespace swc {
 		ComPtr<ID3D12GraphicsCommandList4> commandList;
 		ComPtr<ID3D12RootSignature>        rootSig;
 		ComPtr<ID3D12PipelineState>        pso;
+		ComPtr<ID3D12PipelineState>        doubleSidedPso;
+		ComPtr<ID3D12PipelineState>        mirroredPso;
+		ComPtr<ID3D12PipelineState>        mirroredDoubleSidedPso;
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
+
+		// ── 인스턴싱 + GPU 컬링 (2026-10-11, 수정방향 3.2 · 멀티스레딩 명세 §2 원칙 5) ──
+		//  ① 패킷의 InstanceData(world·prevWorld)를 인스턴스 버퍼에 그대로 올린다(패킷 순서 = 인스턴스 번호).
+		//  ② 그리기 묶음 = 같은 (PSO, 재질, 메시). 패킷의 구성 버전이 바뀔 때만 다시 만든다(정렬도 그때만).
+		//  ③ 컴퓨트(Cull.hlsl)가 인스턴스마다 프러스텀 검사 → 묶음별 보이는 인스턴스 번호 목록 + 간접 인자.
+		//  ④ 묶음마다 ExecuteIndirect 한 번. 그리기에는 «그 묶음 목록의 시작 번호» 하나만 루트 상수로 넘긴다.
+		//  CPU 는 컬링도 정렬도 매 프레임 하지 않는다.
+		struct InstanceGpu                 // Forward.hlsl · Cull.hlsl 의 InstanceGpu (row_major)
+		{
+			XMFLOAT4X4 world;
+			XMFLOAT4X4 prevWorld;
+		};
+		struct BatchBoundsGpu              // Cull.hlsl 의 BatchBounds — 메시 로컬 AABB + 목록 시작 번호
+		{
+			XMFLOAT3 center;  uint32_t first;
+			XMFLOAT3 extents; uint32_t pad;
+		};
+		struct CullEntryGpu                // Cull.hlsl 의 gEntries (uint2)
+		{
+			uint32_t instance;
+			uint32_t batch;
+		};
+		static_assert(sizeof(InstanceGpu) == 128 && sizeof(BatchBoundsGpu) == 32 && sizeof(CullEntryGpu) == 8);
+
+		struct Batch
+		{
+			uint32_t pso = 0;                  // 0 기본 · 1 양면 · 2 반전 · 3 반전 양면
+			MaterialHandle material = 0;
+			MeshHandle mesh = kInvalidMesh;
+			uint32_t first = 0;                // 보이는 인스턴스 목록에서 이 묶음 구간의 시작
+			uint32_t count = 0;                // 이 묶음에 들 수 있는 인스턴스 수(컬링 전)
+		};
+
+		// (프레임 슬롯 × 패스)마다 하나. CPU 가 쓰는 버퍼는 슬롯별이라 비행 중 프레임에서도 덮어쓰지 않는다(3.1).
+		struct PassGpu
+		{
+			ComPtr<ID3D12Resource> instances;     // UPLOAD  InstanceGpu × MaxDrawInstances — 매 프레임
+			ComPtr<ID3D12Resource> entries;       // UPLOAD  CullEntryGpu × MaxDrawInstances — 구성이 바뀔 때만
+			ComPtr<ID3D12Resource> bounds;        // UPLOAD  BatchBoundsGpu × MaxBatches — 구성이 바뀔 때만
+			ComPtr<ID3D12Resource> argsTemplate;  // UPLOAD  인스턴스 수 0 인 간접 인자 — 구성이 바뀔 때만
+			ComPtr<ID3D12Resource> args;          // DEFAULT UAV  D3D12_DRAW_INDEXED_ARGUMENTS × MaxBatches
+			ComPtr<ID3D12Resource> visible;       // DEFAULT UAV  uint × MaxDrawInstances
+			ComPtr<ID3D12Resource> readback;      // READBACK     args 사본 — 창 제목 통계용
+			uint8_t* instanceData = nullptr;
+			uint8_t* entryData = nullptr;
+			uint8_t* boundsData = nullptr;
+			uint8_t* templateData = nullptr;
+
+			uint64_t layoutVersion = (std::numeric_limits<uint64_t>::max)();
+			size_t   layoutInstances = 0;
+			std::vector<Batch> batches;
+			UINT     entryCount = 0;
+			size_t   dropped = 0;                 // 상한을 넘어 묶음에 못 넣은 인스턴스 수
+			bool     statesInitialized = false;   // 첫 사용 전에는 생성 직후 상태다
+			bool     usedThisFrame = false;
+		};
+		PassGpu passes[FrameCount][PassCount];
+		std::vector<uint32_t> batchOrder;          // 묶음 재구성 때만 쓰는 작업 배열
+
+		ComPtr<ID3D12RootSignature>        cullRootSig;
+		ComPtr<ID3D12PipelineState>        cullPso;
+		ComPtr<ID3D12CommandSignature>     drawSignature;   // DRAW_INDEXED 하나
 
 		std::vector<MeshGpu> meshes;
 		std::vector<TextureGpu> textures;
@@ -201,6 +345,14 @@ namespace swc {
 		std::array<TextureHandle, kMaterialTextureCount> fallbackTextures{};
 		UINT materialDescriptorSize = 0;
 		bool frameOpen = false;
+
+		// ── UI (로딩 화면 등) ──
+		//  재질 SRV(materialHeap)는 재질마다 5칸씩 묶여 있어 텍스처 하나를 따로 가리킬 수 없다.
+		//  그래서 UI 는 자기 SRV 힙을 쓴다. 텍스처 i 의 UI SRV = 힙 슬롯 i.
+		ComPtr<ID3D12DescriptorHeap>       srvHeap;
+		UINT                               srvDescriptorSize = 0;
+		ComPtr<ID3D12RootSignature>        uiRootSig;
+		ComPtr<ID3D12PipelineState>        uiPso;
 
 		ShaderCompiler shaderCompiler;
 		AccelStructure accel;
@@ -212,6 +364,7 @@ namespace swc {
 		uint32_t debugMode = 0;
 		uint32_t frameCounter = 0;
 		std::wstring status;
+		RenderStats stats;
 
 		UINT rtvDescriptorSize = 0;
 		UINT frameIndex = 0;
@@ -219,6 +372,9 @@ namespace swc {
 		ComPtr<ID3D12Fence> fence;
 		UINT64 fenceValue = 0;
 		HANDLE fenceEvent = nullptr;
+		// 명령 제출 후 펜스 대기가 실패해도 GPU가 참조하는 리소스는 유지한다.
+		ComPtr<ID3D12Resource> pendingUpload;
+		ComPtr<ID3D12Resource> pendingDestination;
 
 		uint32_t width = 0;
 		uint32_t height = 0;
@@ -231,7 +387,13 @@ namespace swc {
 				status = L"GPU 펜스 신호 전송 실패.";
 				return false;
 			}
-			if (fence->GetCompletedValue() < target)
+			UINT64 completed = fence->GetCompletedValue();
+			if (completed == (std::numeric_limits<UINT64>::max)())
+			{
+				status = L"GPU 디바이스가 제거되었습니다.";
+				return false;
+			}
+			while (completed < target)
 			{
 				if (FAILED(fence->SetEventOnCompletion(target, fenceEvent)) ||
 					WaitForSingleObject(fenceEvent, INFINITE) != WAIT_OBJECT_0)
@@ -239,19 +401,29 @@ namespace swc {
 					status = L"GPU 펜스 완료 대기 실패.";
 					return false;
 				}
+				completed = fence->GetCompletedValue();
+				if (completed == (std::numeric_limits<UINT64>::max)())
+				{
+					status = L"GPU 디바이스가 제거되었습니다.";
+					return false;
+				}
 			}
+			pendingUpload.Reset();
+			pendingDestination.Reset();
 			frameIndex = swapChain->GetCurrentBackBufferIndex();
 			return true;
 		}
 
 		// 초기화 중 커맨드를 한 번 기록·실행하고 완료까지 기다린다.
-		bool FlushCommands()
+		bool FlushCommands(const ComPtr<ID3D12Resource>& upload, const ComPtr<ID3D12Resource>& destination)
 		{
 			if (FAILED(commandList->Close()))
 			{
 				status = L"리소스 업로드 명령 기록 종료 실패.";
 				return false;
 			}
+			pendingUpload = upload;
+			pendingDestination = destination;
 			ID3D12CommandList* lists[] = { commandList.Get() };
 			commandQueue->ExecuteCommandLists(1, lists);
 			return WaitForGpu();
@@ -391,13 +563,69 @@ namespace swc {
 		// 프레임 상수 버퍼 (UPLOAD, 영속 매핑)
 		{
 			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-			D3D12_RESOURCE_DESC desc = BufferDesc(Impl::FrameCBSize);
+			D3D12_RESOURCE_DESC desc = BufferDesc(Impl::FrameCBSize * 2);
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
 				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->frameCB))))
 				return false;
 			D3D12_RANGE noRead = { 0, 0 };
 			if (FAILED(impl->frameCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->frameCBData))))
 				return false;
+		}
+
+		// 인스턴싱·GPU 컬링 패스 자원 — (프레임 슬롯 × 패스)마다
+		{
+			auto createUpload = [&](UINT64 bytes, ComPtr<ID3D12Resource>& out, uint8_t*& mapped) -> bool
+			{
+				D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				D3D12_RESOURCE_DESC desc = BufferDesc(bytes);
+				if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&out))))
+					return false;
+				D3D12_RANGE noRead = { 0, 0 };
+				return SUCCEEDED(out->Map(0, &noRead, reinterpret_cast<void**>(&mapped)));
+			};
+			auto createDefault = [&](UINT64 bytes, D3D12_RESOURCE_STATES state, ComPtr<ID3D12Resource>& out) -> bool
+			{
+				D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+				D3D12_RESOURCE_DESC desc = BufferDesc(bytes);
+				desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+				return SUCCEEDED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+					state, nullptr, IID_PPV_ARGS(&out)));
+			};
+			const UINT64 argsBytes = UINT64(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS)) * Impl::MaxBatches;
+			for (auto& slot : impl->passes)
+			{
+				for (Impl::PassGpu& pass : slot)
+				{
+					D3D12_HEAP_PROPERTIES readbackHeap = HeapProps(D3D12_HEAP_TYPE_READBACK);
+					D3D12_RESOURCE_DESC readbackDesc = BufferDesc(argsBytes);
+					if (!createUpload(UINT64(sizeof(Impl::InstanceGpu)) * Impl::MaxDrawInstances, pass.instances, pass.instanceData) ||
+						!createUpload(UINT64(sizeof(Impl::CullEntryGpu)) * Impl::MaxDrawInstances, pass.entries, pass.entryData) ||
+						!createUpload(UINT64(sizeof(Impl::BatchBoundsGpu)) * Impl::MaxBatches, pass.bounds, pass.boundsData) ||
+						!createUpload(argsBytes, pass.argsTemplate, pass.templateData) ||
+						!createDefault(argsBytes, D3D12_RESOURCE_STATE_COPY_DEST, pass.args) ||
+						!createDefault(UINT64(sizeof(uint32_t)) * Impl::MaxDrawInstances, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, pass.visible) ||
+						FAILED(impl->device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+							D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pass.readback))))
+					{
+						impl->status = L"인스턴스·컬링 버퍼 생성 실패.";
+						return false;
+					}
+				}
+			}
+
+			// ExecuteIndirect — 인자는 DRAW_INDEXED 하나뿐이라 루트 시그니처가 필요 없다.
+			D3D12_INDIRECT_ARGUMENT_DESC argument = {};
+			argument.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+			D3D12_COMMAND_SIGNATURE_DESC signature = {};
+			signature.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+			signature.NumArgumentDescs = 1;
+			signature.pArgumentDescs = &argument;
+			if (FAILED(impl->device->CreateCommandSignature(&signature, nullptr, IID_PPV_ARGS(&impl->drawSignature))))
+			{
+				impl->status = L"간접 그리기 시그니처 생성 실패.";
+				return false;
+			}
 		}
 
 		// RT 초기화 결과를 확정한 다음 루트 시그니처와 셰이더 경로를 선택한다.
@@ -408,15 +636,17 @@ namespace swc {
 		}
 
 		// Root signature
-		//   b1 = 월드/법선 행렬, b0 = 프레임, b2 = 재질, t1~t5 = 텍스처, t0 = TLAS.
-		//   RT 포함 32 + 2 + 12 + 1 + 2 = 49 DWORD로 루트 상수 한도 안에 둔다.
+		//   b1 = 묶음의 보이는 목록 시작 번호(루트 상수 1개, 수정방향 3.2), b0 = 프레임, b2 = 재질,
+		//   t1~t5 = 텍스처, t6 = 인스턴스, t7 = 보이는 인스턴스 번호 목록, t0 = TLAS.
+		//   RT 포함 1 + 2 + 12 + 1 + 2 + 2 + 2 = 22 DWORD.
+		//   (인스턴싱 전에는 b1 루트 상수 32개로 행렬을 그리기마다 넘겼다.)
 		{
-			D3D12_ROOT_PARAMETER params[5] = {};
+			D3D12_ROOT_PARAMETER params[7] = {};
 
 			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
 			params[0].Constants.ShaderRegister = 1;
 			params[0].Constants.RegisterSpace = 0;
-			params[0].Constants.Num32BitValues = 32;
+			params[0].Constants.Num32BitValues = 1;
 			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
 			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -440,8 +670,17 @@ namespace swc {
 			params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 			params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-			params[4].Descriptor.ShaderRegister = 0;
-			params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			params[4].Descriptor.ShaderRegister = 6;
+			params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+			params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+			params[5].Descriptor.ShaderRegister = 7;
+			params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+			// TLAS 는 마지막에 둔다 — RT 를 못 쓰면 파라미터 수만 줄여 뺀다.
+			params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+			params[6].Descriptor.ShaderRegister = 0;
+			params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 			D3D12_STATIC_SAMPLER_DESC sampler = {};
 			sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -454,7 +693,7 @@ namespace swc {
 			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-			rsDesc.NumParameters = impl->rtSupported ? 5u : 4u;
+			rsDesc.NumParameters = impl->rtSupported ? 7u : 6u;
 			rsDesc.pParameters = params;
 			rsDesc.NumStaticSamplers = 1;
 			rsDesc.pStaticSamplers = &sampler;
@@ -527,6 +766,187 @@ namespace swc {
 				impl->status = L"PSO 생성 실패.";
 				return false;
 			}
+			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->doubleSidedPso))))
+			{
+				impl->status = L"양면 재질 PSO 생성 실패.";
+				return false;
+			}
+			// 반전 배율은 와인딩만 뒤집는다. SV_IsFrontFace도 실제 앞면을 가리켜야 한다.
+			psoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->mirroredDoubleSidedPso))))
+			{
+				impl->status = L"반전 양면 재질 PSO 생성 실패.";
+				return false;
+			}
+			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->mirroredPso))))
+			{
+				impl->status = L"반전 메시 PSO 생성 실패.";
+				return false;
+			}
+		}
+
+		// ── GPU 컬링 파이프라인 (Cull.hlsl) ──
+		//   b0 = CullCB(루트 상수 26개), t0 = 인스턴스, t1 = 컬링 항목, t2 = 묶음 경계,
+		//   u0 = 간접 인자(raw), u1 = 보이는 인스턴스 번호 목록. 전부 루트 디스크립터라 힙이 필요 없다.
+		{
+			D3D12_ROOT_PARAMETER params[6] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			params[0].Constants.ShaderRegister = 0;
+			params[0].Constants.Num32BitValues = sizeof(CullConstants) / sizeof(uint32_t);
+			for (UINT i = 0; i < 3; ++i)
+			{
+				params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+				params[1 + i].Descriptor.ShaderRegister = i;
+			}
+			for (UINT i = 0; i < 2; ++i)
+			{
+				params[4 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+				params[4 + i].Descriptor.ShaderRegister = i;
+			}
+			for (D3D12_ROOT_PARAMETER& param : params)
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 6;
+			rsDesc.pParameters = params;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->cullRootSig))))
+			{
+				impl->status = L"컬링 루트 시그니처 생성 실패.";
+				return false;
+			}
+
+			const std::wstring path = ShaderPath(L"Cull.hlsl");
+			std::string log;
+			std::vector<uint8_t> cs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"CSMain", L"cs_6_0", nullptr, 0, log);
+			if (cs.empty())
+			{
+				OutputDebugStringA(("[Cull CS] " + log + "\n").c_str());
+				impl->status = L"컬링 컴퓨트 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+			D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+			psoDesc.pRootSignature = impl->cullRootSig.Get();
+			psoDesc.CS = { cs.data(), cs.size() };
+			if (FAILED(impl->device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&impl->cullPso))))
+			{
+				impl->status = L"컬링 PSO 생성 실패.";
+				return false;
+			}
+		}
+
+		// ── UI 파이프라인 (로딩 화면 등) ──
+		//   b0 = 루트 상수 16개(SpriteCB) / t0 = 텍스처(디스크립터 테이블) / s0 = 정적 샘플러
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+			srvHeapDesc.NumDescriptors = Impl::MaxUiTextures;
+			srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+			if (FAILED(impl->device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&impl->srvHeap))))
+			{
+				impl->status = L"UI 디스크립터 힙 생성 실패.";
+				return false;
+			}
+			impl->srvDescriptorSize = impl->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+			D3D12_DESCRIPTOR_RANGE srvRange = {};
+			srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			srvRange.NumDescriptors = 1;
+			srvRange.BaseShaderRegister = 0;
+			srvRange.RegisterSpace = 0;
+			srvRange.OffsetInDescriptorsFromTableStart = 0;
+
+			D3D12_ROOT_PARAMETER params[2] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			params[0].Constants.ShaderRegister = 0;
+			params[0].Constants.RegisterSpace = 0;
+			params[0].Constants.Num32BitValues = sizeof(SpriteConstants) / sizeof(uint32_t);
+			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			params[1].DescriptorTable.NumDescriptorRanges = 1;
+			params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+			// 밉까지 선형 보간 — 스피너를 원본보다 훨씬 작게 그려도 반짝이지 않게.
+			D3D12_STATIC_SAMPLER_DESC sampler = {};
+			sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler.MaxLOD = D3D12_FLOAT32_MAX;
+			sampler.ShaderRegister = 0;
+			sampler.RegisterSpace = 0;
+			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 2;
+			rsDesc.pParameters = params;
+			rsDesc.NumStaticSamplers = 1;
+			rsDesc.pStaticSamplers = &sampler;
+			rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->uiRootSig))))
+			{
+				impl->status = L"UI 루트 시그니처 생성 실패.";
+				return false;
+			}
+
+			const std::wstring path = ShaderPath(L"UI.hlsl");
+			std::string log;
+			std::vector<uint8_t> vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", L"vs_6_0", nullptr, 0, log);
+			if (vs.empty())
+			{
+				OutputDebugStringA(("[UI VS] " + log + "\n").c_str());
+				impl->status = L"UI 버텍스 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+			std::vector<uint8_t> ps = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", L"ps_6_0", nullptr, 0, log);
+			if (ps.empty())
+			{
+				OutputDebugStringA(("[UI PS] " + log + "\n").c_str());
+				impl->status = L"UI 픽셀 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+			psoDesc.pRootSignature = impl->uiRootSig.Get();
+			psoDesc.VS = { vs.data(), vs.size() };
+			psoDesc.PS = { ps.data(), ps.size() };
+			psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+			psoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+			// premultiplied 알파 합성 — UI 이미지는 올리기 전에 알파를 미리 곱해 둔다(LoadingScene.cpp)
+			D3D12_RENDER_TARGET_BLEND_DESC& blend = psoDesc.BlendState.RenderTarget[0];
+			blend.BlendEnable = TRUE;
+			blend.SrcBlend = D3D12_BLEND_ONE;
+			blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+			blend.BlendOp = D3D12_BLEND_OP_ADD;
+			blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+			blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+			blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+			blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+			// 깊이는 쓰지도 읽지도 않는다. 바인딩된 DSV 와 형식만 맞춘다.
+			psoDesc.DepthStencilState.DepthEnable = FALSE;
+			psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+			psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+			psoDesc.SampleMask = UINT_MAX;
+			psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+			psoDesc.NumRenderTargets = 1;
+			psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+			psoDesc.SampleDesc.Count = 1;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->uiPso))))
+			{
+				impl->status = L"UI PSO 생성 실패.";
+				return false;
+			}
 		}
 
 		if (FAILED(impl->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&impl->fence))))
@@ -573,7 +993,7 @@ namespace swc {
 
 	MeshHandle GRenderer::CreateMesh(const Vertex* verts, size_t vcount, const uint32_t* indices, size_t icount)
 	{
-		if (!impl->device || impl->frameOpen || !verts || !indices || vcount == 0 || icount == 0 ||
+		if (!impl->device || !impl->fenceEvent || impl->frameOpen || !verts || !indices || vcount == 0 || icount == 0 ||
 			icount % 3 != 0 || vcount > UINT_MAX / sizeof(Vertex) || icount > UINT_MAX / sizeof(uint32_t) ||
 			impl->meshes.size() >= kInvalidMesh)
 		{
@@ -588,51 +1008,89 @@ namespace swc {
 				return kInvalidMesh;
 			}
 		}
+		// CPU 정점을 해제하기 전에 경계만 남긴다. 프레임마다 정점을 읽지 않는다.
+		//  Vertex 는 Shared::Vertex(위치 = Shared::Vec3)다 — XMFLOAT3 로 받지 않는다.
+		XMFLOAT3 boundsMin{ verts[0].position.x, verts[0].position.y, verts[0].position.z };
+		XMFLOAT3 boundsMax = boundsMin;
+		for (size_t i = 0; i < vcount; ++i)
+		{
+			const Shared::Vec3& point = verts[i].position;
+			if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+			{
+				impl->status = L"메시 정점 좌표가 유효하지 않습니다.";
+				return kInvalidMesh;
+			}
+			boundsMin.x = (std::min)(boundsMin.x, point.x); boundsMax.x = (std::max)(boundsMax.x, point.x);
+			boundsMin.y = (std::min)(boundsMin.y, point.y); boundsMax.y = (std::max)(boundsMax.y, point.y);
+			boundsMin.z = (std::min)(boundsMin.z, point.z); boundsMax.z = (std::max)(boundsMax.z, point.z);
+		}
 		Impl::MeshGpu m;
-		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-		D3D12_RANGE noRead = { 0, 0 };
-
+		m.boundsCenter = { boundsMin.x * 0.5f + boundsMax.x * 0.5f,
+			boundsMin.y * 0.5f + boundsMax.y * 0.5f, boundsMin.z * 0.5f + boundsMax.z * 0.5f };
+		m.boundsExtents = { boundsMax.x * 0.5f - boundsMin.x * 0.5f,
+			boundsMax.y * 0.5f - boundsMin.y * 0.5f, boundsMax.z * 0.5f - boundsMin.z * 0.5f };
 		const UINT vbSize = UINT(vcount * sizeof(Vertex));
-		D3D12_RESOURCE_DESC vbDesc = BufferDesc(vbSize);
-		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vbDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.vertexBuffer))))
+		const UINT ibSize = UINT(icount * sizeof(uint32_t));
+		const UINT64 indexOffset = (UINT64(vbSize) + sizeof(uint32_t) - 1) & ~(UINT64(sizeof(uint32_t)) - 1);
+		const UINT64 bufferBytes = indexOffset + ibSize;
+		if (bufferBytes > (std::numeric_limits<size_t>::max)())
 		{
-			impl->status = L"메시 정점 버퍼 생성 실패.";
+			impl->status = L"메시 버퍼 크기가 주소 범위를 벗어났습니다.";
 			return kInvalidMesh;
 		}
-		void* vp = nullptr;
-		if (FAILED(m.vertexBuffer->Map(0, &noRead, &vp)))
+		D3D12_RESOURCE_DESC desc = BufferDesc(bufferBytes);
+		D3D12_HEAP_PROPERTIES defaultHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		if (FAILED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m.buffer))))
 		{
-			impl->status = L"메시 정점 버퍼 매핑 실패.";
+			impl->status = L"GPU 메시 버퍼 생성 실패.";
 			return kInvalidMesh;
 		}
-		memcpy(vp, verts, vbSize);
-		m.vertexBuffer->Unmap(0, nullptr);
-		m.vbv.BufferLocation = m.vertexBuffer->GetGPUVirtualAddress();
+		m.vbv.BufferLocation = m.buffer->GetGPUVirtualAddress();
 		m.vbv.StrideInBytes = sizeof(Vertex);
 		m.vbv.SizeInBytes = vbSize;
-
-		const UINT ibSize = UINT(icount * sizeof(uint32_t));
-		D3D12_RESOURCE_DESC ibDesc = BufferDesc(ibSize);
-		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ibDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.indexBuffer))))
-		{
-			impl->status = L"메시 인덱스 버퍼 생성 실패.";
-			return kInvalidMesh;
-		}
-		void* ip = nullptr;
-		if (FAILED(m.indexBuffer->Map(0, &noRead, &ip)))
-		{
-			impl->status = L"메시 인덱스 버퍼 매핑 실패.";
-			return kInvalidMesh;
-		}
-		memcpy(ip, indices, ibSize);
-		m.indexBuffer->Unmap(0, nullptr);
-		m.ibv.BufferLocation = m.indexBuffer->GetGPUVirtualAddress();
+		m.ibv.BufferLocation = m.buffer->GetGPUVirtualAddress() + indexOffset;
 		m.ibv.Format = DXGI_FORMAT_R32_UINT;
 		m.ibv.SizeInBytes = ibSize;
-
 		m.indexCount = UINT(icount);
+
+		// CPU 사본은 업로드 중에만 필요하며, 정적 메시를 UPLOAD 힙에 계속 두지 않는다.
+		ComPtr<ID3D12Resource> upload;
+		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+		if (FAILED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))))
+		{
+			impl->status = L"메시 업로드 버퍼 생성 실패.";
+			return kInvalidMesh;
+		}
+		uint8_t* mapped = nullptr;
+		D3D12_RANGE noRead = { 0, 0 };
+		if (FAILED(upload->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		{
+			impl->status = L"메시 업로드 버퍼 매핑 실패.";
+			return kInvalidMesh;
+		}
+		memcpy(mapped, verts, vbSize);
+		memcpy(mapped + static_cast<size_t>(indexOffset), indices, ibSize);
+		upload->Unmap(0, nullptr);
+
+		if (!impl->WaitForGpu()) return kInvalidMesh;
+		if (FAILED(impl->commandAllocator->Reset()) ||
+			FAILED(impl->commandList->Reset(impl->commandAllocator.Get(), nullptr)))
+		{
+			impl->status = L"메시 업로드 명령 초기화 실패.";
+			return kInvalidMesh;
+		}
+		impl->commandList->CopyBufferRegion(m.buffer.Get(), 0, upload.Get(), 0, bufferBytes);
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = m.buffer.Get();
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
+		if (impl->rtSupported)
+			barrier.Transition.StateAfter |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		impl->commandList->ResourceBarrier(1, &barrier);
 
 		// BLAS 는 메쉬가 만들어질 때 한 번만 빌드한다 (정적 지오메트리).
 		if (impl->rtSupported)
@@ -640,21 +1098,14 @@ namespace swc {
 			D3D12_RAYTRACING_GEOMETRY_DESC geo = {};
 			geo.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
 			geo.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-			geo.Triangles.VertexBuffer.StartAddress = m.vertexBuffer->GetGPUVirtualAddress() + offsetof(Vertex, position);
+			geo.Triangles.VertexBuffer.StartAddress = m.vbv.BufferLocation + offsetof(Vertex, position);
 			geo.Triangles.VertexBuffer.StrideInBytes = sizeof(Vertex);
 			geo.Triangles.VertexCount = UINT(vcount);
 			geo.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-			geo.Triangles.IndexBuffer = m.indexBuffer->GetGPUVirtualAddress();
+			geo.Triangles.IndexBuffer = m.ibv.BufferLocation;
 			geo.Triangles.IndexCount = UINT(icount);
 			geo.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
 
-			if (!impl->WaitForGpu()) return kInvalidMesh;
-			if (FAILED(impl->commandAllocator->Reset()) ||
-				FAILED(impl->commandList->Reset(impl->commandAllocator.Get(), nullptr)))
-			{
-				impl->status = L"메시 가속 구조 명령 초기화 실패.";
-				return kInvalidMesh;
-			}
 			m.blasIndex = impl->accel.AddMesh(impl->device.Get(), impl->commandList.Get(), geo);
 			if (m.blasIndex == AccelStructure::kInvalidBlas)
 			{
@@ -662,7 +1113,24 @@ namespace swc {
 				impl->status = L"메시 가속 구조 생성 실패.";
 				return kInvalidMesh;
 			}
-			if (!impl->FlushCommands()) return kInvalidMesh;
+		}
+		// 정점/인덱스 복사와 선택적 BLAS 빌드가 모두 끝난 뒤 임시 upload를 해제한다.
+		if (!impl->FlushCommands(upload, m.buffer)) return kInvalidMesh;
+
+		// ── BLAS 압축 + scratch 해제 (2026-10-08) ──
+		//  위 Flush 로 GPU 가 빌드를 끝냈다 → 압축 크기를 읽을 수 있다.
+		if (m.blasIndex != AccelStructure::kInvalidBlas)
+		{
+			impl->commandAllocator->Reset();
+			impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
+
+			impl->accel.CompactMesh(impl->device.Get(), impl->commandList.Get(), m.blasIndex);
+
+			// 압축을 안 하더라도 커맨드 리스트를 닫아야 다음 호출이 Reset 할 수 있다.
+			if (!impl->FlushCommands(nullptr, nullptr)) return kInvalidMesh;
+
+			// 여기서 원본·scratch 가 실제로 해제된다(압축 복사가 GPU 에서 끝난 뒤).
+			impl->accel.FinishCompaction(m.blasIndex);
 		}
 
 		impl->meshes.push_back(std::move(m));
@@ -754,7 +1222,22 @@ namespace swc {
 		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 		impl->commandList->ResourceBarrier(1, &barrier);
 		// 복사가 끝날 때까지 upload를 유지한다. 디스크립터는 CreateMaterial에서 만든다.
-		if (!impl->FlushCommands()) return kInvalidTexture;
+		if (!impl->FlushCommands(upload, texture.resource)) return kInvalidTexture;
+
+		// UI 로도 그릴 수 있게 UI SRV 힙의 «핸들 번호» 슬롯에 SRV 를 하나 더 만든다(DrawSprites).
+		const UINT slot = UINT(impl->textures.size());
+		if (impl->srvHeap && slot < Impl::MaxUiTextures)
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+			srv.Format = texture.format;
+			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Texture2D.MipLevels = 1;
+			D3D12_CPU_DESCRIPTOR_HANDLE cpu = impl->srvHeap->GetCPUDescriptorHandleForHeapStart();
+			cpu.ptr += SIZE_T(slot) * impl->srvDescriptorSize;
+			impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, cpu);
+		}
+
 		impl->textures.push_back(std::move(texture));
 		return static_cast<TextureHandle>(impl->textures.size() - 1);
 	}
@@ -783,6 +1266,7 @@ namespace swc {
 		}
 
 		Impl::MaterialGpu material;
+		material.doubleSided = data.doubleSided;
 		material.constants.baseColor = data.baseColor;
 		material.constants.emissive = data.emissive;
 		material.constants.roughness = data.roughness;
@@ -811,6 +1295,10 @@ namespace swc {
 	void GRenderer::BeginFrame()
 	{
 		impl->frameOpen = true;
+		impl->stats = RenderStats{};
+		for (Impl::PassGpu& pass : impl->passes[impl->frameIndex])
+			pass.usedThisFrame = false;
+		++impl->frameCounter;   // 배경/메인 패스가 같은 프레임의 룰렛 패턴을 사용한다.
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 
@@ -837,23 +1325,28 @@ namespace swc {
 		impl->commandList->RSSetScissorRects(1, &scissor);
 	}
 
-	void GRenderer::Render(const RenderView& view, const std::vector<InstanceData>& items, const XMFLOAT4X4* worlds)
+	void GRenderer::Render(const FramePacket& packet)
 	{
-		if (!worlds || impl->materials.empty()) return;
-		const bool rtActive = impl->rtSupported && impl->rtParams.enabled;
+		const RenderView& view = packet.view;
+		const std::vector<InstanceData>& items = packet.instances;
+		impl->stats.submitted += items.size();
+		if (impl->materials.empty()) return;
+		const bool rtActive = !view.background && impl->rtSupported && impl->rtParams.enabled;
+		ID3D12GraphicsCommandList4* const commandList = impl->commandList.Get();
 
-		// ── TLAS 재빌드 (씬 노드 → 인스턴스) ──
+		// ── TLAS 재빌드 (패킷 인스턴스 → TLAS 인스턴스) ──
 		if (rtActive)
 		{
-			impl->accel.ResetInstances();
+			// 프레임 슬롯을 넘긴다 — 비행 중 프레임(M1)에서 인스턴스 버퍼 덮어쓰기를 막는다.
+			impl->accel.ResetInstances(impl->frameIndex);
 			for (const InstanceData& it : items)
 			{
 				if (it.mesh >= impl->meshes.size()) continue;
 				const uint32_t blasIndex = impl->meshes[it.mesh].blasIndex;
 				if (blasIndex == AccelStructure::kInvalidBlas) continue;
-				impl->accel.AddInstance(blasIndex, worlds[it.node]);
+				impl->accel.AddInstance(blasIndex, it.world);
 			}
-			impl->accel.BuildTlas(impl->commandList.Get());
+			impl->accel.BuildTlas(commandList);
 		}
 
 		// ── 프레임 상수 ──
@@ -865,43 +1358,242 @@ namespace swc {
 		fc.rouletteKnee = impl->rtParams.rouletteKnee;
 		fc.fresnelBoost = impl->rtParams.fresnelBoost;
 		fc.debugMode = impl->debugMode;
-		fc.frameIndex = impl->frameCounter++;   // 룰렛 디더링을 프레임마다 흔든다
-		memcpy(impl->frameCBData, &fc, sizeof(fc));
+		fc.frameIndex = impl->frameCounter;
+		// 한 커맨드 리스트에 두 패스를 기록하므로 서로 다른 256바이트 CBV를 사용한다.
+		// 같은 CPU 메모리를 덮어쓰면 GPU가 배경에서도 마지막 메인 행렬을 읽는다.
+		const UINT frameOffset = view.background ? 0 : Impl::FrameCBSize;
+		memcpy(impl->frameCBData + frameOffset, &fc, sizeof(fc));
+
+		Impl::PassGpu& pass = impl->passes[impl->frameIndex][view.background ? 0 : 1];
+		pass.usedThisFrame = true;
+
+		// ── ① 그리기 묶음 — 패킷의 구성 버전이 바뀔 때만 다시 만든다 ──
+		//  정적 맵은 로드 직후 한 번만 정렬한다. 매 프레임 CPU 정렬은 하지 않는다(멀티스레딩 명세 §2 원칙 5).
+		//  묶음 = 같은 (PSO, 재질, 메시). PSO 는 재질의 양면 여부와 인스턴스의 반전 여부로 정해진다.
+		if (pass.layoutVersion != packet.layoutVersion || pass.layoutInstances != items.size())
+		{
+			pass.layoutVersion = packet.layoutVersion;
+			pass.layoutInstances = items.size();
+			pass.batches.clear();
+			pass.entryCount = 0;
+			const size_t usable = (std::min)(items.size(), size_t(Impl::MaxDrawInstances));
+			pass.dropped = items.size() - usable;
+
+			auto materialOf = [&](const InstanceData& it) -> MaterialHandle
+			{
+				return it.material < impl->materials.size() ? it.material : 0;
+			};
+			auto psoOf = [&](const InstanceData& it) -> uint32_t
+			{
+				return (impl->materials[materialOf(it)].doubleSided ? 1u : 0u) |
+					((it.flags & kInstanceMirrored) ? 2u : 0u);
+			};
+
+			std::vector<uint32_t>& order = impl->batchOrder;
+			order.clear();
+			for (size_t i = 0; i < usable; ++i)
+			{
+				const InstanceData& it = items[i];
+				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				order.push_back(uint32_t(i));
+			}
+			// stable_sort — 같은 묶음 안에서는 Extract 순서를 지킨다.
+			std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b)
+				{
+					const InstanceData& x = items[a];
+					const InstanceData& y = items[b];
+					const uint32_t psoX = psoOf(x), psoY = psoOf(y);
+					if (psoX != psoY) return psoX < psoY;
+					const MaterialHandle materialX = materialOf(x), materialY = materialOf(y);
+					if (materialX != materialY) return materialX < materialY;
+					return x.mesh < y.mesh;
+				});
+
+			for (size_t k = 0; k < order.size(); ++k)
+			{
+				const InstanceData& it = items[order[k]];
+				const uint32_t pso = psoOf(it);
+				const MaterialHandle material = materialOf(it);
+				if (pass.batches.empty() || pass.batches.back().pso != pso ||
+					pass.batches.back().material != material || pass.batches.back().mesh != it.mesh)
+				{
+					if (pass.batches.size() >= Impl::MaxBatches)
+					{
+						pass.dropped += order.size() - k;
+						break;
+					}
+					Impl::Batch batch;
+					batch.pso = pso;
+					batch.material = material;
+					batch.mesh = it.mesh;
+					batch.first = pass.entryCount;
+					pass.batches.push_back(batch);
+				}
+				++pass.batches.back().count;
+				const Impl::CullEntryGpu entry{ order[k], uint32_t(pass.batches.size() - 1) };
+				memcpy(pass.entryData + size_t(pass.entryCount) * sizeof(entry), &entry, sizeof(entry));
+				++pass.entryCount;
+			}
+
+			for (size_t b = 0; b < pass.batches.size(); ++b)
+			{
+				const Impl::Batch& batch = pass.batches[b];
+				const Impl::MeshGpu& m = impl->meshes[batch.mesh];
+				const Impl::BatchBoundsGpu bounds{ m.boundsCenter, batch.first, m.boundsExtents, 0 };
+				memcpy(pass.boundsData + b * sizeof(bounds), &bounds, sizeof(bounds));
+				// 인스턴스 수는 0 으로 둔다 — 컬링 셰이더가 보이는 만큼 올린다.
+				const D3D12_DRAW_INDEXED_ARGUMENTS args{ m.indexCount, 0, 0, 0, 0 };
+				memcpy(pass.templateData + b * sizeof(args), &args, sizeof(args));
+			}
+		}
+		impl->stats.dropped += pass.dropped;
+
+		// ── ② 인스턴스 행렬 업로드 — 패킷 순서 그대로(인스턴스 번호 = 패킷 번호) ──
+		static_assert(offsetof(InstanceData, world) == 0 && offsetof(InstanceData, prevWorld) == sizeof(XMFLOAT4X4),
+			"InstanceData 의 world·prevWorld 는 InstanceGpu 와 같은 배치여야 한다");
+		const size_t uploadCount = (std::min)(items.size(), size_t(Impl::MaxDrawInstances));
+		for (size_t i = 0; i < uploadCount; ++i)
+			memcpy(pass.instanceData + i * sizeof(Impl::InstanceGpu), &items[i], sizeof(Impl::InstanceGpu));
+
+		const UINT batchCount = UINT(pass.batches.size());
+		const UINT argsBytes = batchCount * UINT(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+		if (batchCount > 0)
+		{
+			// ── ③ GPU 컬링 — 간접 인자를 0 으로 되돌리고, 보이는 인스턴스만 묶음 목록에 담는다 ──
+			if (pass.statesInitialized)
+			{
+				const D3D12_RESOURCE_BARRIER toWrite[2] = {
+					Transition(pass.args.Get(),
+						D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | D3D12_RESOURCE_STATE_COPY_SOURCE,
+						D3D12_RESOURCE_STATE_COPY_DEST),
+					Transition(pass.visible.Get(),
+						D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS) };
+				commandList->ResourceBarrier(2, toWrite);
+			}
+			commandList->CopyBufferRegion(pass.args.Get(), 0, pass.argsTemplate.Get(), 0, argsBytes);
+			const D3D12_RESOURCE_BARRIER argsToUav = Transition(pass.args.Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			commandList->ResourceBarrier(1, &argsToUav);
+
+			CullConstants cull = {};
+			const Frustum frustum = MakeFrustum(view.viewProj);
+			for (size_t i = 0; i < frustum.planes.size(); ++i)
+			{
+				const FrustumPlane& plane = frustum.planes[i];
+				cull.planes[i] = XMFLOAT4(float(plane.x), float(plane.y), float(plane.z), float(plane.d));
+			}
+			cull.entryCount = pass.entryCount;
+			cull.cullEnabled = frustum.valid ? 1u : 0u;
+
+			commandList->SetComputeRootSignature(impl->cullRootSig.Get());
+			commandList->SetPipelineState(impl->cullPso.Get());
+			commandList->SetComputeRoot32BitConstants(0, sizeof(cull) / sizeof(uint32_t), &cull, 0);
+			commandList->SetComputeRootShaderResourceView(1, pass.instances->GetGPUVirtualAddress());
+			commandList->SetComputeRootShaderResourceView(2, pass.entries->GetGPUVirtualAddress());
+			commandList->SetComputeRootShaderResourceView(3, pass.bounds->GetGPUVirtualAddress());
+			commandList->SetComputeRootUnorderedAccessView(4, pass.args->GetGPUVirtualAddress());
+			commandList->SetComputeRootUnorderedAccessView(5, pass.visible->GetGPUVirtualAddress());
+			commandList->Dispatch((pass.entryCount + Impl::CullGroupSize - 1) / Impl::CullGroupSize, 1, 1);
+
+			const D3D12_RESOURCE_BARRIER toRead[2] = {
+				Transition(pass.args.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+					D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | D3D12_RESOURCE_STATE_COPY_SOURCE),
+				Transition(pass.visible.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) };
+			commandList->ResourceBarrier(2, toRead);
+			pass.statesInitialized = true;
+			// 창 제목 통계용 — EndFrame 에서 GPU 완료를 기다린 뒤 읽는다.
+			commandList->CopyBufferRegion(pass.readback.Get(), 0, pass.args.Get(), 0, argsBytes);
+		}
 
 		// ── 래스터 패스 ──
-		impl->commandList->SetGraphicsRootSignature(impl->rootSig.Get());
-		impl->commandList->SetPipelineState(impl->pso.Get());
+		commandList->SetGraphicsRootSignature(impl->rootSig.Get());
+		commandList->SetPipelineState(impl->pso.Get());
 		ID3D12DescriptorHeap* heaps[] = { impl->materialHeap.Get() };
-		impl->commandList->SetDescriptorHeaps(1, heaps);
-		impl->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		impl->commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress());
+		commandList->SetDescriptorHeaps(1, heaps);
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress() + frameOffset);
+		commandList->SetGraphicsRootShaderResourceView(4, pass.instances->GetGPUVirtualAddress());
+		commandList->SetGraphicsRootShaderResourceView(5, pass.visible->GetGPUVirtualAddress());
 		if (impl->rtSupported)
-			impl->commandList->SetGraphicsRootShaderResourceView(4, impl->accel.TlasAddress());
-
-		for (const InstanceData& it : items)
 		{
-			if (it.mesh >= impl->meshes.size()) continue;
-			const Impl::MeshGpu& m = impl->meshes[it.mesh];
+			// DXR의 null acceleration structure는 GPU 주소 0이다. 루트 슬롯을 미설정으로 두지 않는다.
+			const D3D12_GPU_VIRTUAL_ADDRESS tlas = rtActive && impl->accel.InstanceCount() > 0
+				? impl->accel.TlasAddress() : 0;
+			commandList->SetGraphicsRootShaderResourceView(6, tlas);
+		}
 
-			const XMMATRIX world = XMLoadFloat4x4(&worlds[it.node]);
-			XMVECTOR determinant;
-			const XMMATRIX inverseWorld = XMMatrixInverse(&determinant, world);
-			const float det = XMVectorGetX(determinant);
-			if (!std::isfinite(det) || std::fabs(det) < 1e-12f) continue;
-			ObjectConstants object;
-			XMStoreFloat4x4(&object.world, XMMatrixTranspose(world));
-			// 법선 행렬은 inverse-transpose. 셰이더 업로드 전치까지 적용하면 inverse가 남는다.
-			XMStoreFloat4x4(&object.normalWorld, inverseWorld);
-			impl->commandList->SetGraphicsRoot32BitConstants(0, 32, &object, 0);
+		// ── ④ 묶음마다 ExecuteIndirect 한 번 — 인스턴스 수는 컬링 셰이더가 채웠다 ──
+		ID3D12PipelineState* const psoByKey[4] = {
+			impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get() };
+		ID3D12PipelineState* currentPso = impl->pso.Get();
+		MaterialHandle currentMaterial = kInvalidMaterial;
+		for (UINT b = 0; b < batchCount; ++b)
+		{
+			const Impl::Batch& batch = pass.batches[b];
+			ID3D12PipelineState* selectedPso = psoByKey[batch.pso];
+			if (currentPso != selectedPso)
+			{
+				commandList->SetPipelineState(selectedPso);
+				currentPso = selectedPso;
+			}
+			if (currentMaterial != batch.material)
+			{
+				const Impl::MaterialGpu& material = impl->materials[batch.material];
+				commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
+				commandList->SetGraphicsRootDescriptorTable(3, material.textures);
+				currentMaterial = batch.material;
+			}
+			const Impl::MeshGpu& m = impl->meshes[batch.mesh];
+			commandList->IASetVertexBuffers(0, 1, &m.vbv);
+			commandList->IASetIndexBuffer(&m.ibv);
+			// 그리기에 넘기는 것은 «이 묶음의 보이는 목록 시작 번호» 하나다(수정방향 3.2).
+			commandList->SetGraphicsRoot32BitConstant(0, batch.first, 0);
+			commandList->ExecuteIndirect(impl->drawSignature.Get(), 1, pass.args.Get(),
+				UINT64(b) * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS), nullptr, 0);
+			++impl->stats.drawCalls;
+		}
+		if (view.background)
+		{
+			// 먼 행성 내부의 깊이 비교는 유지하고 이후 맵/캐릭터가 항상 앞에 놓이게 한다.
+			// 배경 패스의 넓은 near/far 범위를 메인 맵의 깊이 범위와 섞지 않는다.
+			const D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+			impl->commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+		}
+	}
 
-			const MaterialHandle materialIndex = it.material < impl->materials.size() ? it.material : 0;
-			const Impl::MaterialGpu& material = impl->materials[materialIndex];
-			impl->commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
-			impl->commandList->SetGraphicsRootDescriptorTable(3, material.textures);
+	void GRenderer::DrawSprites(const std::vector<UISprite>& sprites)
+	{
+		if (sprites.empty() || !impl->uiPso) return;
 
-			impl->commandList->IASetVertexBuffers(0, 1, &m.vbv);
-			impl->commandList->IASetIndexBuffer(&m.ibv);
-			impl->commandList->DrawIndexedInstanced(m.indexCount, 1, 0, 0, 0);
+		impl->commandList->SetGraphicsRootSignature(impl->uiRootSig.Get());
+		impl->commandList->SetPipelineState(impl->uiPso.Get());
+		ID3D12DescriptorHeap* heaps[] = { impl->srvHeap.Get() };
+		impl->commandList->SetDescriptorHeaps(1, heaps);
+		impl->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+		const XMFLOAT2 invViewport(1.0f / float(impl->width), 1.0f / float(impl->height));
+		const D3D12_GPU_DESCRIPTOR_HANDLE heapStart = impl->srvHeap->GetGPUDescriptorHandleForHeapStart();
+
+		for (const UISprite& s : sprites)
+		{
+			if (s.texture >= impl->textures.size() || s.texture >= Impl::MaxUiTextures) continue;
+
+			SpriteConstants c = {};
+			c.center = s.center;
+			c.halfSize = s.halfSize;
+			c.uvMin = s.uvMin;
+			c.uvMax = s.uvMax;
+			c.tint = s.tint;
+			c.rotation = s.rotation;
+			c.invViewport = invViewport;
+			impl->commandList->SetGraphicsRoot32BitConstants(0, sizeof(c) / sizeof(uint32_t), &c, 0);
+
+			D3D12_GPU_DESCRIPTOR_HANDLE gpu = heapStart;
+			gpu.ptr += UINT64(s.texture) * impl->srvDescriptorSize;
+			impl->commandList->SetGraphicsRootDescriptorTable(1, gpu);
+
+			impl->commandList->DrawInstanced(4, 1, 0, 0);
 		}
 	}
 
@@ -920,9 +1612,33 @@ namespace swc {
 		ID3D12CommandList* lists[] = { impl->commandList.Get() };
 		impl->commandQueue->ExecuteCommandLists(1, lists);
 
+		// WaitForGpu 가 frameIndex 를 다음 백버퍼로 바꾸므로 이번 프레임 슬롯을 먼저 잡아 둔다.
+		const UINT slot = impl->frameIndex;
 		impl->swapChain->Present(1, 0);
-		impl->WaitForGpu();
+		const bool finished = impl->WaitForGpu();
 		impl->frameOpen = false;
+
+		// ── 통계 — GPU 컬링 결과(묶음별 인스턴스 수)를 읽는다. GPU 를 기다린 뒤라 이번 프레임 값이다 ──
+		if (!finished) return;
+		for (Impl::PassGpu& pass : impl->passes[slot])
+		{
+			if (!pass.usedThisFrame || pass.batches.empty() || !pass.statesInitialized) continue;
+			const size_t bytes = pass.batches.size() * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+			D3D12_RANGE readRange = { 0, bytes };
+			void* mapped = nullptr;
+			if (FAILED(pass.readback->Map(0, &readRange, &mapped))) continue;
+			const D3D12_DRAW_INDEXED_ARGUMENTS* args = static_cast<const D3D12_DRAW_INDEXED_ARGUMENTS*>(mapped);
+			size_t visible = 0;
+			for (size_t b = 0; b < pass.batches.size(); ++b)
+			{
+				visible += args[b].InstanceCount;
+				impl->stats.triangles += uint64_t(args[b].IndexCountPerInstance / 3) * args[b].InstanceCount;
+			}
+			D3D12_RANGE noWrite = { 0, 0 };
+			pass.readback->Unmap(0, &noWrite);
+			impl->stats.instances += visible;
+			impl->stats.culled += pass.entryCount > visible ? pass.entryCount - visible : 0;
+		}
 	}
 
 	bool GRenderer::SupportsRaytracing() const { return impl->rtSupported; }
@@ -931,5 +1647,17 @@ namespace swc {
 	void GRenderer::SetSunDirection(const XMFLOAT3& d) { impl->sunDir = d; }
 	void GRenderer::SetDebugMode(uint32_t m) { impl->debugMode = m; }
 	uint32_t GRenderer::DebugMode() const { return impl->debugMode; }
+	const RenderStats& GRenderer::Stats() const { return impl->stats; }
 	const std::wstring& GRenderer::StatusText() const { return impl->status; }
+	uint32_t GRenderer::Width() const { return impl->width; }
+	uint32_t GRenderer::Height() const { return impl->height; }
+
+	// 가속 구조 계측 — Impl 안의 AccelStructure 를 그대로 묻는다(DX 타입은 밖으로 안 나간다).
+	uint64_t GRenderer::BlasResultBytes()     const { return impl->accel.BlasResultBytes(); }
+	uint64_t GRenderer::BlasScratchBytes()    const { return impl->accel.BlasScratchBytes(); }
+	uint64_t GRenderer::BlasCompactionSaved() const { return impl->accel.BlasCompactionSaved(); }
+	size_t   GRenderer::BlasCount()           const { return impl->accel.BlasCount(); }
+	uint32_t GRenderer::TlasInstanceCount()   const { return impl->accel.InstanceCount(); }
+	uint32_t GRenderer::TlasMaxInstances()    const { return impl->accel.MaxInstances(); }
+	uint32_t GRenderer::TlasDroppedInstances()const { return impl->accel.DroppedInstances(); }
 }
