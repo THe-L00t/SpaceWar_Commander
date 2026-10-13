@@ -60,7 +60,8 @@ namespace swc {
 					if (batch->Failed())
 					{
 						loadFailed = true;
-						loadError = batch->Error() + L" 실패: " + resources.LastError();
+						loadError = batch->Error() + L" 실패: " +
+							(batch->FailureDetail().empty() ? resources.LastError() : batch->FailureDetail());
 					}
 					else
 					{

@@ -1,17 +1,15 @@
 #pragma once
+#include <cstdint>
 #include <string>
-#include "Client/Resource/TextureData.h"
-
-// ============================================================
-//  Client/Resource/TextureLoader.h — 이미지 파일 → TextureData
-//
-//  WIC 로 PNG·JPG 등을 읽어 premultiplied RGBA8 로 바꾸고 밉 체인을 만든다.
-//  ★ 어느 스레드에서 불러도 된다. 단 그 스레드에서 COM 이 초기화돼 있어야 한다
-//    (메인은 Engine::Initialize, 로딩 스레드는 LoadQueue 가 초기화한다).
-// ============================================================
+#include "ModelData.h"
 
 namespace swc {
 
-	bool LoadTextureFile(const wchar_t* path, TextureData& out, std::wstring& error);
+	// 호출 전에 CoInitializeEx가 필요하다. 출력은 위쪽 행부터 저장한 RGBA8이다.
+	bool LoadTextureImage(const wchar_t* path, bool srgb, TextureData& out, std::wstring& error);
 
-} // namespace swc
+	// .glb 안에 들어 있던 이미지처럼 «파일이 아닌» 바이트에서 읽는다 (2026-10-07).
+	// label 은 오류 메시지·캐시 키에 쓰는 이름이다(파일 경로가 없으므로).
+	bool LoadTextureImageFromMemory(const uint8_t* bytes, size_t size, bool srgb,
+		const wchar_t* label, TextureData& out, std::wstring& error);
+}

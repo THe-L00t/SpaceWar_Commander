@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 #include <memory>
 #include <string>
@@ -8,12 +9,24 @@
 #include "UISprite.h"
 #include "Vertex.h"
 #include "RayTracingParams.h"
-#include "Resource/TextureData.h"
+#include "Resource/ModelData.h"
 
 struct HWND__;
 using HWND = HWND__*;
 
 namespace swc {
+	// 래스터 제출량. GPU 실행 시간이나 실제 FPS 측정값은 아니다.
+	//  culled·instances·triangles 는 GPU 컬링 결과를 EndFrame 에서 읽어 채운다(그 전에는 0).
+	struct RenderStats
+	{
+		size_t submitted = 0;    // 패킷의 인스턴스 수
+		size_t culled = 0;       // GPU 컬링으로 빠진 인스턴스 수
+		size_t drawCalls = 0;    // ExecuteIndirect 수 = 그리기 묶음 수(같은 PSO·재질·메시)
+		size_t instances = 0;    // 그려진 인스턴스 수(컬링 뒤)
+		size_t dropped = 0;      // 버퍼·묶음 상한을 넘어 못 그린 수 — 0 이어야 정상
+		uint64_t triangles = 0;
+	};
+
 	class GRenderer
 	{
 	public:
@@ -22,13 +35,16 @@ namespace swc {
 
 		bool Initialize(HWND, uint32_t, uint32_t);
 		MeshHandle CreateMesh(const Vertex*, size_t, const uint32_t*, size_t);
-
-		// RAM 사본(Resource Manager) → GPU 텍스처. 메인(렌더 단계)에서, 프레임 밖에서 부른다.
+		// GPU 리소스 등록은 Initialize 이후, BeginFrame 밖에서 수행한다.
 		// 업로드가 끝난 뒤에 돌아오므로, 받은 직후 RAM 사본을 버려도 된다.
+		// 만든 텍스처는 재질에도, UI(DrawSprites)에도 쓸 수 있다.
 		TextureHandle CreateTexture(const TextureData&);
+		MaterialHandle CreateMaterial(const MaterialData&, const std::array<TextureHandle, kMaterialTextureCount>&);
 
 		void BeginFrame();
-		void Render(const RenderView&, const std::vector<InstanceData>&, const DirectX::XMFLOAT4X4*);
+		// BeginFrame마다 배경(view.background=true), 메인 패스를 각 한 번 호출한다.
+		//  프레임 패킷이 유일한 입력이다 — 렌더러는 Scene 을 직접 읽지 않는다(수정방향 3.2).
+		void Render(const FramePacket&);
 		// UI 를 화면 맨 위에 덮어 그린다. BeginFrame 과 EndFrame 사이, Render 뒤에 부른다.
 		void DrawSprites(const std::vector<UISprite>&);
 		void EndFrame();
@@ -44,6 +60,7 @@ namespace swc {
 		void SetSunDirection(const DirectX::XMFLOAT3&);
 		void SetDebugMode(uint32_t);
 		uint32_t DebugMode() const;
+		const RenderStats& Stats() const;
 
 		// 초기화 실패 원인 / 어댑터 이름 등
 		const std::wstring& StatusText() const;

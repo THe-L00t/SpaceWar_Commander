@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -50,6 +51,11 @@ namespace swc {
 		const std::wstring& CurrentLabel() const { return currentLabel; }
 		const std::wstring& Error() const { return error; }
 
+		// finish 가 실패를 돌려주기 전에 원인을 적어 둔다(오류 창에 그대로 뜬다).
+		// 비어 있으면 SceneManager 가 ResourceManager::LastError 를 쓴다.
+		void SetFailureDetail(std::wstring detail) { failureDetail = std::move(detail); }
+		const std::wstring& FailureDetail() const { return failureDetail; }
+
 	private:
 		struct Task
 		{
@@ -73,6 +79,8 @@ namespace swc {
 		bool                            failed = false;
 		std::wstring                    currentLabel;
 		std::wstring                    error;
+		std::wstring                    failureDetail;
+		std::chrono::steady_clock::time_point startTime{};   // 로그용 (전체 시간)
 	};
 
 } // namespace swc

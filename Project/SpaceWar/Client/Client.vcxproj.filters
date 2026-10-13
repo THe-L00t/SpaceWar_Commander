@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
     필터 규칙 (클래스 기준)
@@ -12,6 +12,9 @@
     .cpp / .h 를 같이 넣는다.
   -->
   <ItemGroup>
+    <Filter Include="클래스 목록\SkyPlanet">
+      <UniqueIdentifier>{a8c62127-494c-4755-978b-83f78bd7ee61}</UniqueIdentifier>
+    </Filter>
     <Filter Include="소스코드">
       <UniqueIdentifier>{a62690b0-bb26-47a1-9f49-f2dd1e9400cf}</UniqueIdentifier>
     </Filter>
@@ -45,6 +48,9 @@
     <Filter Include="클래스 목록\Animator">
       <UniqueIdentifier>{6d0e28f5-b34a-4c91-857d-90fc2b6e4315}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\AnimationBlender">
+      <UniqueIdentifier>{c58d0a73-2b14-49e6-8f05-36ab7e92d140}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\SoundManager">
       <UniqueIdentifier>{48f1a9c6-27d3-4e50-b16a-8c05d37e92b1}</UniqueIdentifier>
     </Filter>
@@ -75,6 +81,15 @@
     <Filter Include="클래스 목록\Network">
       <UniqueIdentifier>{6c8b2f19-05a4-4d3e-91f7-4a2e8db06c53}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Model">
+      <UniqueIdentifier>{0b5e9a41-7c62-4d38-9a15-3f8ed2c47b60}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ModelBuilder">
+      <UniqueIdentifier>{5c3a7d18-94b6-42ef-8207-6be1d4a9f735}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\TextureLoader">
+      <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\LoadingScene">
       <UniqueIdentifier>{b4e71c2a-6d39-4f80-a5c2-1e9d7f3b8a64}</UniqueIdentifier>
     </Filter>
@@ -84,8 +99,14 @@
     <Filter Include="클래스 목록\LoadBatch">
       <UniqueIdentifier>{e3c86f15-49a2-4d7b-b0e1-2f8a5c9d6b70}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Log">
+      <UniqueIdentifier>{9d3e7a52-1c84-4f06-b2e9-6a07c45d18f3}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="설정 및 리소스">
+      <UniqueIdentifier>{617c7c5e-f7f8-4a99-af05-7319b9d3bc43}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -149,6 +170,21 @@
     <ClCompile Include="Net\Network.cpp">
       <Filter>클래스 목록\Network</Filter>
     </ClCompile>
+    <ClCompile Include="SkyPlanet.cpp">
+      <Filter>클래스 목록\SkyPlanet</Filter>
+    </ClCompile>
+    <ClCompile Include="Model.cpp">
+      <Filter>클래스 목록\Model</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\ModelBuilder.cpp">
+      <Filter>클래스 목록\ModelBuilder</Filter>
+    </ClCompile>
+    <ClCompile Include="Animation\AnimationBlender.cpp">
+      <Filter>클래스 목록\AnimationBlender</Filter>
+    </ClCompile>
+    <ClCompile Include="Resource\TextureLoader.cpp">
+      <Filter>클래스 목록\TextureLoader</Filter>
+    </ClCompile>
     <ClCompile Include="Scene\LoadingScene.cpp">
       <Filter>클래스 목록\LoadingScene</Filter>
     </ClCompile>
@@ -158,8 +194,8 @@
     <ClCompile Include="Resource\LoadBatch.cpp">
       <Filter>클래스 목록\LoadBatch</Filter>
     </ClCompile>
-    <ClCompile Include="Resource\TextureLoader.cpp">
-      <Filter>클래스 목록\ResourceManager</Filter>
+    <ClCompile Include="Log.cpp">
+      <Filter>클래스 목록\Log</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -223,6 +259,33 @@
     <ClInclude Include="Net\Network.h">
       <Filter>클래스 목록\Network</Filter>
     </ClInclude>
+    <ClInclude Include="SkyPlanet.h">
+      <Filter>클래스 목록\SkyPlanet</Filter>
+    </ClInclude>
+    <ClInclude Include="Model.h">
+      <Filter>클래스 목록\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ModelBuilder.h">
+      <Filter>클래스 목록\ModelBuilder</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\AnimationData.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\AnimationBlender.h">
+      <Filter>클래스 목록\AnimationBlender</Filter>
+    </ClInclude>
+    <ClInclude Include="Animation\AnimationObject.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\TextureLoader.h">
+      <Filter>클래스 목록\TextureLoader</Filter>
+    </ClInclude>
+    <ClInclude Include="MeshData.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ModelData.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
     <ClInclude Include="Handles.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
@@ -262,22 +325,57 @@
     <ClInclude Include="Resource\LoadBatch.h">
       <Filter>클래스 목록\LoadBatch</Filter>
     </ClInclude>
-    <ClInclude Include="Resource\TextureLoader.h">
-      <Filter>클래스 목록\ResourceManager</Filter>
-    </ClInclude>
-    <ClInclude Include="Resource\TextureData.h">
-      <Filter>헤더파일</Filter>
-    </ClInclude>
     <ClInclude Include="UISprite.h">
       <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Log.h">
+      <Filter>클래스 목록\Log</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\Cull.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="..\..\assets\model\character\*.obj">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\character\*.mtl">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\character\*.png">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\planet\*.obj">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\planet\*.mtl">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="SKY_PLANET.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="PLANET_MODEL.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
+    <None Include="OBJ_MODEL.md">
+      <Filter>설정 및 리소스</Filter>
+    </None>
     <None Include="Shaders\UI.hlsl">
       <Filter>셰이더</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">
+      <Filter>설정 및 리소스</Filter>
     </None>
   </ItemGroup>
 </Project>

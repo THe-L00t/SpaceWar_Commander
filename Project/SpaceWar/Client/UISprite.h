@@ -10,7 +10,7 @@
 //  Renderer 는 이것만 보고 화면 위에 사각형을 그린다. 게임 쪽을 되부르지 않는다.
 //
 //  ★ 좌표는 픽셀이다. (0,0) = 창 왼쪽 위, +y 는 아래.
-//  ★ 텍스처는 premultiplied 알파다 (TextureData.h). tint 의 a 는 전체를 곱해 흐리게 한다.
+//  ★ 텍스처는 premultiplied 알파로 올린다 (LoadingScene.cpp PrepareForUI). tint 의 a 는 전체를 곱해 흐리게 한다.
 // ============================================================
 
 namespace swc {
