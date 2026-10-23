@@ -2,7 +2,7 @@
 #include <vector>
 #include <DirectXMath.h>
 #include "Handles.h"
-#include "RenderItem.h"
+#include "InstanceData.h"
 
 namespace swc {
 	class Scene

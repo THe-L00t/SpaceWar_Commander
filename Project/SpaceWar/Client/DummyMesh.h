@@ -2,18 +2,13 @@
 #include <vector>
 #include <cstdint>
 #include <cmath>
-#include "Vertex.h"
+#include "MeshData.h"
 #include "Planet.h"
 #include "Shared/Units.h"
 
-// 테스트용 더미 메쉬 생성 (Assimp 등 파일 로딩 없이 코드로 만든다)
+// 지형 및 테스트용 메시 생성 (파일 로딩 없이 코드로 만든다)
 // 면마다 노멀이 달라야 하므로 박스는 정점을 공유하지 않고 24개로 만든다.
 namespace swc {
-	struct MeshData {
-		std::vector<Vertex> vertices;
-		std::vector<uint32_t> indices;
-	};
-
 	inline MeshData MakeBox(float sx, float sy, float sz, DirectX::XMFLOAT3 color)
 	{
 		using DirectX::XMFLOAT3;
@@ -43,7 +38,7 @@ namespace swc {
 		{
 			const uint32_t base = f * 4;
 			for (uint32_t v = 0; v < 4; ++v)
-				m.vertices.push_back({ corners[f][v], normals[f], color });
+				m.vertices.push_back({ ToVec3(corners[f][v]), ToVec3(normals[f]), ToVec3(color) });
 
 			m.indices.push_back(base + 0);
 			m.indices.push_back(base + 1);
@@ -148,9 +143,9 @@ namespace swc {
 				{
 					const Vec3d d = DirAt(face, i, j);
 					Vertex v;
-					v.position = SurfaceAt(d).ToFloat3();
-					v.normal = NormalAt(d).ToFloat3();
-					v.color = color;
+					v.position = ToVec3(SurfaceAt(d).ToFloat3());
+					v.normal = ToVec3(NormalAt(d).ToFloat3());
+					v.color = ToVec3(color);
 					m.vertices.push_back(v);
 				}
 			}
@@ -185,13 +180,14 @@ namespace swc {
 	inline MeshData MakeGround(float size, DirectX::XMFLOAT3 color)
 	{
 		const float h = size * 0.5f;
-		const DirectX::XMFLOAT3 up{ 0.0f, 1.0f, 0.0f };
+		const Shared::Vec3 up{ 0.0f, 1.0f, 0.0f };
+		const Shared::Vec3 tint = ToVec3(color);
 		MeshData m;
 		m.vertices = {
-			{ { -h, 0.0f, -h }, up, color },
-			{ { -h, 0.0f,  h }, up, color },
-			{ {  h, 0.0f,  h }, up, color },
-			{ {  h, 0.0f, -h }, up, color },
+			{ { -h, 0.0f, -h }, up, tint },
+			{ { -h, 0.0f,  h }, up, tint },
+			{ {  h, 0.0f,  h }, up, tint },
+			{ {  h, 0.0f, -h }, up, tint },
 		};
 		m.indices = { 0, 1, 2, 0, 2, 3 };
 		return m;

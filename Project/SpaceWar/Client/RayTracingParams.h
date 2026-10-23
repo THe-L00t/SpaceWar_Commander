@@ -4,6 +4,18 @@
 // 레이 예산 파라미터. DX 타입 없음 — 게임 로직·프레임 컨트롤러가 다룬다.
 // 나중에 60fps 컨트롤러가 프레임시간을 보고 knee 를 올려 레이 수를 깎는다.
 namespace swc {
+
+	// ── 임시 스위치 (2026-09-14) ─────────────────────────────
+	//  래스터만으로 확인하려고 DXR 을 통째로 끈다.
+	//
+	//  false 면 장치가 DXR 을 지원하더라도
+	//    · 가속 구조를 아예 만들지 않는다 (BLAS·TLAS 둘 다. AccelStructure::Initialize 도 안 부른다)
+	//    · 셰이더를 RT_SUPPORTED=0 · sm 6.0 으로 컴파일한다 (RayQuery 코드가 들어가지 않는다)
+	//    · 루트 시그니처에서 TLAS SRV 파라미터를 뺀다
+	//
+	//  ★ 실행 인자로 만들지 않는다. 되돌리려면 true 로 고치고 다시 빌드한다.
+	inline constexpr bool kEnableRaytracing = false;
+
 	struct RayTracingParams
 	{
 		bool  enabled = true;

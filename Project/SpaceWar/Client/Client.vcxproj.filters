@@ -142,10 +142,19 @@
     <ClInclude Include="Handles.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
-    <ClInclude Include="RenderItem.h">
+    <ClInclude Include="InstanceData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="Vertex.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="MeshData.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="UISprite.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ModelData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
     <ClInclude Include="DummyMesh.h">
@@ -166,12 +175,24 @@
     <ClInclude Include="..\Shared\HeightmapData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="..\Shared\Vec3.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Model\Vertex.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\Model\ModelFormat.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl">
       <Filter>셰이더</Filter>
     </None>
     <None Include="Shaders\Cull.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\UI.hlsl">
       <Filter>셰이더</Filter>
     </None>
   </ItemGroup>
