@@ -265,8 +265,11 @@ namespace swc {
 		uint32_t textures[4];   // BaseColor · Normal · Roughness · Metallic
 		uint32_t emissiveTexture; uint32_t pad1[3];
 		XMFLOAT3 transmittance; uint32_t transmissive;
+		// 9단계 — [7] 반투명 패스가 읽는 투과 · 부피 · 굴절률 (MaterialData 그대로)
+		float    transmission;  float ior;  float thickness;  float attenuationDistance;
+		XMFLOAT3 attenuationColor; uint32_t pad2;
 	};
-	static_assert(sizeof(RtMaterialGpu) == 96, "RtMaterial 은 96바이트");
+	static_assert(sizeof(RtMaterialGpu) == 128, "RtMaterial 은 128바이트 (9단계에서 96 → 128)");
 	//  인스턴스 표: TLAS 인스턴스 순번(InstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
 	struct RtInstanceGpu
 	{
@@ -322,6 +325,31 @@ namespace swc {
 		float      thickness;  uint32_t pad0[3];   // 화면 공간 추적에서 «깊이 표면 바로 뒤» 로 볼 두께(m)
 	};
 	static_assert(sizeof(AoConstants) == 288, "AoCB 는 288바이트");
+
+	// Transparent.hlsl 의 TransparentCB 와 같은 순서 · 크기 (2026-10-27 렌더 9단계, [7] 반투명)
+	struct TransparentConstants
+	{
+		XMFLOAT4X4 viewProj;               // 전치해서 올림
+		XMFLOAT4X4 invViewProj;
+		XMFLOAT3   eyePos;          float maxDistance;
+		XMFLOAT3   sunDir;          uint32_t sceneColorSrv;   // ↓ 바인드리스 번호
+		XMFLOAT3   sunIlluminance;  uint32_t depthSrv;
+		uint32_t   width, height, mipCount, rtEnabled;
+		uint32_t   skySrv, skyIrradianceSrv, probeIrradianceSrv, probeDistanceSrv;
+		uint32_t   probeStateSrv, pad0[3];
+		ProbeVolumeGpu probeVolume;
+	};
+	static_assert(sizeof(TransparentConstants) == 288, "TransparentCB 는 288바이트");
+
+	// ColorPyramid.hlsl 의 PyramidCB (2026-10-27 렌더 9단계) — 디스패치마다 256 B 칸 하나
+	struct PyramidConstants
+	{
+		uint32_t srcIndex, dstIndex;
+		uint32_t dstWidth, dstHeight;
+		float    srcTexelX, srcTexelY;
+		uint32_t pad0[2];
+	};
+	static_assert(sizeof(PyramidConstants) == 32, "PyramidCB 는 32바이트");
 
 	// Sky.hlsl 의 SkyCB 와 같은 순서 · 크기 (2026-10-27 렌더 6단계, [6] 하늘) — 세 진입점이 같은 상수를 쓴다
 	struct SkyConstants
@@ -467,6 +495,11 @@ namespace swc {
 			BindlessAoHistorySrv0 = 30, BindlessAoHistoryUav0 = 31,             // 이력 0번 (AO, 누적 수)
 			BindlessAoHistorySrv1 = 32, BindlessAoHistoryUav1 = 33,             // 이력 1번
 			BindlessAoOutputSrv = 34, BindlessAoOutputUav = 35,                 // 노이즈 제거 결과 = 라이팅 t13
+			// 9단계 — [7] 반투명
+			BindlessHdrSrv = 36,                                                // HDR 컬러 SRV (색 피라미드 복사 원본)
+			BindlessSceneColorSrv = 37,                                         // 색 피라미드 전체 밉 SRV (얼음이 흐린 단계로 읽는다)
+			BindlessSceneColorMipSrv0 = 38,                                     // 밉마다 SRV 38 ~ 44 (내리기 원본)
+			BindlessSceneColorMipUav0 = 45,                                     // 밉마다 UAV 45 ~ 51 (내리기 대상)
 			// 앞 64칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64 — 뒤 단계 GI · AO · 후처리 자원이 들어온다).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
 			BindlessReserved = 64 };
@@ -705,6 +738,28 @@ namespace swc {
 		uint8_t*                    aoCBData = nullptr;
 		uint32_t                    aoHistoryIndex = 0;
 		bool                        aoHistoryValid = false;
+
+		// ── [7] 반투명 (2026-10-27 렌더 9단계, Transparent.hlsl · ColorPyramid.hlsl) ──
+		//  투과 재질(얼음) 물체는 G-buffer 에서 빼고 라이팅 뒤 forward 로 그린다. 흐린 굴절 = 화면 색 피라미드(HDRP 방식, 임시).
+		//  픽셀 셰이더 RayQuery 를 써서 RT 장치 + 바인드리스에서만. 파이프라인이 없으면 예전처럼 G-buffer 에 불투명으로 그린다.
+		static constexpr UINT kSceneColorMips = 7;   // 1280×720 → 20×11
+		RenderTarget                sceneColor;      // R16G16B16A16_FLOAT, 밉 7단 — UAV(피라미드) + SRV(얼음)
+		ComPtr<ID3D12PipelineState> pyramidCopyPso;
+		ComPtr<ID3D12PipelineState> pyramidDownsamplePso;
+		ComPtr<ID3D12Resource>      pyramidCB;       // UPLOAD, 디스패치마다 256 B 칸 (밉 수만큼)
+		uint8_t*                    pyramidCBData = nullptr;
+		ComPtr<ID3D12RootSignature> transparentRootSig;
+		ComPtr<ID3D12PipelineState> transparentPso;
+		ComPtr<ID3D12Resource>      transparentCB;   // UPLOAD, 288 B → 512 B
+		uint8_t*                    transparentCBData = nullptr;
+		struct TransparentDraw { uint32_t instance; MaterialHandle material; MeshHandle mesh; float distanceSq; };
+		std::vector<TransparentDraw> transparentDraws;   // 이번 프레임에 그릴 투과 물체(뒤에서 앞으로 정렬)
+		D3D12_CPU_DESCRIPTOR_HANDLE ReadOnlyDsv() const   // DSV 힙 1번 — 깊이 테스트만, 쓰지 않음(셰이더가 같은 깊이를 SRV 로 읽는다)
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE handle = dsvHeap->GetCPUDescriptorHandleForHeapStart();
+			handle.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+			return handle;
+		}
 
 		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
 		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
@@ -1387,7 +1442,7 @@ namespace swc {
 		//    [5] 라이팅 컴퓨트는 R32_FLOAT SRV 로 읽어 픽셀의 월드 위치를 되살린다(같은 자원, 보기만 둘).
 		{
 			D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-			dsvHeapDesc.NumDescriptors = 1;
+			dsvHeapDesc.NumDescriptors = 2;   // 0 = 쓰기용, 1 = 읽기 전용(9단계 [7] 반투명 — 깊이 테스트하며 같은 깊이를 SRV 로 읽는다)
 			dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 			if (FAILED(impl->device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&impl->dsvHeap))))
 				return false;
@@ -1417,6 +1472,9 @@ namespace swc {
 			dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
 			impl->device->CreateDepthStencilView(impl->depth.resource.Get(), &dsv,
 				impl->dsvHeap->GetCPUDescriptorHandleForHeapStart());
+			// 9단계 — 읽기 전용 DSV: 깊이 상태를 DEPTH_READ | 셰이더 읽기 로 두고 테스트만 한다(MS 문서 «read-only depth»)
+			dsv.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+			impl->device->CreateDepthStencilView(impl->depth.resource.Get(), &dsv, impl->ReadOnlyDsv());
 		}
 
 		// ── HDR 컬러 · G-buffer · 타깃 SRV/UAV 힙 (2026-10-27 파이프라인 1단계) ──
@@ -1625,6 +1683,26 @@ namespace swc {
 				}
 				createSrv(impl->aoOutput.resource.Get(), Impl::kAoFormat, Impl::SlotAoSrv);
 
+				// [7] 화면 색 피라미드 (2026-10-27 렌더 9단계) — 밉 7단, 처음 상태 «읽기»
+				{
+					D3D12_RESOURCE_DESC desc = {};
+					desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+					desc.Width = width;
+					desc.Height = height;
+					desc.DepthOrArraySize = 1;
+					desc.MipLevels = Impl::kSceneColorMips;
+					desc.Format = Impl::kHdrFormat;
+					desc.SampleDesc.Count = 1;
+					desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+					if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, Impl::kSkyReadState, nullptr,
+						IID_PPV_ARGS(&impl->sceneColor.resource))))
+					{
+						impl->status = L"화면 색 피라미드 생성 실패.";
+						return false;
+					}
+					impl->sceneColor.state = Impl::kSkyReadState;
+				}
+
 				createSrv(impl->probeIrradiance.resource.Get(), Impl::kProbeIrradianceFormat, Impl::SlotProbeIrradianceSrv);
 				createSrv(impl->probeDistance.resource.Get(), Impl::kProbeDistanceFormat, Impl::SlotProbeDistanceSrv);
 				D3D12_SHADER_RESOURCE_VIEW_DESC stateSrv = {};
@@ -1693,6 +1771,30 @@ namespace swc {
 					bindlessUav(impl->skyIrradiance.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyIrradianceUav);
 					bindlessSrv(impl->skyMultiScattering.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyMsSrv);
 					bindlessUav(impl->skyMultiScattering.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyMsUav);
+
+					// 9단계 — [7] 반투명 (BindlessSlot 36 ~ 51): HDR SRV, 피라미드 전체 SRV, 밉마다 SRV · UAV
+					bindlessSrv(impl->hdr.resource.Get(), Impl::kHdrFormat, Impl::BindlessHdrSrv);
+					{
+						D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+						srv.Format = Impl::kHdrFormat;
+						srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+						srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+						srv.Texture2D.MipLevels = Impl::kSceneColorMips;
+						impl->device->CreateShaderResourceView(impl->sceneColor.resource.Get(), &srv, impl->BindlessCpu(Impl::BindlessSceneColorSrv));
+						for (UINT mip = 0; mip < Impl::kSceneColorMips; ++mip)
+						{
+							srv.Texture2D.MostDetailedMip = mip;
+							srv.Texture2D.MipLevels = 1;
+							impl->device->CreateShaderResourceView(impl->sceneColor.resource.Get(), &srv,
+								impl->BindlessCpu(Impl::BindlessSceneColorMipSrv0 + mip));
+							D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+							uavDesc.Format = Impl::kHdrFormat;
+							uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+							uavDesc.Texture2D.MipSlice = mip;
+							impl->device->CreateUnorderedAccessView(impl->sceneColor.resource.Get(), nullptr, &uavDesc,
+								impl->BindlessCpu(Impl::BindlessSceneColorMipUav0 + mip));
+						}
+					}
 
 					// 8단계 — [2] AO (BindlessSlot 28 ~ 35)
 					bindlessSrv(impl->aoRaw.resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoRawSrv);
@@ -1831,12 +1933,20 @@ namespace swc {
 				return false;
 			}
 			// 8단계 — [2] AO 상수 버퍼 (288 B → 512 B, CBV 크기는 256 배수)
+			// 9단계 — [7] 반투명 상수 버퍼 (288 B → 512 B) · 색 피라미드 상수 (디스패치마다 256 B 칸 × 밉 수)
 			D3D12_RESOURCE_DESC aoDesc = BufferDesc(512);
+			D3D12_RESOURCE_DESC pyramidDesc = BufferDesc(256 * Impl::kSceneColorMips);
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &aoDesc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->aoCB))) ||
-				FAILED(impl->aoCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->aoCBData))))
+				FAILED(impl->aoCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->aoCBData))) ||
+				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &aoDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->transparentCB))) ||
+				FAILED(impl->transparentCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->transparentCBData))) ||
+				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &pyramidDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->pyramidCB))) ||
+				FAILED(impl->pyramidCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->pyramidCBData))))
 			{
-				impl->status = L"AO 상수 버퍼 생성 실패.";
+				impl->status = L"AO · 반투명 상수 버퍼 생성 실패.";
 				return false;
 			}
 		}
@@ -2563,6 +2673,19 @@ namespace swc {
 				}
 			}
 
+			// [7] 화면 색 피라미드 — 두 진입점 (ColorPyramid.hlsl). 반투명 파이프라인과 같이 쓴다(아래 블록).
+			if (ok && impl->rtSupported)
+			{
+				const bool pyramidOk =
+					createCompute(L"ColorPyramid.hlsl", L"CSCopy", impl->pyramidCopyPso) &&
+					createCompute(L"ColorPyramid.hlsl", L"CSDownsample", impl->pyramidDownsamplePso);
+				if (!pyramidOk)
+				{
+					impl->pyramidCopyPso.Reset();
+					impl->pyramidDownsamplePso.Reset();
+				}
+			}
+
 			// [2] AO — 세 진입점 (AO.hlsl). RT 가 없는 장치는 RayQuery 를 빼고 컴파일한다(순수 SSAO).
 			if (ok)
 			{
@@ -2585,6 +2708,116 @@ namespace swc {
 						? L"[GRenderer] [2] AO 파이프라인 준비 (화면 공간 추적 + 모르는 레이만 RayQuery, 반경 1.5 m)\n"
 						: L"[GRenderer] [2] AO 파이프라인 준비 (RT 없음 — 화면 공간만)\n");
 				}
+			}
+		}
+
+		// ── [7] 반투명 파이프라인 (Transparent.hlsl, 2026-10-27 렌더 9단계) ──
+		//  루트 시그니처(1.1): b0 = 패스 상수, b1 = 그리기마다 루트 상수 4개(인스턴스 · 재질),
+		//    t0 = TLAS · t1 = 재질 표 · t2 = RT 인스턴스 표 · t3 = 인스턴스 행렬(패스 업로드 버퍼) — 루트 SRV,
+		//    s0 반복 · s1 등장방형 · s2 고정, 입력 레이아웃 + CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED (재질 텍스처도 바인드리스 번호로 읽는다).
+		//  PSO: 앞면만, 깊이 테스트 LESS_EQUAL · 쓰기 없음(읽기 전용 DSV), 섞기 없음(굴절 · 반사 · 투과를 셰이더가 직접 합친다).
+		//  색 피라미드 PSO 와 하늘이 있어야 만든다. 없으면 투과 물체를 예전처럼 G-buffer 에 불투명으로 그린다.
+		if (impl->rtSupported && impl->bindlessHeap && impl->pyramidCopyPso && impl->pyramidDownsamplePso && impl->skyDrawPso)
+		{
+			bool ok = true;
+			D3D12_ROOT_PARAMETER1 params[6] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+			params[0].Descriptor.ShaderRegister = 0;
+			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			params[1].Constants.ShaderRegister = 1;
+			params[1].Constants.Num32BitValues = 4;
+			for (UINT i = 2; i < 6; ++i)
+			{
+				params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+				params[i].Descriptor.ShaderRegister = i - 2;   // t0 ~ t3
+			}
+			for (D3D12_ROOT_PARAMETER1& param : params)
+			{
+				if (param.ParameterType != D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS)
+					param.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+			D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
+			for (UINT i = 0; i < 3; ++i)
+			{
+				samplers[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+				samplers[i].AddressU = samplers[i].AddressV = samplers[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplers[i].MaxAnisotropy = 1;
+				samplers[i].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+				samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
+				samplers[i].ShaderRegister = i;
+				samplers[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+			samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+			rsDesc.Desc_1_1.NumParameters = 6;
+			rsDesc.Desc_1_1.pParameters = params;
+			rsDesc.Desc_1_1.NumStaticSamplers = 3;
+			rsDesc.Desc_1_1.pStaticSamplers = samplers;
+			rsDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+				D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeVersionedRootSignature(&rsDesc, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->transparentRootSig))))
+			{
+				if (err) OutputDebugStringA(("[Transparent 루트] " + std::string(static_cast<const char*>(err->GetBufferPointer()), err->GetBufferSize()) + "\n").c_str());
+				ok = false;
+			}
+
+			std::string log;
+			const std::wstring path = ShaderPath(L"Transparent.hlsl");
+			std::vector<uint8_t> vs, ps;
+			if (ok)
+			{
+				vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", L"vs_6_6", nullptr, 0, log);
+				if (!vs.empty())
+					ps = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSIce", L"ps_6_6", nullptr, 0, log);
+				if (vs.empty() || ps.empty())
+				{
+					OutputDebugStringA(("[Transparent] " + log + "\n").c_str());
+					ok = false;
+				}
+			}
+			if (ok)
+			{
+				D3D12_INPUT_ELEMENT_DESC layout[] = {
+					{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, position)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+					{ "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, normal)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+					{ "COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, color)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+					{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, uv)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+					{ "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, tangent)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+				};
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+				psoDesc.pRootSignature = impl->transparentRootSig.Get();
+				psoDesc.InputLayout = { layout, 5 };
+				psoDesc.VS = { vs.data(), vs.size() };
+				psoDesc.PS = { ps.data(), ps.size() };
+				psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+				psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+				psoDesc.RasterizerState.DepthClipEnable = TRUE;
+				psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+				psoDesc.DepthStencilState.DepthEnable = TRUE;
+				psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+				psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+				psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+				psoDesc.SampleMask = UINT_MAX;
+				psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+				psoDesc.NumRenderTargets = 1;
+				psoDesc.RTVFormats[0] = Impl::kHdrFormat;
+				psoDesc.SampleDesc.Count = 1;
+				ok = SUCCEEDED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->transparentPso)));
+			}
+			if (!ok)
+			{
+				impl->transparentPso.Reset();
+				impl->status += L"  (반투명 파이프라인 생성 실패 — 투과 물체를 불투명으로)";
+				OutputDebugStringW(L"[GRenderer] [7] 반투명 파이프라인 생성 실패 — 투과 물체를 G-buffer 에 불투명으로\n");
+			}
+			else
+			{
+				OutputDebugStringW(L"[GRenderer] [7] 반투명 파이프라인 준비 (화면 색 피라미드 굴절 · 픽셀 셰이더 RayQuery 반사 · 그림자)\n");
 			}
 		}
 
@@ -3246,6 +3479,12 @@ namespace swc {
 			row.emissiveTexture = impl->textures[resolved[static_cast<size_t>(TextureSlot::Emissive)]].bindless;
 			row.transmittance = material.transmittance;
 			row.transmissive = material.transmissive ? 1u : 0u;
+			// 9단계 — [7] 반투명 패스용. 흡수 거리가 무한대(흡수 없음)면 0 으로 적어 셰이더가 «흡수 없음» 으로 읽게 한다.
+			row.transmission = std::clamp(data.transmission, 0.0f, 1.0f);
+			row.ior = std::isfinite(data.ior) && data.ior >= 1.0f ? data.ior : 1.5f;
+			row.thickness = (std::max)(data.thickness, 0.0f);
+			row.attenuationDistance = std::isfinite(data.attenuationDistance) ? data.attenuationDistance : 0.0f;
+			row.attenuationColor = data.attenuationColor;
 			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
@@ -3379,6 +3618,9 @@ namespace swc {
 			{
 				const InstanceData& it = items[i];
 				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				// ★ 9단계 — 투과 재질(얼음)은 메인 G-buffer 에서 뺀다. 라이팅 뒤 [7] 반투명 패스가 그린다.
+				//   (반투명 파이프라인이 없는 장치는 예전처럼 여기서 불투명으로 그린다)
+				if (!view.background && impl->transparentPso && impl->materials[materialOf(it)].transmissive) continue;
 				order.push_back(uint32_t(i));
 			}
 			// stable_sort — 같은 묶음 안에서는 Extract 순서를 지킨다.
@@ -3816,6 +4058,123 @@ namespace swc {
 		commandList->SetComputeRootConstantBufferView(0, impl->lightingCB->GetGPUVirtualAddress());
 		commandList->SetComputeRootDescriptorTable(1, impl->TargetGpu(Impl::SlotGBuffer));
 		commandList->Dispatch(groupsX, groupsY, 1);
+
+		// ── [7] 반투명 — 투과 재질(얼음) 물체를 forward 로, 뒤에서 앞으로 (Transparent.hlsl, 2026-10-27 렌더 9단계) ──
+		//  ① 이번 프레임 투과 물체 목록(패킷 순번) → 눈에서 먼 순으로 정렬
+		//  ② 화면 색 피라미드: HDR → 밉 0, 밉 i−1 → 밉 i (ColorPyramid.hlsl). 밉마다 상태가 달라 하위 자원 배리어를 직접 건다.
+		//  ③ HDR 에 그리기 — 읽기 전용 DSV(깊이 테스트만), 셰이더가 같은 깊이를 SRV 로 읽는다(굴절 자리 앞 가림 검사)
+		//  디버그 뷰(0 이 아닌 것)에서는 그리지 않는다 — 디버그 뷰는 G-buffer 값을 보여 주는데 얼음은 G-buffer 에 없다.
+		impl->transparentDraws.clear();
+		if (impl->transparentPso && impl->debugMode == 0)
+		{
+			const XMVECTOR eye = XMLoadFloat3(&view.eyePosition);
+			const size_t drawable = (std::min)(items.size(), size_t(Impl::MaxDrawInstances));
+			for (size_t i = 0; i < drawable; ++i)
+			{
+				const InstanceData& it = items[i];
+				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				if (!impl->materials[material].transmissive) continue;
+				const XMVECTOR position = XMVectorSet(it.world._41, it.world._42, it.world._43, 1.0f);
+				impl->transparentDraws.push_back({ uint32_t(i), material, it.mesh,
+					XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(position, eye))) });
+			}
+			std::sort(impl->transparentDraws.begin(), impl->transparentDraws.end(),
+				[](const Impl::TransparentDraw& a, const Impl::TransparentDraw& b) { return a.distanceSq > b.distanceSq; });
+		}
+		if (!impl->transparentDraws.empty())
+		{
+			// ② 색 피라미드
+			ID3D12DescriptorHeap* bindlessHeaps[] = { impl->bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, bindlessHeaps);
+			commandList->SetComputeRootSignature(impl->computeRootSig.Get());
+			impl->TransitionTargets({
+				{ &impl->hdr,        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+				{ &impl->sceneColor, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			UINT mipWidth = impl->width, mipHeight = impl->height;
+			for (UINT mip = 0; mip < Impl::kSceneColorMips; ++mip)
+			{
+				PyramidConstants pc = {};
+				pc.srcIndex = mip == 0 ? Impl::BindlessHdrSrv : Impl::BindlessSceneColorMipSrv0 + mip - 1;
+				pc.dstIndex = Impl::BindlessSceneColorMipUav0 + mip;
+				pc.dstWidth = mipWidth;
+				pc.dstHeight = mipHeight;
+				pc.srcTexelX = 1.0f / float(mipWidth * 2);
+				pc.srcTexelY = 1.0f / float(mipHeight * 2);
+				memcpy(impl->pyramidCBData + 256 * mip, &pc, sizeof(pc));
+				if (mip > 0)
+				{
+					// 원본 밉(i−1)만 읽기로 — 나머지 밉은 UAV 그대로
+					const D3D12_RESOURCE_BARRIER toRead = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+						{ { impl->sceneColor.resource.Get(), mip - 1,
+							D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } } };
+					commandList->ResourceBarrier(1, &toRead);
+				}
+				commandList->SetComputeRootConstantBufferView(0, impl->pyramidCB->GetGPUVirtualAddress() + 256 * mip);
+				commandList->SetPipelineState(mip == 0 ? impl->pyramidCopyPso.Get() : impl->pyramidDownsamplePso.Get());
+				commandList->Dispatch((mipWidth + 7) / 8, (mipHeight + 7) / 8, 1);
+				mipWidth = (std::max)(1u, mipWidth / 2);
+				mipHeight = (std::max)(1u, mipHeight / 2);
+			}
+			{
+				// 마지막 밉도 읽기로 → 이제 모든 밉이 NON_PIXEL 이라 한 번에 «둘 다 읽기» 로
+				const D3D12_RESOURCE_BARRIER lastToRead = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+					{ { impl->sceneColor.resource.Get(), Impl::kSceneColorMips - 1,
+						D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } } };
+				commandList->ResourceBarrier(1, &lastToRead);
+				impl->sceneColor.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+				impl->TransitionTargets({ { &impl->sceneColor, Impl::kSkyReadState } });
+			}
+
+			// ③ 그리기
+			const bool transparentRt = rtActive && impl->accel.InstanceCount() > 0;
+			TransparentConstants tc = {};
+			XMStoreFloat4x4(&tc.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
+			XMStoreFloat4x4(&tc.invViewProj, invViewProj);
+			tc.eyePos = view.eyePosition;
+			tc.maxDistance = Impl::kShadowMaxDistance;
+			tc.sunDir = impl->sunDir;
+			tc.sceneColorSrv = Impl::BindlessSceneColorSrv;
+			tc.sunIlluminance = impl->sunIlluminance;
+			tc.depthSrv = Impl::BindlessDepth;
+			tc.width = impl->width;
+			tc.height = impl->height;
+			tc.mipCount = Impl::kSceneColorMips;
+			tc.rtEnabled = transparentRt ? 1u : 0u;
+			tc.skySrv = Impl::BindlessSkySrv;
+			tc.skyIrradianceSrv = Impl::BindlessSkyIrradianceSrv;
+			tc.probeIrradianceSrv = Impl::BindlessProbeIrradianceSrv;
+			tc.probeDistanceSrv = Impl::BindlessProbeDistanceSrv;
+			tc.probeStateSrv = Impl::BindlessProbeStateSrv;
+			tc.probeVolume = impl->probeVolume;
+			memcpy(impl->transparentCBData, &tc, sizeof(tc));
+
+			impl->TransitionTargets({
+				{ &impl->hdr,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+				{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+				                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } });
+			const D3D12_CPU_DESCRIPTOR_HANDLE readOnlyDsv = impl->ReadOnlyDsv();
+			commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &readOnlyDsv);
+			commandList->SetGraphicsRootSignature(impl->transparentRootSig.Get());
+			commandList->SetPipelineState(impl->transparentPso.Get());
+			commandList->SetGraphicsRootConstantBufferView(0, impl->transparentCB->GetGPUVirtualAddress());
+			commandList->SetGraphicsRootShaderResourceView(2, impl->accel.TlasAddress());
+			commandList->SetGraphicsRootShaderResourceView(3, impl->rtMaterials->GetGPUVirtualAddress());
+			commandList->SetGraphicsRootShaderResourceView(4, impl->rtInstances->GetGPUVirtualAddress() +
+				UINT64(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu));
+			commandList->SetGraphicsRootShaderResourceView(5, pass.instances->GetGPUVirtualAddress());
+			commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			for (const Impl::TransparentDraw& draw : impl->transparentDraws)
+			{
+				const uint32_t drawConstants[4] = { draw.instance, draw.material, 0, 0 };
+				commandList->SetGraphicsRoot32BitConstants(1, 4, drawConstants, 0);
+				const Impl::MeshGpu& m = impl->meshes[draw.mesh];
+				commandList->IASetVertexBuffers(0, 1, &m.vbv);
+				commandList->IASetIndexBuffer(&m.ibv);
+				commandList->DrawIndexedInstanced(m.indexCount, 1, 0, 0, 0);
+				++impl->stats.drawCalls;
+			}
+		}
 
 		// 뒤에 붙을 래스터 패스(반투명 등)가 이어 그릴 수 있게 HDR · 깊이를 다시 그리기 상태로 묶어 둔다.
 		impl->TransitionTargets({

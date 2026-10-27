@@ -159,6 +159,8 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <None Include="Shaders\Probes.hlsli" />
     <None Include="Shaders\ProbeGI.hlsl" />
     <None Include="Shaders\AO.hlsl" />
+    <None Include="Shaders\ColorPyramid.hlsl" />
+    <None Include="Shaders\Transparent.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
