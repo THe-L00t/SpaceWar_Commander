@@ -68,7 +68,12 @@ namespace swc {
 
 		// 행렬은 DXC 기본(열 우선)을 유지한다 — CPU 에서 전치해 올리는 기존 규약과 맞춘다.
 		std::vector<LPCWSTR> args;
-		args.push_back(L"-E"); args.push_back(entry);
+		// ★ 2026-10-27 렌더 4단계 — DXR 셰이더 라이브러리(lib_6_x)는 진입점 하나가 아니라 [shader("…")] 들을 내보낸다.
+		//   entry 가 비어 있으면 -E 를 넘기지 않는다.
+		if (entry && entry[0] != L'\0')
+		{
+			args.push_back(L"-E"); args.push_back(entry);
+		}
 		args.push_back(L"-T"); args.push_back(target);
 		args.push_back(L"-I"); args.push_back(includeDir.c_str());
 		for (size_t i = 0; i < defineCount; ++i)

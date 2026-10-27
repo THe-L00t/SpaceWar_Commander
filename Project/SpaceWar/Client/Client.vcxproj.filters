@@ -210,5 +210,11 @@
     <None Include="Shaders\GBuffer.hlsli">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\RtCommon.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtReflection.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
 </Project>

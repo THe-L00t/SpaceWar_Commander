@@ -193,9 +193,47 @@ namespace swc {
 		uint32_t   width;
 		uint32_t   height;
 		uint32_t   debugMode;
-		uint32_t   shadowEnabled;   // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
+		uint32_t   shadowEnabled;       // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
+		uint32_t   reflectionEnabled;   // 2026-10-27 4단계 — 1 이면 반사 텍스처를 읽는다(이번 프레임에 [4b] 가 돌았다)
+		uint32_t   pad3[3];
 	};
-	static_assert(sizeof(LightingConstants) == 112, "LightingCB 는 112바이트");
+	static_assert(sizeof(LightingConstants) == 128, "LightingCB 는 128바이트");
+
+	// ── RT 표 (2026-10-27 렌더 4단계) — Shaders/RtCommon.hlsli 와 같은 배치 ──
+	//  재질 표: 재질 번호(TLAS InstanceID)로 찾는다. 텍스처 번호는 SM 6.6 바인드리스 힙 번호.
+	struct RtMaterialGpu
+	{
+		XMFLOAT4 baseColor;
+		XMFLOAT3 emissive;      float    roughness;
+		float    metallic;      uint32_t hasNormalMap;   uint32_t pad0[2];
+		uint32_t textures[4];   // BaseColor · Normal · Roughness · Metallic
+		uint32_t emissiveTexture; uint32_t pad1[3];
+		XMFLOAT3 transmittance; uint32_t transmissive;
+	};
+	static_assert(sizeof(RtMaterialGpu) == 96, "RtMaterial 은 96바이트");
+	//  인스턴스 표: TLAS 인스턴스 순번(InstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
+	struct RtInstanceGpu
+	{
+		uint32_t vertexBuffer;   // 바인드리스 힙 번호 — 정점(raw)
+		uint32_t indexBuffer;    // 바인드리스 힙 번호 — 인덱스(raw)
+		uint32_t material;
+		uint32_t pad;
+	};
+	static_assert(sizeof(RtInstanceGpu) == 16, "RtInstance 는 16바이트");
+
+	// RtReflection.hlsl 의 ReflectionCB 와 같은 순서 · 크기 (2026-10-27 렌더 4단계, [4b] RT 반사)
+	struct ReflectionConstants
+	{
+		XMFLOAT4X4 invViewProj;
+		XMFLOAT3   eyePos;    float maxDistance;
+		XMFLOAT3   sunDir;    float maxRoughness;
+		uint32_t   width, height;
+		uint32_t   normalIndex, materialIndex;   // 바인드리스 힙 번호
+		uint32_t   depthIndex, outputIndex;
+		uint32_t   pad0[2];
+		XMFLOAT3   skyColor;  float pad1;
+	};
+	static_assert(sizeof(ReflectionConstants) == 144, "ReflectionCB 는 144바이트");
 
 	// RtShadow.hlsl 의 ShadowCB 와 같은 순서 · 크기 (2026-10-27 렌더 2단계, [4a] RT 그림자)
 	struct ShadowConstants
@@ -267,13 +305,67 @@ namespace swc {
 			XMFLOAT3 boundsCenter{};
 			XMFLOAT3 boundsExtents{};
 			uint32_t blasIndex = AccelStructure::kInvalidBlas;
+			// 4단계 — 반사 히트 셰이더가 정점 · 인덱스를 읽는 바인드리스 힙 번호(raw SRV). 바인드리스를 못 쓰면 kNoDescriptor.
+			uint32_t vertexDescriptor = 0xFFFFFFFFu;
+			uint32_t indexDescriptor = 0xFFFFFFFFu;
 		};
 
 		struct TextureGpu
 		{
 			ComPtr<ID3D12Resource> resource;
 			DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			uint32_t bindless = 0xFFFFFFFFu;   // 4단계 — 바인드리스 힙 번호(SRV). 바인드리스를 못 쓰면 kNoDescriptor
 		};
+
+		// ── SM 6.6 바인드리스 힙 (2026-10-27 렌더 4단계) ──
+		//  셰이더가 ResourceDescriptorHeap[번호] 로 자원을 꺼내는 셰이더 가시 힙 하나.
+		//  지금은 [4b] RT 반사만 이 힙을 쓴다(래스터 · 라이팅 · 그림자는 기존 테이블 방식 그대로 — 옮기는 건 다음 일).
+		//  앞 16칸은 프레임 자원 자리(BindlessSlot), 그 뒤로 텍스처 · 메시가 만들어질 때 한 칸씩 받는다.
+		//  장치가 SM 6.6 + 바인딩 티어 3 이 아니면 만들지 않는다 → [4b] 반사만 꺼진다.
+		static constexpr uint32_t kNoDescriptor = 0xFFFFFFFFu;
+		static constexpr UINT kBindlessCapacity = 65536;
+		enum BindlessSlot : uint32_t {
+			BindlessGbNormal = 0, BindlessGbMaterial = 1, BindlessDepth = 2, BindlessReflectionUav = 3,
+			BindlessReserved = 16 };
+		bool                         bindlessSupported = false;
+		ComPtr<ID3D12DescriptorHeap> bindlessHeap;
+		UINT                         bindlessDescriptorSize = 0;
+		uint32_t                     bindlessNext = BindlessReserved;
+		bool                         bindlessOverflow = false;   // 힙이 차서 번호를 못 받은 텍스처 · 메시가 있다 → [4b] 반사를 끈다
+
+		// 다음 빈 칸 번호. 다 찼으면 kNoDescriptor 를 돌려주고 bindlessOverflow 를 켠다
+		// (번호 없는 자원을 셰이더가 읽으면 힙 밖을 읽게 되므로, 그런 일이 한 번이라도 있으면 반사를 아예 돌리지 않는다).
+		uint32_t AllocateBindless()
+		{
+			if (!bindlessHeap) return kNoDescriptor;
+			if (bindlessNext >= kBindlessCapacity)
+			{
+				if (!bindlessOverflow)
+					OutputDebugStringW(L"[GRenderer] 바인드리스 힙이 찼다 — [4b] RT 반사 끔\n");
+				bindlessOverflow = true;
+				return kNoDescriptor;
+			}
+			return bindlessNext++;
+		}
+		D3D12_CPU_DESCRIPTOR_HANDLE BindlessCpu(uint32_t index) const
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE handle = bindlessHeap->GetCPUDescriptorHandleForHeapStart();
+			handle.ptr += SIZE_T(index) * bindlessDescriptorSize;
+			return handle;
+		}
+
+		// ── [4b] RT 반사 (2026-10-27 렌더 4단계) ──
+		//  반사 텍스처: RtReflection.hlsl 이 바인드리스 UAV 로 쓰고, Lighting.hlsl 이 타깃 힙 SRV 로 읽는다.
+		static constexpr DXGI_FORMAT kReflectionFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;   // 반사 색은 1 을 넘을 수 있다
+		static constexpr float kReflectionMaxRoughness = 0.4f;   // 이 거칠기 이상은 반사 레이를 안 쏜다 — UE Lumen 기본값(«첫 판 범위» 와 같이 다시 정한다)
+		ComPtr<ID3D12RootSignature> rtReflectionRootSig;   // 전역 루트 시그니처 (CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED)
+		ComPtr<ID3D12StateObject>   rtReflectionPso;       // RT 파이프라인 상태 객체 (RayGen · Miss · HitGroup)
+		ComPtr<ID3D12Resource>      rtShaderTable;         // UPLOAD — raygen 0 · miss 64 · hit group 128 바이트 자리
+		ComPtr<ID3D12Resource>      reflectionCB;          // UPLOAD, 영속 매핑
+		uint8_t*                    reflectionCBData = nullptr;
+		//  TLAS 인스턴스 표: 인스턴스 순번 → 정점 · 인덱스 버퍼 번호 · 재질. 프레임 슬롯마다 한 벌(AccelStructure 와 같은 규칙).
+		ComPtr<ID3D12Resource>      rtInstances;
+		uint8_t*                    rtInstanceData = nullptr;
 
 		struct MaterialGpu
 		{
@@ -286,7 +378,8 @@ namespace swc {
 			XMFLOAT3 transmittance{ 0.0f, 0.0f, 0.0f };   // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (RGB)
 		};
 
-		// [4a] RT 그림자가 읽는 재질 표 — 재질 번호(TLAS InstanceID) → float4(남는 빛 rgb, 0).
+		// RT 재질 표 — 재질 번호(TLAS InstanceID) → RtMaterialGpu(96 B). [4a] 그림자는 투과만, [4b] 반사는 전부 읽는다.
+		//  (2단계에는 float4 남는 빛뿐이었고, 4단계에서 텍스처 번호 · 상수까지 넓혔다)
 		//  UPLOAD 영속 매핑. CreateMaterial 이 자기 칸만 쓴다(프레임 밖에서만 불리므로 GPU 와 겹치지 않는다).
 		ComPtr<ID3D12Resource> rtMaterials;
 		uint8_t*               rtMaterialData = nullptr;
@@ -340,7 +433,9 @@ namespace swc {
 		//  RT 그림자 테이블 = 슬롯 0 시작 (SRV t0~t4 / UAV u0 그림자 마스크 슬롯 7)   ← 2026-10-27 렌더 2단계
 		enum TargetSlot : UINT {
 			SlotGBuffer = 0, SlotDepth = 4, SlotHdrUav = 5, SlotHdrSrv = 6,
-			SlotShadowUav = 7, SlotShadowSrv = 8, TargetSlotCount = 9 };
+			SlotShadowUav = 7, SlotShadowSrv = 8,
+			SlotReflectionSrv = 9,   // 4단계 — 라이팅 테이블 SRV t6 (반사 텍스처)
+			TargetSlotCount = 10 };
 		// static_assert 메시지는 좁은 문자열(CP949)이라 «—» 같은 문자를 쓰면 C4566 경고가 난다 — 쓰지 않는다.
 		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤: 라이팅 테이블 t4");
 
@@ -350,6 +445,7 @@ namespace swc {
 		static constexpr DXGI_FORMAT kShadowFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		static constexpr float kShadowMaxDistance = 5000.0f;   // 그림자 레이 길이(m) — 행성 지름 3.2 km 를 넘는다
 		RenderTarget                shadowMask;
+		RenderTarget                reflection;   // 4단계 [4b] — 반사 색 (R16G16B16A16_FLOAT, UAV + SRV)
 		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
 		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
 		ComPtr<ID3D12Resource>      shadowCB;           // UPLOAD, 영속 매핑
@@ -755,6 +851,28 @@ namespace swc {
 		else
 			impl->status += L"  [RT 미지원 — 래스터만]";
 
+		// ── SM 6.6 바인드리스 지원 확인 (2026-10-27 렌더 4단계) ──
+		//  사양(HLSL SM 6.6 Dynamic Resources): ResourceDescriptorHeap 은 SM 6.6 과 바인딩 티어 3 을 둘 다 지원하는 장치에서만 된다.
+		//  OS: SM 6.6 은 Windows 11 과 Agility SDK 에서 추가됐다(MS 문서) — 이 앱은 Agility SDK 를 쓰지 않으므로 Windows 10 에서는 보통 실패한다.
+		//  하나라도 아니면 바인드리스 힙을 만들지 않고 [4b] 반사만 끈다(나머지는 그대로).
+		{
+			D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = { D3D_SHADER_MODEL_6_6 };
+			const bool smQueryOk = SUCCEEDED(impl->device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel)));
+			D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+			const bool optionsOk = SUCCEEDED(impl->device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
+			const bool sm66 = smQueryOk && shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
+			const bool tier3 = optionsOk && options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
+			impl->bindlessSupported = sm66 && tier3;
+
+			wchar_t line[256];
+			swprintf_s(line, L"[GRenderer] 셰이더 모델 최고 %d.%d · 리소스 바인딩 티어 %d → SM 6.6 바인드리스 %s\n",
+				smQueryOk ? (shaderModel.HighestShaderModel >> 4) : 0, smQueryOk ? (shaderModel.HighestShaderModel & 0xF) : 0,
+				optionsOk ? int(options.ResourceBindingTier) : 0, impl->bindlessSupported ? L"사용" : L"못 씀 — [4b] 반사 끔");
+			OutputDebugStringW(line);
+			if (!impl->bindlessSupported && impl->rtSupported)
+				impl->status += L"  (SM 6.6 · 바인딩 티어 3 아님 — RT 반사 끔)";
+		}
+
 		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 		if (FAILED(impl->device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&impl->commandQueue))))
@@ -927,6 +1045,52 @@ namespace swc {
 			shadowUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 			impl->device->CreateUnorderedAccessView(impl->shadowMask.resource.Get(), nullptr, &shadowUav,
 				impl->TargetCpu(Impl::SlotShadowUav));
+
+			// [4b] 반사 텍스처 (2026-10-27 렌더 4단계) — 처음 상태 «읽기»: 반사가 안 도는 프레임에도 라이팅 테이블이 유효한 자원을 가리키게.
+			if (!createTarget(Impl::kReflectionFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					zero, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, impl->reflection))
+			{
+				impl->status = L"반사 텍스처 생성 실패.";
+				return false;
+			}
+			createSrv(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::SlotReflectionSrv);
+
+			// ── SM 6.6 바인드리스 힙 (2026-10-27 렌더 4단계) ──
+			//  텍스처 · 메시가 만들어질 때(CreateTexture · CreateMesh) 칸을 받으므로 그보다 먼저 만든다.
+			//  앞 16칸(BindlessSlot)은 RT 반사가 읽고 쓰는 프레임 자원: GB1 법선 · GB2 거칠기/금속 · 깊이 SRV, 반사 UAV.
+			if (impl->bindlessSupported)
+			{
+				D3D12_DESCRIPTOR_HEAP_DESC bindlessDesc = {};
+				bindlessDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+				bindlessDesc.NumDescriptors = Impl::kBindlessCapacity;
+				bindlessDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+				if (FAILED(impl->device->CreateDescriptorHeap(&bindlessDesc, IID_PPV_ARGS(&impl->bindlessHeap))))
+				{
+					impl->bindlessSupported = false;
+					impl->status += L"  (바인드리스 힙 생성 실패 — RT 반사 끔)";
+				}
+				else
+				{
+					impl->bindlessDescriptorSize = impl->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+					auto bindlessSrv = [&](ID3D12Resource* resource, DXGI_FORMAT format, uint32_t slot)
+					{
+						D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+						srv.Format = format;
+						srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+						srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+						srv.Texture2D.MipLevels = 1;
+						impl->device->CreateShaderResourceView(resource, &srv, impl->BindlessCpu(slot));
+					};
+					bindlessSrv(impl->gbuffer[Impl::GbNormal].resource.Get(), Impl::kGBufferFormats[Impl::GbNormal], Impl::BindlessGbNormal);
+					bindlessSrv(impl->gbuffer[Impl::GbMaterial].resource.Get(), Impl::kGBufferFormats[Impl::GbMaterial], Impl::BindlessGbMaterial);
+					bindlessSrv(impl->depth.resource.Get(), DXGI_FORMAT_R32_FLOAT, Impl::BindlessDepth);
+					D3D12_UNORDERED_ACCESS_VIEW_DESC reflectionUav = {};
+					reflectionUav.Format = Impl::kReflectionFormat;
+					reflectionUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+					impl->device->CreateUnorderedAccessView(impl->reflection.resource.Get(), nullptr, &reflectionUav,
+						impl->BindlessCpu(Impl::BindlessReflectionUav));
+				}
+			}
 		}
 
 		if (FAILED(impl->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&impl->commandAllocator))))
@@ -975,11 +1139,11 @@ namespace swc {
 			}
 		}
 
-		// [4a] RT 그림자용 재질 표 (2026-10-27 렌더 2단계) — 재질마다 float4(남는 빛 rgb, 0), UPLOAD 영속 매핑.
+		// RT 재질 표 (2026-10-27 렌더 2단계, 4단계에서 RtMaterialGpu 96 B 로 넓힘) — UPLOAD 영속 매핑.
 		//  CreateMaterial 보다 먼저 있어야 한다(아래 기본 재질 0번도 여기에 쓴다).
 		{
 			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-			D3D12_RESOURCE_DESC desc = BufferDesc(UINT64(Impl::MaxMaterials) * 16);
+			D3D12_RESOURCE_DESC desc = BufferDesc(UINT64(Impl::MaxMaterials) * sizeof(RtMaterialGpu));
 			D3D12_RANGE noRead = { 0, 0 };
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->rtMaterials))) ||
@@ -988,7 +1152,26 @@ namespace swc {
 				impl->status = L"RT 재질 표 생성 실패.";
 				return false;
 			}
-			memset(impl->rtMaterialData, 0, size_t(Impl::MaxMaterials) * 16);
+			memset(impl->rtMaterialData, 0, size_t(Impl::MaxMaterials) * sizeof(RtMaterialGpu));
+		}
+
+		// [4b] TLAS 인스턴스 표 · 반사 상수 버퍼 (2026-10-27 렌더 4단계) — UPLOAD 영속 매핑.
+		//  인스턴스 표는 프레임 슬롯마다 한 벌(AccelStructure 의 인스턴스 디스크립터와 같은 규칙 — 비행 중 프레임 대비).
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC instanceDesc = BufferDesc(UINT64(Impl::MaxInstances) * sizeof(RtInstanceGpu) * AccelStructure::kFrameSlots);
+			D3D12_RESOURCE_DESC cbDesc = BufferDesc(256);
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &instanceDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->rtInstances))) ||
+				FAILED(impl->rtInstances->Map(0, &noRead, reinterpret_cast<void**>(&impl->rtInstanceData))) ||
+				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->reflectionCB))) ||
+				FAILED(impl->reflectionCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->reflectionCBData))))
+			{
+				impl->status = L"RT 인스턴스 표 · 반사 상수 버퍼 생성 실패.";
+				return false;
+			}
 		}
 
 		// 인스턴싱·GPU 컬링 패스 자원 — (프레임 슬롯 × 패스)마다
@@ -1258,7 +1441,7 @@ namespace swc {
 		//   b0 = LightingCB(루트 CBV), 테이블 = targetHeap 슬롯 0 부터
 		//   (SRV t0~t4 G-buffer · 깊이 = 슬롯 0~4, UAV u0 HDR = 슬롯 5, SRV t5 그림자 마스크 = 슬롯 8 ← 2단계)
 		{
-			D3D12_DESCRIPTOR_RANGE ranges[3] = {};
+			D3D12_DESCRIPTOR_RANGE ranges[4] = {};
 			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 			ranges[0].NumDescriptors = Impl::GbCount + 1;   // G-buffer 4 + 깊이
 			ranges[0].BaseShaderRegister = 0;
@@ -1271,13 +1454,17 @@ namespace swc {
 			ranges[2].NumDescriptors = 1;
 			ranges[2].BaseShaderRegister = 5;
 			ranges[2].OffsetInDescriptorsFromTableStart = Impl::SlotShadowSrv;
+			ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 4단계 — 반사 텍스처 t6
+			ranges[3].NumDescriptors = 1;
+			ranges[3].BaseShaderRegister = 6;
+			ranges[3].OffsetInDescriptorsFromTableStart = Impl::SlotReflectionSrv;
 
 			D3D12_ROOT_PARAMETER params[2] = {};
 			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 			params[0].Descriptor.ShaderRegister = 0;
 			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-			params[1].DescriptorTable.NumDescriptorRanges = 3;
+			params[1].DescriptorTable.NumDescriptorRanges = 4;
 			params[1].DescriptorTable.pDescriptorRanges = ranges;
 			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
@@ -1372,6 +1559,150 @@ namespace swc {
 			{
 				impl->rtShadowPso.Reset();
 				impl->status += L"  (RT 그림자 파이프라인 생성 실패 — 그림자 없이 진행)";
+			}
+		}
+
+		// ── [4b] RT 반사 파이프라인 (RtReflection.hlsl, DispatchRays, 2026-10-27 렌더 4단계) ──
+		//  RT 지원 + SM 6.6 바인드리스 지원 장치에서만. 하나라도 실패하면 반사만 끄고 계속한다.
+		if (impl->rtSupported && impl->bindlessSupported)
+		{
+			bool ok = true;
+
+			// 전역 루트 시그니처 (버전 1.1)
+			//   b0 = ReflectionCB, t0 = TLAS, t1 = 재질 표, t2 = 인스턴스 표 — 전부 루트 디스크립터(버퍼라 힙 없이 주소로)
+			//   s0 = 정적 샘플러(선형 · WRAP, 래스터와 같은 값)
+			//   플래그 CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED — 셰이더가 ResourceDescriptorHeap[번호] 를 쓴다
+			//   (사양: 이 플래그는 전역 루트에만 둘 수 있고, SetDescriptorHeaps 를 루트 시그니처 설정보다 먼저 해야 한다)
+			D3D12_ROOT_PARAMETER1 params[4] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+			params[0].Descriptor.ShaderRegister = 0;
+			for (UINT i = 1; i < 4; ++i)
+			{
+				params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+				params[i].Descriptor.ShaderRegister = i - 1;
+			}
+			for (D3D12_ROOT_PARAMETER1& param : params)
+			{
+				param.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+			D3D12_STATIC_SAMPLER_DESC sampler = {};
+			sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+			sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+			sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+			sampler.MaxAnisotropy = 1;
+			sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+			sampler.MaxLOD = D3D12_FLOAT32_MAX;
+			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+			D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+			rsDesc.Desc_1_1.NumParameters = 4;
+			rsDesc.Desc_1_1.pParameters = params;
+			rsDesc.Desc_1_1.NumStaticSamplers = 1;
+			rsDesc.Desc_1_1.pStaticSamplers = &sampler;
+			rsDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeVersionedRootSignature(&rsDesc, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->rtReflectionRootSig))))
+			{
+				if (err) OutputDebugStringA(("[RtReflection 루트] " + std::string(static_cast<const char*>(err->GetBufferPointer()), err->GetBufferSize()) + "\n").c_str());
+				ok = false;
+			}
+
+			// 셰이더 라이브러리 — 진입점 없이 lib_6_6 (RayGen · Miss · ClosestHit 을 내보낸다)
+			std::vector<uint8_t> library;
+			if (ok)
+			{
+				std::string log;
+				library = impl->shaderCompiler.CompileFromFile(ShaderPath(L"RtReflection.hlsl").c_str(), L"", L"lib_6_6", nullptr, 0, log);
+				if (library.empty())
+				{
+					OutputDebugStringA(("[RtReflection lib] " + log + "\n").c_str());
+					ok = false;
+				}
+			}
+
+			// RT 파이프라인 상태 객체 — 하위 객체 5개
+			//   DXIL 라이브러리 · 히트 그룹(삼각형, closest hit 하나) · 셰이더 설정(페이로드 16 B, 속성 8 B)
+			//   · 전역 루트 시그니처 · 파이프라인 설정(재귀 1 — raygen 의 TraceRay 한 단계. 히트 셰이더 안 그림자는 RayQuery 라 안 셈)
+			static const wchar_t* const kRayGen = L"RayGen";
+			static const wchar_t* const kMiss = L"Miss";
+			static const wchar_t* const kClosestHit = L"ClosestHit";
+			static const wchar_t* const kHitGroup = L"HitGroup";
+			if (ok)
+			{
+				D3D12_EXPORT_DESC exports[3] = {
+					{ kRayGen, nullptr, D3D12_EXPORT_FLAG_NONE },
+					{ kMiss, nullptr, D3D12_EXPORT_FLAG_NONE },
+					{ kClosestHit, nullptr, D3D12_EXPORT_FLAG_NONE } };
+				D3D12_DXIL_LIBRARY_DESC libraryDesc = {};
+				libraryDesc.DXILLibrary = { library.data(), library.size() };
+				libraryDesc.NumExports = 3;
+				libraryDesc.pExports = exports;
+
+				D3D12_HIT_GROUP_DESC hitGroup = {};
+				hitGroup.HitGroupExport = kHitGroup;
+				hitGroup.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+				hitGroup.ClosestHitShaderImport = kClosestHit;
+
+				D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {};
+				shaderConfig.MaxPayloadSizeInBytes = 16;     // ReflectionPayload: float3 color + float hitT
+				shaderConfig.MaxAttributeSizeInBytes = 8;    // BuiltInTriangleIntersectionAttributes: float2
+
+				D3D12_GLOBAL_ROOT_SIGNATURE globalRoot = { impl->rtReflectionRootSig.Get() };
+				D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig = { 1 };
+
+				D3D12_STATE_SUBOBJECT subobjects[5] = {
+					{ D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &libraryDesc },
+					{ D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroup },
+					{ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderConfig },
+					{ D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRoot },
+					{ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineConfig } };
+				D3D12_STATE_OBJECT_DESC stateDesc = {};
+				stateDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+				stateDesc.NumSubobjects = 5;
+				stateDesc.pSubobjects = subobjects;
+				ok = SUCCEEDED(impl->device->CreateStateObject(&stateDesc, IID_PPV_ARGS(&impl->rtReflectionPso)));
+			}
+
+			// 셰이더 테이블 — 레코드 = 셰이더 식별자 32 B(로컬 루트 인자 없음).
+			//   각 표의 시작은 64 B 정렬(D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT): raygen 0 · miss 64 · hit group 128.
+			if (ok)
+			{
+				ComPtr<ID3D12StateObjectProperties> properties;
+				ok = SUCCEEDED(impl->rtReflectionPso.As(&properties));
+				const void* identifiers[3] = {
+					ok ? properties->GetShaderIdentifier(kRayGen) : nullptr,
+					ok ? properties->GetShaderIdentifier(kMiss) : nullptr,
+					ok ? properties->GetShaderIdentifier(kHitGroup) : nullptr };
+				ok = ok && identifiers[0] && identifiers[1] && identifiers[2];
+
+				D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				D3D12_RESOURCE_DESC desc = BufferDesc(3 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+				uint8_t* mapped = nullptr;
+				D3D12_RANGE noRead = { 0, 0 };
+				ok = ok && SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->rtShaderTable))) &&
+					SUCCEEDED(impl->rtShaderTable->Map(0, &noRead, reinterpret_cast<void**>(&mapped)));
+				if (ok)
+				{
+					for (UINT i = 0; i < 3; ++i)
+						memcpy(mapped + i * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT, identifiers[i], D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+					impl->rtShaderTable->Unmap(0, nullptr);
+				}
+			}
+
+			if (!ok)
+			{
+				impl->rtReflectionPso.Reset();
+				impl->status += L"  (RT 반사 파이프라인 생성 실패 — 반사 없이 진행)";
+				OutputDebugStringW(L"[GRenderer] [4b] RT 반사 파이프라인 생성 실패 — 반사 없이 진행\n");
+			}
+			else
+			{
+				OutputDebugStringW(L"[GRenderer] [4b] RT 반사 파이프라인 준비 (DispatchRays · SM 6.6 바인드리스)\n");
 			}
 		}
 
@@ -1681,7 +2012,10 @@ namespace swc {
 			boundsMax.y * 0.5f - boundsMin.y * 0.5f, boundsMax.z * 0.5f - boundsMin.z * 0.5f };
 		const UINT vbSize = UINT(vcount * sizeof(Vertex));
 		const UINT ibSize = UINT(icount * sizeof(uint32_t));
-		const UINT64 indexOffset = (UINT64(vbSize) + sizeof(uint32_t) - 1) & ~(UINT64(sizeof(uint32_t)) - 1);
+		// ★ 2026-10-27 렌더 4단계 — 인덱스 시작을 4 B → 16 B 정렬로 바꿨다.
+		//   반사 히트 셰이더용 raw SRV(ByteAddressBuffer)는 첫 원소 위치가 16 B 배수여야 한다(D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT,
+		//   어기면 디버그 레이어 오류 #31 + 장치 제거 — 실제로 났다). 인덱스 버퍼 뷰 · BLAS 는 4 B 만 요구하므로 그대로 된다.
+		const UINT64 indexOffset = (UINT64(vbSize) + D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT - 1) & ~UINT64(D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT - 1);
 		const UINT64 bufferBytes = indexOffset + ibSize;
 		if (bufferBytes > (std::numeric_limits<size_t>::max)())
 		{
@@ -1783,6 +2117,32 @@ namespace swc {
 			impl->accel.FinishCompaction(m.blasIndex);
 		}
 
+		// ── 바인드리스 raw SRV 두 칸 (2026-10-27 렌더 4단계) ──
+		//  [4b] 반사 히트 셰이더가 맞은 삼각형의 정점 세 개를 ByteAddressBuffer 로 읽는다(RtReflection.hlsl ClosestHit).
+		//  정점 · 인덱스는 한 버퍼를 나눠 쓴다: 정점 [0, vbSize), 인덱스 [indexOffset, indexOffset + ibSize).
+		//  raw 뷰는 4바이트 단위(R32_TYPELESS)라 시작 · 개수를 4 로 나눈다(정점 60 B · indexOffset 16 B 정렬이라 나누어떨어진다).
+		//  시작 위치는 16 B 배수여야 한다 — 정점은 0, 인덱스는 위에서 indexOffset 을 16 B 로 맞췄다.
+		//  버퍼는 위에서 RT 장치면 NON_PIXEL_SHADER_RESOURCE 까지 켠 상태로 둔다.
+		if (impl->bindlessHeap && impl->rtSupported)
+		{
+			auto rawSrv = [&](UINT64 offsetBytes, UINT sizeBytes) -> uint32_t
+			{
+				const uint32_t index = impl->AllocateBindless();
+				if (index == Impl::kNoDescriptor) return index;
+				D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+				srv.Format = DXGI_FORMAT_R32_TYPELESS;
+				srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+				srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				srv.Buffer.FirstElement = offsetBytes / 4;
+				srv.Buffer.NumElements = sizeBytes / 4;
+				srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+				impl->device->CreateShaderResourceView(m.buffer.Get(), &srv, impl->BindlessCpu(index));
+				return index;
+			};
+			m.vertexDescriptor = rawSrv(0, vbSize);
+			m.indexDescriptor = rawSrv(indexOffset, ibSize);
+		}
+
 		impl->meshes.push_back(std::move(m));
 		return MeshHandle(impl->meshes.size() - 1);
 	}
@@ -1870,6 +2230,9 @@ namespace swc {
 		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		// ★ 4단계 — [4b] 반사 히트 셰이더(픽셀 셰이더가 아님)도 이 텍스처를 읽는다 → 읽기 상태 둘을 같이 켠다.
+		if (impl->bindlessHeap)
+			barrier.Transition.StateAfter |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 		impl->commandList->ResourceBarrier(1, &barrier);
 		// 복사가 끝날 때까지 upload를 유지한다. 디스크립터는 CreateMaterial에서 만든다.
 		if (!impl->FlushCommands(upload, texture.resource)) return kInvalidTexture;
@@ -1886,6 +2249,23 @@ namespace swc {
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu = impl->srvHeap->GetCPUDescriptorHandleForHeapStart();
 			cpu.ptr += SIZE_T(slot) * impl->srvDescriptorSize;
 			impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, cpu);
+		}
+
+		// ── 바인드리스 SRV 한 칸 (2026-10-27 렌더 4단계) ──
+		//  [4b] 반사 히트 셰이더가 ResourceDescriptorHeap[번호] 로 이 텍스처를 읽는다.
+		//  번호는 CreateMaterial 이 RT 재질 표에 적는다. 바인드리스를 못 쓰는 장치면 kNoDescriptor 로 남는다.
+		if (impl->bindlessHeap)
+		{
+			texture.bindless = impl->AllocateBindless();
+			if (texture.bindless != Impl::kNoDescriptor)
+			{
+				D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+				srv.Format = texture.format;
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+				srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				srv.Texture2D.MipLevels = 1;
+				impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, impl->BindlessCpu(texture.bindless));
+			}
 		}
 
 		impl->textures.push_back(std::move(texture));
@@ -1966,10 +2346,24 @@ namespace swc {
 				channel(data.baseColor.y, data.attenuationColor.y),
 				channel(data.baseColor.z, data.attenuationColor.z));
 		}
+		// ── RT 재질 표 한 줄 (2026-10-27 렌더 4단계 — 2단계의 float4 «남는 빛» 을 RtMaterialGpu 96 B 로 넓힘) ──
+		//  [4a] 그림자 루프(RtCommon.hlsli TraceSunVisibility)는 transmittance 만,
+		//  [4b] 반사 히트 셰이더(RtReflection.hlsl ClosestHit)는 상수 · 텍스처 번호까지 전부 읽는다.
+		//  텍스처 번호 = 폴백까지 고른(resolved) 텍스처의 바인드리스 힙 번호 → 래스터 재질 테이블과 같은 텍스처를 가리킨다.
 		if (impl->rtMaterialData)
 		{
-			const float row[4] = { material.transmittance.x, material.transmittance.y, material.transmittance.z, 0.0f };
-			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(row), row, sizeof(row));
+			RtMaterialGpu row = {};
+			row.baseColor = data.baseColor;
+			row.emissive = data.emissive;
+			row.roughness = data.roughness;
+			row.metallic = data.metallic;
+			row.hasNormalMap = material.constants.hasNormalMap;
+			for (size_t slot = 0; slot < 4; ++slot)   // BaseColor · Normal · Roughness · Metallic (TextureSlot 순서)
+				row.textures[slot] = impl->textures[resolved[slot]].bindless;
+			row.emissiveTexture = impl->textures[resolved[static_cast<size_t>(TextureSlot::Emissive)]].bindless;
+			row.transmittance = material.transmittance;
+			row.transmissive = material.transmissive ? 1u : 0u;
+			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
 		impl->materials.push_back(material);
@@ -2019,16 +2413,30 @@ namespace swc {
 		{
 			// 프레임 슬롯을 넘긴다 — 비행 중 프레임(M1)에서 인스턴스 버퍼 덮어쓰기를 막는다.
 			impl->accel.ResetInstances(impl->frameIndex);
+			// ★ 4단계 — RT 인스턴스 표도 같은 프레임 슬롯에 쓴다(AccelStructure::ResetInstances 와 같은 규칙).
+			uint8_t* const instanceRows = impl->rtInstanceData
+				? impl->rtInstanceData + size_t(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu)
+				: nullptr;
 			for (const InstanceData& it : items)
 			{
 				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
 				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
-				const uint32_t blasIndex = impl->meshes[it.mesh].blasIndex;
+				const Impl::MeshGpu& mesh = impl->meshes[it.mesh];
+				const uint32_t blasIndex = mesh.blasIndex;
 				if (blasIndex == AccelStructure::kInvalidBlas) continue;
 				// ★ 2026-10-27 렌더 2단계 — InstanceID = 재질 번호(그림자 셰이더가 재질 표를 찾는다),
 				//   투과 재질이면 FORCE_NON_OPAQUE 로 넣어 그림자 레이가 통과 후보로 본다.
 				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				const uint32_t index = impl->accel.InstanceCount();
 				impl->accel.AddInstance(blasIndex, it.world, material, impl->materials[material].transmissive);
+				// ★ 2026-10-27 렌더 4단계 — 들어간 인스턴스와 같은 순번으로 인스턴스 표 한 줄.
+				//   반사 히트 셰이더가 InstanceIndex() 로 이 줄을 찾아 정점 · 인덱스 버퍼(바인드리스 번호)와 재질을 안다.
+				//   AddInstance 가 상한으로 버렸으면(개수가 안 늘었으면) 쓰지 않는다.
+				if (instanceRows && impl->accel.InstanceCount() > index)
+				{
+					const RtInstanceGpu row{ mesh.vertexDescriptor, mesh.indexDescriptor, material, 0 };
+					memcpy(instanceRows + size_t(index) * sizeof(RtInstanceGpu), &row, sizeof(row));
+				}
 			}
 			// ★ 2026-10-27 렌더 3단계 — [0] 빌드는 비동기 컴퓨트 큐로. 직접 큐는 G-buffer 뒤(JoinAsyncTlasBuild)에서 기다린다.
 			//   컴퓨트 큐가 없거나 제출에 실패하면 예전처럼 이 직접 리스트에서 빌드한다.
@@ -2283,9 +2691,61 @@ namespace swc {
 			commandList->Dispatch(groupsX, groupsY, 1);
 		}
 
-		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이 · 그림자 마스크를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
+		// ── [4b] RT 반사 — 픽셀마다 반사 레이 1개 (RtReflection.hlsl, DispatchRays, 2026-10-27 렌더 4단계) ──
+		//  RayGen 이 G-buffer 법선 · 거칠기 · 깊이를 바인드리스로 읽고, 맞은 물체는 ClosestHit 이 그 자리에서 셰이딩한다.
+		//  돌지 않으면(RT 미지원 · R 키로 끔 · SM 6.6 아님 · 힙 넘침 · 인스턴스 0) 라이팅이 반사 텍스처를 안 읽는다(reflectionEnabled = 0).
+		//  [4a] 와 쓰는 텍스처가 달라서(그림자 마스크 / 반사 텍스처) 둘 사이에 배리어가 필요 없다.
+		const bool reflectionPass = rtActive && impl->rtReflectionPso && impl->bindlessHeap && !impl->bindlessOverflow &&
+			impl->accel.InstanceCount() > 0;
+		if (reflectionPass)
+		{
+			impl->TransitionTargets({ { &impl->reflection, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+
+			ReflectionConstants rc = {};
+			XMStoreFloat4x4(&rc.invViewProj, invViewProj);
+			rc.eyePos = view.eyePosition;
+			rc.maxDistance = Impl::kShadowMaxDistance;   // 반사 레이 길이도 그림자와 같은 상한(행성 지름보다 길다)
+			rc.sunDir = impl->sunDir;
+			rc.maxRoughness = Impl::kReflectionMaxRoughness;
+			rc.width = impl->width;
+			rc.height = impl->height;
+			rc.normalIndex = Impl::BindlessGbNormal;
+			rc.materialIndex = Impl::BindlessGbMaterial;
+			rc.depthIndex = Impl::BindlessDepth;
+			rc.outputIndex = Impl::BindlessReflectionUav;
+			rc.skyColor = XMFLOAT3(Impl::kClearColor[0], Impl::kClearColor[1], Impl::kClearColor[2]);   // 하늘([6])이 아직 지우기 색
+			memcpy(impl->reflectionCBData, &rc, sizeof(rc));
+
+			// ★ 순서: 힙을 먼저 묶고 루트 시그니처를 묶는다 — CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED 루트 시그니처는
+			//   SetDescriptorHeaps 를 루트 시그니처 설정보다 먼저 해야 한다(SM 6.6 Dynamic Resources 사양).
+			ID3D12DescriptorHeap* bindlessHeaps[] = { impl->bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, bindlessHeaps);
+			commandList->SetComputeRootSignature(impl->rtReflectionRootSig.Get());
+			commandList->SetPipelineState1(impl->rtReflectionPso.Get());
+			commandList->SetComputeRootConstantBufferView(0, impl->reflectionCB->GetGPUVirtualAddress());
+			commandList->SetComputeRootShaderResourceView(1, impl->accel.TlasAddress());
+			commandList->SetComputeRootShaderResourceView(2, impl->rtMaterials->GetGPUVirtualAddress());
+			commandList->SetComputeRootShaderResourceView(3, impl->rtInstances->GetGPUVirtualAddress() +
+				UINT64(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu));
+
+			// 셰이더 테이블 — 초기화 때 써 둔 raygen 0 · miss 64 · hit group 128 바이트 자리(레코드 32 B)
+			const D3D12_GPU_VIRTUAL_ADDRESS table = impl->rtShaderTable->GetGPUVirtualAddress();
+			const UINT64 align = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+			const UINT64 record = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+			D3D12_DISPATCH_RAYS_DESC rays = {};
+			rays.RayGenerationShaderRecord = { table, record };
+			rays.MissShaderTable = { table + align, record, record };
+			rays.HitGroupTable = { table + 2 * align, record, record };
+			rays.Width = impl->width;
+			rays.Height = impl->height;
+			rays.Depth = 1;
+			commandList->DispatchRays(&rays);
+		}
+
+		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이 · 그림자 마스크 · 반사 텍스처를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
 		impl->TransitionTargets({
 			{ &impl->shadowMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->reflection, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->hdr,        D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
 
 		LightingConstants lc = {};
@@ -2296,6 +2756,7 @@ namespace swc {
 		lc.height = impl->height;
 		lc.debugMode = impl->debugMode;
 		lc.shadowEnabled = shadowPass ? 1u : 0u;
+		lc.reflectionEnabled = reflectionPass ? 1u : 0u;
 		memcpy(impl->lightingCBData, &lc, sizeof(lc));
 
 		commandList->SetDescriptorHeaps(1, targetHeaps);
