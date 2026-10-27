@@ -204,6 +204,7 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	case 10: color = float3(s.rough, s.metallic, 0.0); break;   // 거칠기(R) · 금속성(G)
 	case 11: color = float3(kAmbient, kAmbient, kAmbient); break;   // 6단계 — 주변 조도 / π (배경은 상수)
 	case 12: color = float3(1.0, 0.0, 0.0);            break;   // 7단계 — GI 프로브 안 씀(배경)
+	case 13: color = float3(1.0, 1.0, 1.0);            break;   // 8단계 — AO 없음(배경)
 	case 5: case 6: case 7: case 9:
 		color = float3(0.0, 0.0, 0.0);                          // 5 · 7 · 9 는 메인 패스의 [4b] 반사, 6 은 메인 패스 모션 벡터(배경은 둘 다 없음)
 		break;

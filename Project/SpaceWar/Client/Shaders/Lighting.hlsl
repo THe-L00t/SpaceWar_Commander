@@ -27,6 +27,9 @@
 //
 //  ★ 2026-10-27 렌더 7단계 — 주변광 = [4c] GI 프로브 (Probes.hlsli SampleProbes, t10 조도 · t11 거리 · t12 상태)
 //    프로브를 쓸 수 없는 픽셀(격자 밖 · 아직 안 채워짐 · RT 꺼짐)은 6단계 하늘 조도로 대신한다.
+//
+//  ★ 2026-10-27 렌더 8단계 — [2] AO (t13). 간접 확산(주변광)에만 곱한다 — 직접광 · 반사에는 곱하지 않는다.
+//    곱하기 전에 GTAO 다중 반사 보정(Jimenez 외 2016 식 10)을 건다: 밝은 표면은 가려진 곳에서도 서로 튕긴 빛이 남는다.
 // ============================================================
 
 #include "Shading.hlsli"
@@ -44,7 +47,8 @@ cbuffer LightingCB : register(b0)
 	uint     gDebugMode;
 	uint     gShadowEnabled;       // 1 = 이번 프레임에 [4a] RT 그림자가 돌았다
 	uint     gReflectionEnabled;   // 1 = 이번 프레임에 [4b] RT 반사가 돌았다 (4단계)
-	uint3    _pad2;
+	uint     gAoEnabled;           // 8단계 — 1 = 이번 프레임에 [2] AO 가 돌았다 (t13 을 읽는다)
+	uint2    _pad2;
 	float3   gSunIlluminance;      // 6단계 — 땅에 닿는 태양 조도(RGB)
 	uint     gSkyEnabled;          // 6단계 — 1 = 하늘 조도 텍스처가 이번 프레임 값이다
 	ProbeVolume gProbeVolume;      // 7단계 — [4c] GI 프로브 격자 (enabled = 0 이면 하늘 조도)
@@ -63,9 +67,21 @@ Texture2D<float4>   gSkyIrradiance : register(t9); // 6단계 — [6] 하늘 조
 Texture2D<float4>   gProbeIrradiance : register(t10);   // 7단계 — [4c] 프로브 조도 아틀라스
 Texture2D<float2>   gProbeDistance   : register(t11);   // 7단계 — [4c] 프로브 거리 아틀라스 (평균 · 거리²)
 StructuredBuffer<int4> gProbeStates  : register(t12);   // 7단계 — [4c] 프로브 상태 (월드 칸 · 세대 · 활성)
+Texture2D<float>    gAo         : register(t13);  // 8단계 — [2] AO (1 = 안 가려짐)
 RWTexture2D<float4> gHdr      : register(u0);
 SamplerState        gSkySampler : register(s1);    // 6단계 — 선형 · U 반복 · V 고정 (등장방형)
 SamplerState        gClampSampler : register(s2);  // 7단계 — 선형 · 고정 (프로브 아틀라스)
+
+// GTAO 다중 반사 보정 — Jimenez 외, «Practical Real-Time Strategies for Accurate Indirect Occlusion» (2016) 식 10
+//   G(A, ρ) = a(ρ)A³ − b(ρ)A² + c(ρ)A,  a = 2.0404ρ − 0.3324,  b = 4.7951ρ − 0.6417,  c = 2.7552ρ + 0.6903
+//  (논문 PDF 본문에서 확인). AO 보다 어두워지지 않게 max(A, G) — 보정은 «잃은 빛을 되돌리는» 것이라서.
+float3 GtaoMultiBounce(float A, float3 albedo)
+{
+	const float3 a = 2.0404 * albedo - 0.3324;
+	const float3 b = 4.7951 * albedo - 0.6417;
+	const float3 c = 2.7552 * albedo + 0.6903;
+	return max(A, ((a * A - b) * A + c) * A);
+}
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
@@ -101,11 +117,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	// [4b] RT 반사 — 돌지 않은 프레임이면 0 (반사 없음 = 3단계까지와 같은 화면)
 	const float3 reflection = (gReflectionEnabled != 0) ? gReflection[pixel].rgb : float3(0.0, 0.0, 0.0);
 
-	// ── 아직 없는 단계의 자리 — 지금 화면과 같게 두는 값이다 ──
-	const float  ao         = 1.0;                       // [2]  AO
+	// [2] AO — 8단계. 돌지 않은 프레임이면 1 (가림 없음)
+	const float  ao = (gAoEnabled != 0) ? gAo[pixel] : 1.0;
+	const float3 aoMultiBounce = GtaoMultiBounce(ao, albedo);
 
 	float3 color = (lit.diffuse + lit.specular) * shadow
-	             + lit.ambient * ao
+	             + lit.ambient * aoMultiBounce
 	             + lit.F_env * reflection
 	             + emissive;
 
@@ -128,6 +145,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	case 10: color = float3(rough, metallic, 0.0);   break;
 	case 11: color = ambientEOverPi;                 break;   // 6단계 — 주변 조도 / π (7단계부터 GI 프로브, 못 쓰면 하늘)
 	case 12: color = (probeWeight > 0.0) ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);   break;   // 7단계 — 프로브를 썼나(초록) / 하늘로 대신(빨강)
+	case 13: color = float3(ao, ao, ao);             break;   // 8단계 — [2] AO (노이즈 제거 후)
 	}
 
 	gHdr[pixel] = float4(color, 1.0);

@@ -411,6 +411,9 @@
     <None Include="Shaders\ProbeGI.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\AO.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">
