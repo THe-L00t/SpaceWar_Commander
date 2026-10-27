@@ -184,7 +184,7 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	case 8:  color = lit.specular;                     break;   // 태양 하이라이트만
 	case 10: color = float3(s.rough, s.metallic, 0.0); break;   // 거칠기(R) · 금속성(G)
 	case 5: case 6: case 7: case 9:
-		color = float3(0.0, 0.0, 0.0);                          // 비어 있는 번호
+		color = float3(0.0, 0.0, 0.0);                          // 5 · 9 는 메인 패스의 [4b] 반사(배경은 반사 없음), 6 · 7 은 비어 있음
 		break;
 	}
 

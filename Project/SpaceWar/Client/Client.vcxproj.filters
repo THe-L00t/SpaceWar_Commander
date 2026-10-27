@@ -387,6 +387,12 @@
     <None Include="Shaders\GBuffer.hlsli">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\RtCommon.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtReflection.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">

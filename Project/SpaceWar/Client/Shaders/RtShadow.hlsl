@@ -15,6 +15,7 @@
 // ============================================================
 
 #include "GBuffer.hlsli"
+#include "RtCommon.hlsli"   // 4단계 — RtMaterial · TraceSunVisibility(그림자 루프를 반사 히트와 같이 쓰려고 옮김)
 
 // GRenderer.cpp 의 ShadowConstants 와 같은 배치 (112바이트)
 cbuffer ShadowCB : register(b0)
@@ -25,14 +26,11 @@ cbuffer ShadowCB : register(b0)
 	uint2    gSize;       uint2 _pad1;
 };
 
-Texture2D<float2>               gNormal   : register(t1);   // GB1 (팔면체 법선)
-Texture2D<float>                gDepth    : register(t4);
-RaytracingAccelerationStructure gScene    : register(t5);   // TLAS (루트 SRV)
-StructuredBuffer<float4>        gMaterialTransmittance : register(t6);   // 재질 번호 → 물체 하나를 지나고 남는 빛 (rgb)
-RWTexture2D<float4>             gShadow   : register(u0);   // 그림자 마스크 — rgb = 가시도
-
-static const uint  kMaxTrackedObjects = 4;     // 한 번만 곱하려고 기억해 두는 투과 물체 수(넘으면 그다음부턴 중복을 못 거른다)
-static const float kOpaqueCutoff      = 0.01;  // 남는 빛이 이보다 작으면 불투명처럼 끝낸다
+Texture2D<float2>               gNormal      : register(t1);   // GB1 (팔면체 법선)
+Texture2D<float>                gDepth       : register(t4);
+RaytracingAccelerationStructure gScene       : register(t5);   // TLAS (루트 SRV)
+StructuredBuffer<RtMaterial>    gRtMaterials : register(t6);   // 재질 표 (4단계에서 float4 → RtMaterial 96바이트로 넓어짐)
+RWTexture2D<float4>             gShadow      : register(u0);   // 그림자 마스크 — rgb = 가시도
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
@@ -56,45 +54,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 		return;
 	}
 
-	// 깊이에서 되살린 위치는 멀수록 오차가 커서(D32 · near 0.1 m 에서 거리² 에 비례, 1 km 에서 약 0.6 m)
-	// 레이 시작점을 법선 쪽으로 거리에 맞춰 띄운다. 안 띄우면 자기 표면에 맞아 줄무늬 그림자가 생긴다.
-	const float viewDistance = length(P - gEyePos);
-	const float bias = 0.02 + viewDistance * viewDistance * 1.0e-6;
-
-	RayDesc ray;
-	ray.Origin    = P + N * bias;
-	ray.Direction = L;
-	ray.TMin      = 0.0;
-	ray.TMax      = gMaxDistance;
-
-	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-	q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
-
-	float3 transmittance = float3(1.0, 1.0, 1.0);
-	uint   counted[kMaxTrackedObjects];
-	uint   countedCount = 0;
-
-	while (q.Proceed())
-	{
-		// 여기 오는 후보는 FORCE_NON_OPAQUE 로 넣은 투과 물체의 삼각형뿐이다.
-		if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
-			continue;
-
-		const uint instance = q.CandidateInstanceIndex();   // TLAS 안 순번 — 같은 물체인지 가리는 데 쓴다
-		bool already = false;
-		for (uint k = 0; k < countedCount; ++k)
-			already = already || (counted[k] == instance);
-		if (already)
-			continue;
-		if (countedCount < kMaxTrackedObjects)
-			counted[countedCount++] = instance;
-
-		transmittance *= gMaterialTransmittance[q.CandidateInstanceID()].rgb;   // InstanceID = 재질 번호
-		if (max(transmittance.r, max(transmittance.g, transmittance.b)) < kOpaqueCutoff)
-			q.CommitNonOpaqueTriangleHit();   // 거의 다 막혔다 — 불투명처럼 확정 → 탐색 끝
-	}
-
-	// 확정된 히트가 있으면(불투명이거나 거의 다 막힘) 그림자, 없으면 투과 물체를 지나고 남은 빛.
-	const float3 visibility = (q.CommittedStatus() == COMMITTED_NOTHING) ? transmittance : float3(0.0, 0.0, 0.0);
+	// 깊이에서 되살린 위치는 멀수록 오차가 커서 레이 시작점을 법선 쪽으로 거리에 맞춰 띄운다(RtCommon.hlsli RayOffsetBias).
+	// 안 띄우면 자기 표면에 맞아 줄무늬 그림자가 생긴다.
+	const float  bias       = RayOffsetBias(length(P - gEyePos));
+	const float3 visibility = TraceSunVisibility(gScene, gRtMaterials, P + N * bias, L, gMaxDistance);
 	gShadow[pixel] = float4(visibility, 1.0);
 }

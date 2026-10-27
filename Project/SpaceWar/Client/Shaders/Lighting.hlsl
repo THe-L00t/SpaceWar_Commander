@@ -19,7 +19,7 @@
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
 
-// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(112바이트)
+// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(128바이트 — 4단계에서 112 → 128)
 cbuffer LightingCB : register(b0)
 {
 	float4x4 gInvViewProj;   // 깊이 → 월드 위치 (행벡터 규약: mul(v, M))
@@ -27,7 +27,9 @@ cbuffer LightingCB : register(b0)
 	float3   gSunDir;     float _pad1;
 	uint2    gSize;       // 화면 픽셀 크기
 	uint     gDebugMode;
-	uint     gShadowEnabled;   // 1 = 이번 프레임에 [4a] RT 그림자가 돌았다
+	uint     gShadowEnabled;       // 1 = 이번 프레임에 [4a] RT 그림자가 돌았다
+	uint     gReflectionEnabled;   // 1 = 이번 프레임에 [4b] RT 반사가 돌았다 (4단계)
+	uint3    _pad2;
 };
 
 Texture2D<float4>   gAlbedo   : register(t0);   // GB0
@@ -36,6 +38,7 @@ Texture2D<float4>   gMaterial : register(t2);   // GB2
 Texture2D<float3>   gEmissive : register(t3);   // GB3
 Texture2D<float>    gDepth    : register(t4);
 Texture2D<float4>   gShadow   : register(t5);   // [4a] 그림자 마스크 — rgb = 태양 가시도(투과 물체면 연하게)
+Texture2D<float4>   gReflection : register(t6); // [4b] 반사 색 (F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
 RWTexture2D<float4> gHdr      : register(u0);
 
 [numthreads(8, 8, 1)]
@@ -61,25 +64,29 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	// [4a] RT 그림자 — 돌지 않은 프레임이면 1 (그림자 없음)
 	const float3 shadow = (gShadowEnabled != 0) ? gShadow[pixel].rgb : float3(1.0, 1.0, 1.0);
 
+	// [4b] RT 반사 — 돌지 않은 프레임이면 0 (반사 없음 = 3단계까지와 같은 화면)
+	const float3 reflection = (gReflectionEnabled != 0) ? gReflection[pixel].rgb : float3(0.0, 0.0, 0.0);
+
 	// ── 아직 없는 단계의 자리 — 지금 화면과 같게 두는 값이다 ──
 	const float  ao         = 1.0;                       // [2]  AO
-	const float3 reflection = float3(0.0, 0.0, 0.0);     // [4b] 반사
 
 	float3 color = (lit.diffuse + lit.specular) * shadow
 	             + lit.ambient * ao
 	             + lit.F_env * reflection
 	             + emissive;
 
-	// 디버그 뷰 — 번호는 Forward.hlsl PSMain 과 같다. 5 · 6 · 7 · 9 는 비어 있다(검정).
+	// 디버그 뷰 — 번호는 Forward.hlsl PSMain 과 같다. 6 · 7 은 비어 있다(검정).
 	switch (gDebugMode)
 	{
 	case 1:  color = albedo;                         break;
 	case 2:  color = N * 0.5 + 0.5;                  break;
 	case 3:  color = shadow;                         break;   // [4a] 태양 가시도 (흰 = 빛 받음, 검정 = 그림자)
 	case 4:  color = lit.F_env;                      break;
+	case 5:  color = reflection;                     break;   // [4b] 반사 색 (F 곱하기 전)
 	case 8:  color = lit.specular;                   break;
+	case 9:  color = lit.F_env * reflection;         break;   // [4b] 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
 	case 10: color = float3(rough, metallic, 0.0);   break;
-	case 5: case 6: case 7: case 9:
+	case 6: case 7:
 		color = float3(0.0, 0.0, 0.0);
 		break;
 	}
