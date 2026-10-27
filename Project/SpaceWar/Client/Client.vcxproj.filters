@@ -378,6 +378,9 @@
     <None Include="Shaders\Tonemap.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\RtShadow.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
     <None Include="Shaders\Shading.hlsli">
       <Filter>셰이더</Filter>
     </None>

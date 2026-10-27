@@ -557,22 +557,15 @@ namespace swc {
 			suppressFire = true;   // 이 클릭은 «잡기» 였다. 총알이 나가면 안 된다
 		}
 
-		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
+		// V = 디버그 뷰 순환, R = RT 토글
+		//  (2026-10-27 렌더 2단계 — 룰렛 무릎점 [ ] 키는 RayTracingParams 에서 룰렛이 빠져 없앴다)
 		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
-			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~10
 		if (input.WasPressed('R'))
 		{
 			RayTracingParams p = renderer.GetRayTracingParams();
 			p.enabled = !p.enabled;
-			renderer.SetRayTracingParams(p);
-		}
-		if (input.WasPressed(VK_OEM_4) || input.WasPressed(VK_OEM_6))
-		{
-			RayTracingParams p = renderer.GetRayTracingParams();
-			p.rouletteKnee += input.WasPressed(VK_OEM_6) ? 0.05f : -0.05f;
-			if (p.rouletteKnee < 0.01f) p.rouletteKnee = 0.01f;
-			if (p.rouletteKnee > 2.0f) p.rouletteKnee = 2.0f;
 			renderer.SetRayTracingParams(p);
 		}
 	}
@@ -882,10 +875,9 @@ namespace swc {
 		titleTimer = 0.0f;
 
 		const RayTracingParams& rt = renderer.GetRayTracingParams();
-		// 임시 스위치로 끈 것과 장치가 못 하는 것을 구분해서 보여준다.
-		// 둘을 「미지원」 하나로 뭉치면 RTX 장비에서 «왜 미지원이지» 로 헤맨다.
-		const wchar_t* rtState = !kEnableRaytracing ? L"임시끔(래스터만)"
-			: !renderer.SupportsRaytracing() ? L"미지원"
+		// 장치가 못 하는 것과 실행 중 R 키로 끈 것을 구분해서 보여준다.
+		//  (2026-10-27 렌더 2단계 — 임시 스위치 kEnableRaytracing 이 없어져 «임시끔(래스터만)» 상태도 없앴다)
+		const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
 			: (rt.enabled ? L"ON" : L"OFF");
 
 		// 이동 검증용: 고도 / 접지 / 실제 스폰에서의 거리
@@ -932,14 +924,14 @@ namespace swc {
 		wchar_t title[1280];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-			L"|  %s  |  %s  |  RT %s knee %.2f view %u  |  %s  "
+			L"|  %s  |  %s  |  RT %s view %u  |  %s  "
 			L"|  행성 LOD%u %.0fpx  |  Draw %zu Inst %zu/%zu Cull %zu Tri %.2fM%s",
 			timer.Fps(), dt * 1000.0f,
 			controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 			distFromSpawn, controller.Speed(),
 			netText,
 			terrainStatus.c_str(),
-			rtState, rt.rouletteKnee, renderer.DebugMode(),
+			rtState, renderer.DebugMode(),
 			blasText,
 			skyPlanet.SelectedLod(), skyPlanet.DiameterPixels(),
 			renderStats.drawCalls, renderStats.instances, renderStats.submitted, renderStats.culled,

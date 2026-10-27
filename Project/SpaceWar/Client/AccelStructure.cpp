@@ -222,7 +222,8 @@ namespace swc {
 		droppedInstances = 0;
 	}
 
-	void AccelStructure::AddInstance(uint32_t blasIndex, const XMFLOAT4X4& world)
+	void AccelStructure::AddInstance(uint32_t blasIndex, const XMFLOAT4X4& world,
+		uint32_t instanceId, bool forceNonOpaque)
 	{
 		if (blasIndex >= blas.size() || !instanceData)
 			return;
@@ -240,10 +241,12 @@ namespace swc {
 			for (int c = 0; c < 4; ++c)
 				d.Transform[r][c] = world.m[c][r];
 
-		d.InstanceID = instanceCount;
+		// InstanceID 는 24비트다 — 넘치는 값은 잘린다(재질 상한 4096 이라 지금은 넘지 않는다).
+		d.InstanceID = instanceId & 0xFFFFFFu;
 		d.InstanceMask = 0xFF;
 		d.InstanceContributionToHitGroupIndex = 0;
-		d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+		d.Flags = forceNonOpaque ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE
+		                         : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
 		d.AccelerationStructure = blas[blasIndex].result->GetGPUVirtualAddress();
 
 		++instanceCount;

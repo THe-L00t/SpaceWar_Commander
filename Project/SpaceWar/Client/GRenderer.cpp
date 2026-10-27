@@ -174,19 +174,15 @@ namespace {
 
 namespace swc {
 
-	// 셰이더의 FrameCB 와 레이아웃이 반드시 일치해야 한다.
+	// 셰이더(Forward.hlsl)의 FrameCB 와 레이아웃이 반드시 일치해야 한다.
+	//  ★ 2026-10-27 2단계 — 옛 인라인 반사용 rtEnabled · rouletteKnee · fresnelBoost · frameIndex 를 뺐다(96바이트).
 	struct FrameConstants
 	{
 		XMFLOAT4X4 viewProj;
 		XMFLOAT3   eyePos;    float pad0;
-		XMFLOAT3   sunDir;    float pad1;
-		uint32_t   rtEnabled;
-		float      rouletteKnee;
-		float      fresnelBoost;
-		uint32_t   debugMode;
-		uint32_t   frameIndex;
-		float      pad2[3];
+		XMFLOAT3   sunDir;    uint32_t debugMode;
 	};
+	static_assert(sizeof(FrameConstants) == 96, "FrameCB 는 96바이트");
 
 	// Lighting.hlsl 의 LightingCB 와 같은 순서 · 크기 (2026-10-27 파이프라인 1단계, [5] 라이팅 합성)
 	struct LightingConstants
@@ -197,9 +193,21 @@ namespace swc {
 		uint32_t   width;
 		uint32_t   height;
 		uint32_t   debugMode;
-		uint32_t   pad2;
+		uint32_t   shadowEnabled;   // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
 	};
 	static_assert(sizeof(LightingConstants) == 112, "LightingCB 는 112바이트");
+
+	// RtShadow.hlsl 의 ShadowCB 와 같은 순서 · 크기 (2026-10-27 렌더 2단계, [4a] RT 그림자)
+	struct ShadowConstants
+	{
+		XMFLOAT4X4 invViewProj;   // 전치해서 올린다(LightingConstants 와 같은 값)
+		XMFLOAT3   eyePos;    float maxDistance;   // 그림자 레이 길이 상한(m)
+		XMFLOAT3   sunDir;    float pad0;
+		uint32_t   width;
+		uint32_t   height;
+		uint32_t   pad1[2];
+	};
+	static_assert(sizeof(ShadowConstants) == 112, "ShadowCB 는 112바이트");
 
 	// Forward.hlsl의 MaterialCB와 16바이트 단위로 맞춘다.
 	struct MaterialConstants
@@ -272,7 +280,16 @@ namespace swc {
 			bool doubleSided = false;
 			MaterialConstants constants{};
 			D3D12_GPU_DESCRIPTOR_HANDLE textures{};
+			// ── 투과 (2026-10-27 렌더 2단계) — CreateMaterial 이 MaterialData 의 투과 값으로 한 번 계산한다 ──
+			//  transmissive 면 TLAS 인스턴스를 FORCE_NON_OPAQUE 로 넣어 [4a] 그림자 레이가 «통과 후보» 로 본다.
+			bool transmissive = false;
+			XMFLOAT3 transmittance{ 0.0f, 0.0f, 0.0f };   // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (RGB)
 		};
+
+		// [4a] RT 그림자가 읽는 재질 표 — 재질 번호(TLAS InstanceID) → float4(남는 빛 rgb, 0).
+		//  UPLOAD 영속 매핑. CreateMaterial 이 자기 칸만 쓴다(프레임 밖에서만 불리므로 GPU 와 겹치지 않는다).
+		ComPtr<ID3D12Resource> rtMaterials;
+		uint8_t*               rtMaterialData = nullptr;
 
 		ComPtr<ID3D12Device5>              device;
 		ComPtr<ID3D12CommandQueue>         commandQueue;
@@ -318,9 +335,25 @@ namespace swc {
 		static constexpr UINT kRtvCount = FrameCount + 1 + GbCount;
 
 		// 타깃 SRV·UAV 힙(셰이더 가시).
-		//  라이팅 테이블 = 슬롯 0~5 (SRV t0~t3 G-buffer, t4 깊이, UAV u0 HDR), 톤맵 테이블 = 슬롯 6 (SRV t0 HDR).
-		enum TargetSlot : UINT { SlotGBuffer = 0, SlotDepth = 4, SlotHdrUav = 5, SlotHdrSrv = 6, TargetSlotCount = 7 };
-		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤 — 라이팅 테이블 t4");
+		//  라이팅 테이블 = 슬롯 0 시작 (SRV t0~t3 G-buffer, t4 깊이 / UAV u0 HDR 슬롯 5 / SRV t5 그림자 마스크 슬롯 8)
+		//  톤맵 테이블   = 슬롯 6 (SRV t0 HDR)
+		//  RT 그림자 테이블 = 슬롯 0 시작 (SRV t0~t4 / UAV u0 그림자 마스크 슬롯 7)   ← 2026-10-27 렌더 2단계
+		enum TargetSlot : UINT {
+			SlotGBuffer = 0, SlotDepth = 4, SlotHdrUav = 5, SlotHdrSrv = 6,
+			SlotShadowUav = 7, SlotShadowSrv = 8, TargetSlotCount = 9 };
+		// static_assert 메시지는 좁은 문자열(CP949)이라 «—» 같은 문자를 쓰면 C4566 경고가 난다 — 쓰지 않는다.
+		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤: 라이팅 테이블 t4");
+
+		// ── [4a] RT 그림자 (2026-10-27 렌더 2단계) ──
+		//  그림자 마스크: 픽셀마다 태양 가시도 rgb(투과 물체를 지나면 연하게). RtShadow.hlsl 이 쓰고 Lighting.hlsl 이 읽는다.
+		//  0~1 값이라 8비트로 충분하다. RT 미지원 장치에서도 자원은 만들어 둔다(라이팅 테이블이 항상 가리키므로).
+		static constexpr DXGI_FORMAT kShadowFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+		static constexpr float kShadowMaxDistance = 5000.0f;   // 그림자 레이 길이(m) — 행성 지름 3.2 km 를 넘는다
+		RenderTarget                shadowMask;
+		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
+		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
+		ComPtr<ID3D12Resource>      shadowCB;           // UPLOAD, 영속 매핑
+		uint8_t*                    shadowCBData = nullptr;
 
 		RenderTarget hdr;                  // HDR 장면 컬러: 배경 forward 가 그리고, 라이팅이 쓰고, 톤맵이 읽는다
 		RenderTarget gbuffer[GbCount];
@@ -639,15 +672,13 @@ namespace swc {
 			impl->status = L"D3D12 디바이스 생성 실패.";
 			return false;
 		}
-		// kEnableRaytracing 이 false 면 장치가 지원해도 RT 경로를 전부 끈다.
-		// 이 한 줄이 BLAS·TLAS 빌드, 셰이더의 RayQuery, TLAS 루트 SRV 를 모두 막는다.
-		impl->rtSupported = pick.raytracing && kEnableRaytracing;
+		// ★ 2026-10-27 2단계 — 임시 스위치 kEnableRaytracing 을 없앴다. 장치가 DXR 1.1 + SM 6.5 를 지원하면 RT 를 쓴다.
+		//   (지원하지 않으면 BLAS · TLAS 를 만들지 않고, [4a] RT 그림자를 건너뛰며, 라이팅은 그림자 없이 합성한다)
+		impl->rtSupported = pick.raytracing;
 
 		impl->status = pick.name;
 		if (impl->rtSupported)
 			impl->status += L"  [DXR Tier 1.1]";
-		else if (pick.raytracing)
-			impl->status += L"  [DXR 지원 — 임시 비활성, 래스터만]";
 		else
 			impl->status += L"  [RT 미지원 — 래스터만]";
 
@@ -747,7 +778,10 @@ namespace swc {
 				clearValue.Format = format;
 				for (int i = 0; i < 4; ++i) clearValue.Color[i] = clear[i];
 				if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-					initial, &clearValue, IID_PPV_ARGS(&out.resource))))
+					initial,
+					// 최적화 지우기 값은 렌더 타깃에만 줄 수 있다(UAV 전용 텍스처 — 그림자 마스크 — 에는 nullptr).
+					(flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) ? &clearValue : nullptr,
+					IID_PPV_ARGS(&out.resource))))
 					return false;
 				out.state = initial;
 				return true;
@@ -805,6 +839,21 @@ namespace swc {
 			uav.Format = Impl::kHdrFormat;
 			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 			impl->device->CreateUnorderedAccessView(impl->hdr.resource.Get(), nullptr, &uav, impl->TargetCpu(Impl::SlotHdrUav));
+
+			// [4a] 그림자 마스크 (2026-10-27 렌더 2단계) — UAV(RtShadow.hlsl 가 씀) + SRV(Lighting.hlsl 이 읽음).
+			//  처음 상태를 «읽기» 로 둔다 — RT 가 돌지 않는 프레임에도 라이팅 테이블이 유효한 자원을 가리키게.
+			if (!createTarget(Impl::kShadowFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					zero, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, impl->shadowMask))
+			{
+				impl->status = L"그림자 마스크 생성 실패.";
+				return false;
+			}
+			createSrv(impl->shadowMask.resource.Get(), Impl::kShadowFormat, Impl::SlotShadowSrv);
+			D3D12_UNORDERED_ACCESS_VIEW_DESC shadowUav = {};
+			shadowUav.Format = Impl::kShadowFormat;
+			shadowUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			impl->device->CreateUnorderedAccessView(impl->shadowMask.resource.Get(), nullptr, &shadowUav,
+				impl->TargetCpu(Impl::SlotShadowUav));
 		}
 
 		if (FAILED(impl->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&impl->commandAllocator))))
@@ -837,6 +886,36 @@ namespace swc {
 				impl->status = L"라이팅 상수 버퍼 생성 실패.";
 				return false;
 			}
+		}
+
+		// [4a] RT 그림자 상수 버퍼 (UPLOAD, 영속 매핑, 2026-10-27 렌더 2단계)
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(256);
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->shadowCB))) ||
+				FAILED(impl->shadowCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->shadowCBData))))
+			{
+				impl->status = L"그림자 상수 버퍼 생성 실패.";
+				return false;
+			}
+		}
+
+		// [4a] RT 그림자용 재질 표 (2026-10-27 렌더 2단계) — 재질마다 float4(남는 빛 rgb, 0), UPLOAD 영속 매핑.
+		//  CreateMaterial 보다 먼저 있어야 한다(아래 기본 재질 0번도 여기에 쓴다).
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(UINT64(Impl::MaxMaterials) * 16);
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->rtMaterials))) ||
+				FAILED(impl->rtMaterials->Map(0, &noRead, reinterpret_cast<void**>(&impl->rtMaterialData))))
+			{
+				impl->status = L"RT 재질 표 생성 실패.";
+				return false;
+			}
+			memset(impl->rtMaterialData, 0, size_t(Impl::MaxMaterials) * 16);
 		}
 
 		// 인스턴싱·GPU 컬링 패스 자원 — (프레임 슬롯 × 패스)마다
@@ -902,13 +981,15 @@ namespace swc {
 			impl->status += L"  (가속 구조 초기화 실패 — RT 비활성)";
 		}
 
-		// Root signature
+		// Root signature (래스터 — 배경 forward · 메인 G-buffer 가 같이 쓴다)
 		//   b1 = 묶음의 보이는 목록 시작 번호(루트 상수 1개, 수정방향 3.2), b0 = 프레임, b2 = 재질,
-		//   t1~t5 = 텍스처, t6 = 인스턴스, t7 = 보이는 인스턴스 번호 목록, t0 = TLAS.
-		//   RT 포함 1 + 2 + 12 + 1 + 2 + 2 + 2 = 22 DWORD.
+		//   t1~t5 = 텍스처, t6 = 인스턴스, t7 = 보이는 인스턴스 번호 목록.
+		//   1 + 2 + 12 + 1 + 2 + 2 = 20 DWORD.
 		//   (인스턴싱 전에는 b1 루트 상수 32개로 행렬을 그리기마다 넘겼다.)
+		//   ★ 2026-10-27 2단계 — TLAS(t0) 슬롯을 뺐다. 픽셀 셰이더 안 인라인 반사가 없어졌고,
+		//     RT 는 [4a] RT 그림자 컴퓨트가 자기 루트 시그니처로 TLAS 를 받는다.
 		{
-			D3D12_ROOT_PARAMETER params[7] = {};
+			D3D12_ROOT_PARAMETER params[6] = {};
 
 			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
 			params[0].Constants.ShaderRegister = 1;
@@ -944,11 +1025,6 @@ namespace swc {
 			params[5].Descriptor.ShaderRegister = 7;
 			params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
-			// TLAS 는 마지막에 둔다 — RT 를 못 쓰면 파라미터 수만 줄여 뺀다.
-			params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-			params[6].Descriptor.ShaderRegister = 0;
-			params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
 			D3D12_STATIC_SAMPLER_DESC sampler = {};
 			sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
 			sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -960,7 +1036,7 @@ namespace swc {
 			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-			rsDesc.NumParameters = impl->rtSupported ? 7u : 6u;
+			rsDesc.NumParameters = 6;
 			rsDesc.pParameters = params;
 			rsDesc.NumStaticSamplers = 1;
 			rsDesc.pStaticSamplers = &sampler;
@@ -981,20 +1057,20 @@ namespace swc {
 				return false;
 			}
 
+			// ★ 2026-10-27 2단계 — 래스터 셰이더에는 RayQuery 가 없으므로 RT 지원 여부와 상관없이 SM 6.0 으로 컴파일한다.
 			const std::wstring path = ShaderPath(L"Forward.hlsl");
-			const wchar_t* defineRt = impl->rtSupported ? L"RT_SUPPORTED=1" : L"RT_SUPPORTED=0";
-			const wchar_t* vsTarget = impl->rtSupported ? L"vs_6_5" : L"vs_6_0";
-			const wchar_t* psTarget = impl->rtSupported ? L"ps_6_5" : L"ps_6_0";
+			const wchar_t* vsTarget = L"vs_6_0";
+			const wchar_t* psTarget = L"ps_6_0";
 
 			std::string log;
-			std::vector<uint8_t> vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", vsTarget, &defineRt, 1, log);
+			std::vector<uint8_t> vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", vsTarget, nullptr, 0, log);
 			if (vs.empty())
 			{
 				OutputDebugStringA(("[VS] " + log + "\n").c_str());
 				impl->status = L"버텍스 셰이더 컴파일 실패 (출력창 참고).";
 				return false;
 			}
-			std::vector<uint8_t> ps = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", psTarget, &defineRt, 1, log);
+			std::vector<uint8_t> ps = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", psTarget, nullptr, 0, log);
 			if (ps.empty())
 			{
 				OutputDebugStringA(("[PS] " + log + "\n").c_str());
@@ -1002,7 +1078,7 @@ namespace swc {
 				return false;
 			}
 			// [1] G-buffer 진입점 (2026-10-27) — 같은 파일 · 같은 정점 셰이더, 픽셀 진입점만 다르다.
-			std::vector<uint8_t> gbufferPs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSGBuffer", psTarget, &defineRt, 1, log);
+			std::vector<uint8_t> gbufferPs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSGBuffer", psTarget, nullptr, 0, log);
 			if (gbufferPs.empty())
 			{
 				OutputDebugStringA(("[PS GBuffer] " + log + "\n").c_str());
@@ -1080,9 +1156,10 @@ namespace swc {
 		}
 
 		// ── [5] 라이팅 합성 파이프라인 (Lighting.hlsl, 2026-10-27) ──
-		//   b0 = LightingCB(루트 CBV), 테이블 = targetHeap 슬롯 0~5 (SRV t0~t4 G-buffer · 깊이, UAV u0 HDR).
+		//   b0 = LightingCB(루트 CBV), 테이블 = targetHeap 슬롯 0 부터
+		//   (SRV t0~t4 G-buffer · 깊이 = 슬롯 0~4, UAV u0 HDR = 슬롯 5, SRV t5 그림자 마스크 = 슬롯 8 ← 2단계)
 		{
-			D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+			D3D12_DESCRIPTOR_RANGE ranges[3] = {};
 			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 			ranges[0].NumDescriptors = Impl::GbCount + 1;   // G-buffer 4 + 깊이
 			ranges[0].BaseShaderRegister = 0;
@@ -1091,13 +1168,17 @@ namespace swc {
 			ranges[1].NumDescriptors = 1;
 			ranges[1].BaseShaderRegister = 0;
 			ranges[1].OffsetInDescriptorsFromTableStart = Impl::SlotHdrUav;
+			ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			ranges[2].NumDescriptors = 1;
+			ranges[2].BaseShaderRegister = 5;
+			ranges[2].OffsetInDescriptorsFromTableStart = Impl::SlotShadowSrv;
 
 			D3D12_ROOT_PARAMETER params[2] = {};
 			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 			params[0].Descriptor.ShaderRegister = 0;
 			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-			params[1].DescriptorTable.NumDescriptorRanges = 2;
+			params[1].DescriptorTable.NumDescriptorRanges = 3;
 			params[1].DescriptorTable.pDescriptorRanges = ranges;
 			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
@@ -1128,6 +1209,70 @@ namespace swc {
 			{
 				impl->status = L"라이팅 PSO 생성 실패.";
 				return false;
+			}
+		}
+
+		// ── [4a] RT 그림자 파이프라인 (RtShadow.hlsl, 2026-10-27 렌더 2단계) ──
+		//   b0 = ShadowCB(루트 CBV)
+		//   테이블 = targetHeap 슬롯 0 부터 (SRV t0~t4 G-buffer · 깊이 = 슬롯 0~4, UAV u0 그림자 마스크 = 슬롯 7)
+		//   t5 = TLAS(루트 SRV), t6 = 재질 표(루트 SRV) — 둘 다 버퍼라 힙 없이 주소로 넘긴다.
+		//   RayQuery 가 들어 있어 cs_6_5 — RT 지원 장치에서만 만든다. 실패하면 RT 를 끄고 계속한다.
+		if (impl->rtSupported)
+		{
+			bool ok = true;
+			D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			ranges[0].NumDescriptors = Impl::GbCount + 1;
+			ranges[0].BaseShaderRegister = 0;
+			ranges[0].OffsetInDescriptorsFromTableStart = Impl::SlotGBuffer;
+			ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+			ranges[1].NumDescriptors = 1;
+			ranges[1].BaseShaderRegister = 0;
+			ranges[1].OffsetInDescriptorsFromTableStart = Impl::SlotShadowUav;
+
+			D3D12_ROOT_PARAMETER params[4] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+			params[0].Descriptor.ShaderRegister = 0;
+			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			params[1].DescriptorTable.NumDescriptorRanges = 2;
+			params[1].DescriptorTable.pDescriptorRanges = ranges;
+			params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;   // TLAS
+			params[2].Descriptor.ShaderRegister = 5;
+			params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;   // 재질 표
+			params[3].Descriptor.ShaderRegister = 6;
+			for (D3D12_ROOT_PARAMETER& param : params)
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 4;
+			rsDesc.pParameters = params;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->rtShadowRootSig))))
+				ok = false;
+
+			std::string log;
+			std::vector<uint8_t> cs;
+			if (ok)
+			{
+				cs = impl->shaderCompiler.CompileFromFile(ShaderPath(L"RtShadow.hlsl").c_str(), L"CSMain", L"cs_6_5", nullptr, 0, log);
+				if (cs.empty())
+				{
+					OutputDebugStringA(("[RtShadow CS] " + log + "\n").c_str());
+					ok = false;
+				}
+			}
+			if (ok)
+			{
+				D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+				psoDesc.pRootSignature = impl->rtShadowRootSig.Get();
+				psoDesc.CS = { cs.data(), cs.size() };
+				ok = SUCCEEDED(impl->device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&impl->rtShadowPso)));
+			}
+			if (!ok)
+			{
+				impl->rtShadowPso.Reset();
+				impl->status += L"  (RT 그림자 파이프라인 생성 실패 — 그림자 없이 진행)";
 			}
 		}
 
@@ -1655,7 +1800,12 @@ namespace swc {
 			!std::isfinite(data.baseColor.x) || !std::isfinite(data.baseColor.y) ||
 			!std::isfinite(data.baseColor.z) || !std::isfinite(data.baseColor.w) ||
 			!std::isfinite(data.emissive.x) || !std::isfinite(data.emissive.y) || !std::isfinite(data.emissive.z) ||
-			!std::isfinite(data.roughness) || !std::isfinite(data.metallic))
+			!std::isfinite(data.roughness) || !std::isfinite(data.metallic) ||
+			// 투과 값 (2026-10-27): attenuationDistance 만 무한대(기본값 = 흡수 없음)를 허용한다.
+			!std::isfinite(data.transmission) || !std::isfinite(data.thickness) ||
+			std::isnan(data.attenuationDistance) || !(data.attenuationDistance > 0.0f) ||
+			!std::isfinite(data.attenuationColor.x) || !std::isfinite(data.attenuationColor.y) ||
+			!std::isfinite(data.attenuationColor.z))
 		{
 			impl->status = L"재질 데이터, 등록 개수 또는 호출 시점이 올바르지 않습니다.";
 			return kInvalidMaterial;
@@ -1694,6 +1844,35 @@ namespace swc {
 			impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, cpu);
 			cpu.ptr += impl->materialDescriptorSize;
 		}
+
+		// ── 투과 → 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2026-10-27 렌더 2단계) ──
+		//  glTF 정의 그대로: 표면 투과(transmission) × 투과광을 물들이는 baseColor
+		//                   × 부피 흡수 attenuationColor ^ (thickness / attenuationDistance)  (비어-람베르트)
+		//  · baseColor 텍스처는 보지 않는다 — 그림자 레이 히트에서 UV 를 구하지 않는다(재질 상수만).
+		//  · 두께는 메시 좌표 단위 그대로 쓴다 — 인스턴스 배율은 반영하지 않는다(재질마다 한 번 계산).
+		//  · 표면 반사로 잃는 빛(얼음 정면 약 3.6 %)은 넣지 않았다.
+		const float transmission = std::clamp(data.transmission, 0.0f, 1.0f);
+		material.transmissive = transmission > 0.0f;
+		if (material.transmissive)
+		{
+			const float pathRatio = (data.thickness > 0.0f && std::isfinite(data.attenuationDistance))
+				? data.thickness / data.attenuationDistance : 0.0f;
+			auto channel = [&](float base, float attenuation)
+			{
+				const float volume = pathRatio > 0.0f ? std::pow(std::clamp(attenuation, 0.0f, 1.0f), pathRatio) : 1.0f;
+				return transmission * std::clamp(base, 0.0f, 1.0f) * volume;
+			};
+			material.transmittance = XMFLOAT3(
+				channel(data.baseColor.x, data.attenuationColor.x),
+				channel(data.baseColor.y, data.attenuationColor.y),
+				channel(data.baseColor.z, data.attenuationColor.z));
+		}
+		if (impl->rtMaterialData)
+		{
+			const float row[4] = { material.transmittance.x, material.transmittance.y, material.transmittance.z, 0.0f };
+			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(row), row, sizeof(row));
+		}
+
 		impl->materials.push_back(material);
 		return static_cast<MaterialHandle>(impl->materials.size() - 1);
 	}
@@ -1704,7 +1883,7 @@ namespace swc {
 		impl->stats = RenderStats{};
 		for (Impl::PassGpu& pass : impl->passes[impl->frameIndex])
 			pass.usedThisFrame = false;
-		++impl->frameCounter;   // 배경/메인 패스가 같은 프레임의 룰렛 패턴을 사용한다.
+		++impl->frameCounter;   // 프레임 번호 — 시간 누적 · 노이즈 시드용 자리(2026-10-27 룰렛이 빠져 지금은 읽는 곳 없음)
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 		impl->resolved = false;
@@ -1743,10 +1922,14 @@ namespace swc {
 			impl->accel.ResetInstances(impl->frameIndex);
 			for (const InstanceData& it : items)
 			{
-				if (it.mesh >= impl->meshes.size()) continue;
+				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
+				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
 				const uint32_t blasIndex = impl->meshes[it.mesh].blasIndex;
 				if (blasIndex == AccelStructure::kInvalidBlas) continue;
-				impl->accel.AddInstance(blasIndex, it.world);
+				// ★ 2026-10-27 렌더 2단계 — InstanceID = 재질 번호(그림자 셰이더가 재질 표를 찾는다),
+				//   투과 재질이면 FORCE_NON_OPAQUE 로 넣어 그림자 레이가 통과 후보로 본다.
+				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				impl->accel.AddInstance(blasIndex, it.world, material, impl->materials[material].transmissive);
 			}
 			impl->accel.BuildTlas(commandList);
 		}
@@ -1756,11 +1939,7 @@ namespace swc {
 		XMStoreFloat4x4(&fc.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
 		fc.eyePos = view.eyePosition;
 		fc.sunDir = impl->sunDir;
-		fc.rtEnabled = (rtActive && impl->accel.InstanceCount() > 0) ? 1u : 0u;
-		fc.rouletteKnee = impl->rtParams.rouletteKnee;
-		fc.fresnelBoost = impl->rtParams.fresnelBoost;
 		fc.debugMode = impl->debugMode;
-		fc.frameIndex = impl->frameCounter;
 		// 한 커맨드 리스트에 두 패스를 기록하므로 서로 다른 256바이트 CBV를 사용한다.
 		// 같은 CPU 메모리를 덮어쓰면 GPU가 배경에서도 마지막 메인 행렬을 읽는다.
 		const UINT frameOffset = view.background ? 0 : Impl::FrameCBSize;
@@ -1919,13 +2098,6 @@ namespace swc {
 			commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress() + frameOffset);
 			commandList->SetGraphicsRootShaderResourceView(4, pass.instances->GetGPUVirtualAddress());
 			commandList->SetGraphicsRootShaderResourceView(5, pass.visible->GetGPUVirtualAddress());
-			if (impl->rtSupported)
-			{
-				// DXR의 null acceleration structure는 GPU 주소 0이다. 루트 슬롯을 미설정으로 두지 않는다.
-				const D3D12_GPU_VIRTUAL_ADDRESS tlas = rtActive && impl->accel.InstanceCount() > 0
-					? impl->accel.TlasAddress() : 0;
-				commandList->SetGraphicsRootShaderResourceView(6, tlas);
-			}
 		};
 		const D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->Dsv();
 		const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = impl->Rtv(Impl::kRtvHdr);
@@ -1965,34 +2137,67 @@ namespace swc {
 			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get() };
 		impl->DrawBatches(pass, gbufferPsos);
 
-		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
-		//  깊이는 DEPTH_READ 와 셰이더 읽기를 같이 켠다(둘 다 읽기 상태라 함께 둘 수 있다).
+		// G-buffer · 깊이를 컴퓨트가 읽는 상태로. 깊이는 DEPTH_READ 와 셰이더 읽기를 같이 켠다(둘 다 읽기 상태라 함께 둘 수 있다).
 		impl->TransitionTargets({
 			{ &impl->gbuffer[Impl::GbAlbedo],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->gbuffer[Impl::GbMaterial], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->gbuffer[Impl::GbEmissive], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-			{ &impl->hdr,   D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
+
+		const XMMATRIX invViewProj = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj)));
+		ID3D12DescriptorHeap* targetHeaps[] = { impl->targetHeap.Get() };
+		const UINT groupsX = (impl->width + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize;
+		const UINT groupsY = (impl->height + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize;
+
+		// ── [4a] RT 그림자 — 픽셀마다 태양으로 그림자 레이 1개 (RtShadow.hlsl, 2026-10-27 렌더 2단계) ──
+		//  TLAS 는 이 함수 맨 앞에서 이번 프레임 인스턴스로 다시 빌드했다(UAV 배리어까지 끝남).
+		//  돌지 않으면(RT 미지원 · R 키로 끔 · 인스턴스 0) 라이팅이 그림자 마스크를 안 읽는다(shadowEnabled = 0).
+		const bool shadowPass = rtActive && impl->rtShadowPso && impl->accel.InstanceCount() > 0;
+		if (shadowPass)
+		{
+			impl->TransitionTargets({ { &impl->shadowMask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+
+			ShadowConstants sc = {};
+			XMStoreFloat4x4(&sc.invViewProj, invViewProj);
+			sc.eyePos = view.eyePosition;
+			sc.maxDistance = Impl::kShadowMaxDistance;
+			sc.sunDir = impl->sunDir;
+			sc.width = impl->width;
+			sc.height = impl->height;
+			memcpy(impl->shadowCBData, &sc, sizeof(sc));
+
+			commandList->SetDescriptorHeaps(1, targetHeaps);
+			commandList->SetComputeRootSignature(impl->rtShadowRootSig.Get());
+			commandList->SetPipelineState(impl->rtShadowPso.Get());
+			commandList->SetComputeRootConstantBufferView(0, impl->shadowCB->GetGPUVirtualAddress());
+			commandList->SetComputeRootDescriptorTable(1, impl->TargetGpu(Impl::SlotGBuffer));
+			commandList->SetComputeRootShaderResourceView(2, impl->accel.TlasAddress());
+			commandList->SetComputeRootShaderResourceView(3, impl->rtMaterials->GetGPUVirtualAddress());
+			commandList->Dispatch(groupsX, groupsY, 1);
+		}
+
+		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이 · 그림자 마스크를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
+		impl->TransitionTargets({
+			{ &impl->shadowMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->hdr,        D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
 
 		LightingConstants lc = {};
-		XMStoreFloat4x4(&lc.invViewProj,
-			XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj))));
+		XMStoreFloat4x4(&lc.invViewProj, invViewProj);
 		lc.eyePos = view.eyePosition;
 		lc.sunDir = impl->sunDir;
 		lc.width = impl->width;
 		lc.height = impl->height;
 		lc.debugMode = impl->debugMode;
+		lc.shadowEnabled = shadowPass ? 1u : 0u;
 		memcpy(impl->lightingCBData, &lc, sizeof(lc));
 
-		ID3D12DescriptorHeap* targetHeaps[] = { impl->targetHeap.Get() };
 		commandList->SetDescriptorHeaps(1, targetHeaps);
 		commandList->SetComputeRootSignature(impl->lightingRootSig.Get());
 		commandList->SetPipelineState(impl->lightingPso.Get());
 		commandList->SetComputeRootConstantBufferView(0, impl->lightingCB->GetGPUVirtualAddress());
 		commandList->SetComputeRootDescriptorTable(1, impl->TargetGpu(Impl::SlotGBuffer));
-		commandList->Dispatch((impl->width + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize,
-			(impl->height + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize, 1);
+		commandList->Dispatch(groupsX, groupsY, 1);
 
 		// 뒤에 붙을 래스터 패스(반투명 등)가 이어 그릴 수 있게 HDR · 깊이를 다시 그리기 상태로 묶어 둔다.
 		impl->TransitionTargets({
