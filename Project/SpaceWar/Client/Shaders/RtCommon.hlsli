@@ -17,7 +17,7 @@ struct RtMaterial
 {
 	float4 baseColor;
 	float3 emissive;          float roughness;
-	float  metallic;          uint  hasNormalMap;     uint2 _pad0;
+	float  metallic;          uint  hasNormalMap;     uint  doubleSided;   uint _pad0;   // 7단계 — 양면 재질(뒷면을 맞아도 «벽 속» 이 아니다)
 	uint4  textures;          // x = BaseColor  y = Normal  z = Roughness  w = Metallic
 	uint   emissiveTexture;   uint3 _pad1;
 	float3 transmittance;     uint  transmissive;     // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2단계)

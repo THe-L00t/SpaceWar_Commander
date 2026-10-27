@@ -23,10 +23,11 @@
 
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
-#include "RtCommon.hlsli"
+#include "RtSurface.hlsli"   // 7단계 — FetchHitSurface (RtCommon.hlsli 포함)
 #include "Sky.hlsli"
+#include "Probes.hlsli"      // 7단계 — [4c] GI 프로브 샘플
 
-// GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (144바이트)
+// GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (224바이트 — 7단계에서 144 → 224)
 cbuffer ReflectionCB : register(b0)
 {
 	float4x4 gInvViewProj;
@@ -35,6 +36,8 @@ cbuffer ReflectionCB : register(b0)
 	uint2    gSize;          uint  gNormalIndex;     uint gMaterialIndex;   // ↓ 바인드리스 힙 번호
 	uint     gDepthIndex;    uint  gOutputIndex;     uint  gFrameIndex;   uint gSkyIndex;   // 5단계 난수 씨앗 · 6단계 하늘 텍스처
 	float3   gSunIlluminance; uint gSkyIrradianceIndex;   // 6단계 — 태양 조도(RGB) · 하늘 조도 텍스처
+	ProbeVolume gProbeVolume;                             // 7단계 — [4c] GI 프로브 격자 (64 B)
+	uint     gProbeIrradianceIndex; uint gProbeDistanceIndex; uint gProbeStateIndex; uint _pad7;
 };
 
 RaytracingAccelerationStructure gScene       : register(t0);   // TLAS (루트 SRV)
@@ -42,6 +45,7 @@ StructuredBuffer<RtMaterial>    gRtMaterials : register(t1);   // 재질 표 (�
 StructuredBuffer<RtInstance>    gRtInstances : register(t2);   // TLAS 인스턴스 표 (루트 SRV, 프레임마다)
 SamplerState                    gSampler     : register(s0);   // 정적 샘플러 (선형 · WRAP)
 SamplerState                    gSkySampler  : register(s1);   // 6단계 — 선형 · U 반복 · V 고정 (등장방형 하늘)
+SamplerState                    gClampSampler : register(s2);  // 7단계 — 선형 · 고정 (프로브 아틀라스)
 
 struct ReflectionPayload
 {
@@ -126,44 +130,36 @@ void ClosestHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionA
 	const RtInstance inst = gRtInstances[InstanceIndex()];
 	const RtMaterial mat  = gRtMaterials[inst.material];
 
-	// ── 맞은 삼각형의 정점 세 개를 바인드리스 버퍼에서 읽어 무게중심 좌표로 섞는다 ──
-	ByteAddressBuffer vb = ResourceDescriptorHeap[NonUniformResourceIndex(inst.vertexBuffer)];
-	ByteAddressBuffer ib = ResourceDescriptorHeap[NonUniformResourceIndex(inst.indexBuffer)];
-	const uint3  tri = ib.Load3(PrimitiveIndex() * 12);
-	const float3 w   = float3(1.0 - attr.barycentrics.x - attr.barycentrics.y, attr.barycentrics.x, attr.barycentrics.y);
-
-	float3 n  = float3(0.0, 0.0, 0.0);
-	float3 c  = float3(0.0, 0.0, 0.0);
-	float2 uv = float2(0.0, 0.0);
-	[unroll]
-	for (uint k = 0; k < 3; ++k)
-	{
-		const uint base = tri[k] * 60;   // Shared::Vertex 60바이트
-		n  += asfloat(vb.Load3(base + 12)) * w[k];   // NORMAL
-		c  += asfloat(vb.Load3(base + 24)) * w[k];   // COLOR
-		uv += asfloat(vb.Load2(base + 36)) * w[k];   // TEXCOORD
-	}
-
-	// 법선은 월드 → 물체 행렬로 옮긴다(역전치와 같다 — 비균일 배율에도 맞다).
-	float3       N = normalize(mul(n, (float3x3)WorldToObject3x4()));
+	// ── 맞은 점 표면 — 정점 세 개 무게중심 보간 + 재질 텍스처 (7단계에서 RtSurface.hlsli FetchHitSurface 로 옮김) ──
+	//  래스터(Forward.hlsl SampleSurface)와 같은 식. 노멀맵은 아직 읽지 않는다.
+	const HitSurface surface = FetchHitSurface(inst, mat, PrimitiveIndex(), attr.barycentrics, WorldToObject3x4(), gSampler);
+	float3       N = surface.N;
 	const float3 V = -WorldRayDirection();
 	if (dot(N, V) < 0.0) N = -N;   // 뒷면을 맞았으면 뒤집는다(양면처럼)
-
-	// ── 재질 — 래스터(Forward.hlsl SampleSurface)와 같은 식. 노멀맵은 아직 읽지 않는다 ──
-	Texture2D baseTex     = ResourceDescriptorHeap[NonUniformResourceIndex(mat.textures.x)];
-	Texture2D roughTex    = ResourceDescriptorHeap[NonUniformResourceIndex(mat.textures.z)];
-	Texture2D metalTex    = ResourceDescriptorHeap[NonUniformResourceIndex(mat.textures.w)];
-	Texture2D emissiveTex = ResourceDescriptorHeap[NonUniformResourceIndex(mat.emissiveTexture)];
-	const float3 albedo   = baseTex.SampleLevel(gSampler, uv, 0).rgb * mat.baseColor.rgb * c;
-	const float  rough    = clamp(mat.roughness * roughTex.SampleLevel(gSampler, uv, 0).r, kMinRoughness, 1.0);
-	const float  metallic = saturate(mat.metallic * metalTex.SampleLevel(gSampler, uv, 0).r);
-	const float3 emissive = mat.emissive * emissiveTex.SampleLevel(gSampler, uv, 0).rgb;
+	const float3 albedo   = surface.albedo;
+	const float  rough    = surface.rough;
+	const float  metallic = surface.metallic;
+	const float3 emissive = surface.emissive;
 
 	// ── 맞은 점의 조명 — 메인 라이팅과 같은 식(Shading.hlsli) + 같은 그림자 규칙(RtCommon.hlsli) ──
 	const float3 P   = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-	Texture2D<float4> skyIrradiance = ResourceDescriptorHeap[gSkyIrradianceIndex];   // 6단계 — 주변광 = 하늘 조도/π
+	// 주변광: 7단계 — [4c] GI 프로브(쓸 수 있으면), 아니면 6단계 하늘 조도/π
+	float3 ambientEOverPi = float3(0.0, 0.0, 0.0);
+	float  probeWeight = 0.0;
+	if (gProbeVolume.enabled != 0)
+	{
+		Texture2D<float4>      probeIrradiance = ResourceDescriptorHeap[gProbeIrradianceIndex];
+		Texture2D<float2>      probeDistance   = ResourceDescriptorHeap[gProbeDistanceIndex];
+		StructuredBuffer<int4> probeStates     = ResourceDescriptorHeap[gProbeStateIndex];
+		ambientEOverPi = SampleProbes(probeIrradiance, probeDistance, probeStates, gClampSampler, gProbeVolume, P, N, V, probeWeight);
+	}
+	if (probeWeight <= 0.0)
+	{
+		Texture2D<float4> skyIrradiance = ResourceDescriptorHeap[gSkyIrradianceIndex];   // 6단계 — 하늘 조도/π
+		ambientEOverPi = SampleSkyIrradiance(skyIrradiance, gSkySampler, N);
+	}
 	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir,
-		gSunIlluminance, SampleSkyIrradiance(skyIrradiance, gSkySampler, N));
+		gSunIlluminance, ambientEOverPi);
 	const float3 L   = normalize(-gSunDir);
 	const float3 sun = (dot(N, L) > 0.0) ? TraceSunVisibility(gScene, gRtMaterials, P + N * 0.02, L, gMaxDistance)
 	                                     : float3(0.0, 0.0, 0.0);

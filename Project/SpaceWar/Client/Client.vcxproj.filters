@@ -225,5 +225,14 @@
     <None Include="Shaders\Sky.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\RtSurface.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Probes.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ProbeGI.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
 </Project>

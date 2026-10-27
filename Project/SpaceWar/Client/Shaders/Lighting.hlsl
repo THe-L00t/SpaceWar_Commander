@@ -24,13 +24,17 @@
 //    · 주변광 = 하늘 조도 텍스처(t9, 법선 방향별 «조도/π»). 하늘을 못 만든 장치(gSkyEnabled 0)는 예전 상수 kAmbient.
 //      [4c] GI 프로브가 들어오면 그 자리를 GI 가 맡는다.
 //    · 물체가 없는 픽셀(깊이 1)은 [6] Sky.hlsl CSDrawSky 가 이미 하늘을 그려 두었다 — 여기서는 건드리지 않는다.
+//
+//  ★ 2026-10-27 렌더 7단계 — 주변광 = [4c] GI 프로브 (Probes.hlsli SampleProbes, t10 조도 · t11 거리 · t12 상태)
+//    프로브를 쓸 수 없는 픽셀(격자 밖 · 아직 안 채워짐 · RT 꺼짐)은 6단계 하늘 조도로 대신한다.
 // ============================================================
 
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
 #include "Sky.hlsli"
+#include "Probes.hlsli"
 
-// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(144바이트 — 4단계에서 112 → 128, 6단계에서 → 144)
+// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(208바이트 — 4단계에서 112 → 128, 6단계 → 144, 7단계 → 208)
 cbuffer LightingCB : register(b0)
 {
 	float4x4 gInvViewProj;   // 깊이 → 월드 위치 (행벡터 규약: mul(v, M))
@@ -43,6 +47,7 @@ cbuffer LightingCB : register(b0)
 	uint3    _pad2;
 	float3   gSunIlluminance;      // 6단계 — 땅에 닿는 태양 조도(RGB)
 	uint     gSkyEnabled;          // 6단계 — 1 = 하늘 조도 텍스처가 이번 프레임 값이다
+	ProbeVolume gProbeVolume;      // 7단계 — [4c] GI 프로브 격자 (enabled = 0 이면 하늘 조도)
 };
 
 Texture2D<float4>   gAlbedo   : register(t0);   // GB0
@@ -55,8 +60,12 @@ Texture2D<float4>   gShadow   : register(t6);   // [4a] 그림자 마스크 — 
 Texture2D<float4>   gReflection : register(t7); // [4b]→[4d] 반사 색 (노이즈 제거 후, F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
 Texture2D<float4>   gReflectionRaw : register(t8); // 5단계 — 노이즈 제거 전 반사 (디버그 뷰 7 전용)
 Texture2D<float4>   gSkyIrradiance : register(t9); // 6단계 — [6] 하늘 조도 / π (법선 방향 등장방형 32×16)
+Texture2D<float4>   gProbeIrradiance : register(t10);   // 7단계 — [4c] 프로브 조도 아틀라스
+Texture2D<float2>   gProbeDistance   : register(t11);   // 7단계 — [4c] 프로브 거리 아틀라스 (평균 · 거리²)
+StructuredBuffer<int4> gProbeStates  : register(t12);   // 7단계 — [4c] 프로브 상태 (월드 칸 · 세대 · 활성)
 RWTexture2D<float4> gHdr      : register(u0);
 SamplerState        gSkySampler : register(s1);    // 6단계 — 선형 · U 반복 · V 고정 (등장방형)
+SamplerState        gClampSampler : register(s2);  // 7단계 — 선형 · 고정 (프로브 아틀라스)
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
@@ -76,9 +85,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	const float3 emissive = gEmissive[pixel];
 
 	const float3 V = normalize(gEyePos - P);
-	// 6단계 — 주변 조도/π: 하늘 조도 텍스처 (못 만든 장치는 예전 상수)
-	const float3 ambientEOverPi = (gSkyEnabled != 0) ? SampleSkyIrradiance(gSkyIrradiance, gSkySampler, N)
-	                                                 : float3(kAmbient, kAmbient, kAmbient);
+	// 주변 조도/π: 7단계 GI 프로브 → (못 쓰면) 6단계 하늘 조도 → (그것도 없으면) 예전 상수
+	float3 ambientEOverPi = float3(0.0, 0.0, 0.0);
+	float  probeWeight = 0.0;
+	if (gProbeVolume.enabled != 0)
+		ambientEOverPi = SampleProbes(gProbeIrradiance, gProbeDistance, gProbeStates, gClampSampler, gProbeVolume, P, N, V, probeWeight);
+	if (probeWeight <= 0.0)
+		ambientEOverPi = (gSkyEnabled != 0) ? SampleSkyIrradiance(gSkyIrradiance, gSkySampler, N)
+		                                    : float3(kAmbient, kAmbient, kAmbient);
 	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir, gSunIlluminance, ambientEOverPi);
 
 	// [4a] RT 그림자 — 돌지 않은 프레임이면 1 (그림자 없음)
@@ -112,7 +126,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	case 8:  color = lit.specular;                   break;
 	case 9:  color = lit.F_env * reflection;         break;   // 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
 	case 10: color = float3(rough, metallic, 0.0);   break;
-	case 11: color = ambientEOverPi;                 break;   // 6단계 — 주변 조도 / π (하늘 조도, 나중에 GI)
+	case 11: color = ambientEOverPi;                 break;   // 6단계 — 주변 조도 / π (7단계부터 GI 프로브, 못 쓰면 하늘)
+	case 12: color = (probeWeight > 0.0) ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);   break;   // 7단계 — 프로브를 썼나(초록) / 하늘로 대신(빨강)
 	}
 
 	gHdr[pixel] = float4(color, 1.0);
