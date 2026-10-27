@@ -126,6 +126,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <None Include="Shaders\AO.hlsl" />
     <None Include="Shaders\ColorPyramid.hlsl" />
     <None Include="Shaders\Transparent.hlsl" />
+    <None Include="Shaders\PostProcess.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">

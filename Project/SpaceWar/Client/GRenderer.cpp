@@ -351,6 +351,29 @@ namespace swc {
 	};
 	static_assert(sizeof(PyramidConstants) == 32, "PyramidCB 는 32바이트");
 
+	// PostProcess.hlsl 의 PostCB (2026-10-27 렌더 10단계, [8] 후처리) — 디스패치마다 256 B 칸 하나
+	struct PostConstants
+	{
+		uint32_t srcIndex, dstIndex, addIndex, first;        // ↓ 바인드리스 번호 · 첫 내리기(Karis)
+		uint32_t dstWidth, dstHeight;  float srcTexelX, srcTexelY;
+		uint32_t histogramIndex, exposureUav;  float deltaTime;  uint32_t pixelCount;
+		float    logMin, logMax, lowPercent, highPercent;     // 자동 노출 (UE 기본값)
+		float    minBrightness, maxBrightness, speedUp, speedDown;
+		uint32_t hdrWidth, hdrHeight, frameIndex, pad0;
+	};
+	static_assert(sizeof(PostConstants) == 96, "PostCB 는 96바이트");
+
+	// Tonemap.hlsl PSTonemap 의 TonemapCB — 루트 상수 8개 (2026-10-27 렌더 10단계)
+	struct TonemapConstants
+	{
+		uint32_t hdrIndex, bloomIndex, exposureIndex;
+		float    bloomStrength;
+		uint32_t bloomEnabled;
+		float    bloomScale;      // 1 / 블룸 단 수 — 올리기 0단은 모든 단의 합이라 평균으로 맞춘다
+		uint32_t pad0[2];
+	};
+	static_assert(sizeof(TonemapConstants) == 32, "TonemapCB 는 루트 상수 8개");
+
 	// Sky.hlsl 의 SkyCB 와 같은 순서 · 크기 (2026-10-27 렌더 6단계, [6] 하늘) — 세 진입점이 같은 상수를 쓴다
 	struct SkyConstants
 	{
@@ -500,9 +523,14 @@ namespace swc {
 			BindlessSceneColorSrv = 37,                                         // 색 피라미드 전체 밉 SRV (얼음이 흐린 단계로 읽는다)
 			BindlessSceneColorMipSrv0 = 38,                                     // 밉마다 SRV 38 ~ 44 (내리기 원본)
 			BindlessSceneColorMipUav0 = 45,                                     // 밉마다 UAV 45 ~ 51 (내리기 대상)
-			// 앞 64칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64 — 뒤 단계 GI · AO · 후처리 자원이 들어온다).
+			// 10단계 — [8] 후처리
+			BindlessBloomDownSrv0 = 52, BindlessBloomDownUav0 = 58,            // 블룸 내리기 밉마다 SRV 52~57 · UAV 58~63
+			BindlessBloomUpSrv0 = 64, BindlessBloomUpUav0 = 70,                // 블룸 올리기 밉마다 SRV 64~69 · UAV 70~75
+			BindlessHistogramUav = 76,                                          // 휘도 히스토그램 (raw, uint × 256)
+			BindlessExposureSrv = 77, BindlessExposureUav = 78,                // 노출 버퍼 (float4 하나)
+			// 앞 128칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64, 10단계에서 → 128).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
-			BindlessReserved = 64 };
+			BindlessReserved = 128 };
 		bool                         bindlessSupported = false;
 		ComPtr<ID3D12DescriptorHeap> bindlessHeap;
 		UINT                         bindlessDescriptorSize = 0;
@@ -754,6 +782,28 @@ namespace swc {
 		uint8_t*                    transparentCBData = nullptr;
 		struct TransparentDraw { uint32_t instance; MaterialHandle material; MeshHandle mesh; float distanceSq; };
 		std::vector<TransparentDraw> transparentDraws;   // 이번 프레임에 그릴 투과 물체(뒤에서 앞으로 정렬)
+		// ── [8] 후처리 (2026-10-27 렌더 10단계, PostProcess.hlsl · Tonemap.hlsl PSTonemap) ──
+		//  블룸(Jimenez 2014) → 자동 노출(휘도 히스토그램, UE 기본값) → ACES 근사 톤 곡선(설계 문서 6.7) → sRGB.
+		//  디버그 뷰(0 이 아님)와 바인드리스가 없는 장치는 예전 «0~1 자르기» 톤맵을 쓴다(값을 숫자 그대로 보려고).
+		static constexpr UINT  kBloomMips = 6;            // 반 해상도 640×360 → 20×11
+		static constexpr float kBloomStrength = 0.04f;    // 화면에 섞는 비율 (LearnOpenGL 해설의 값, 임시)
+		static constexpr float kExposureLogMin = -8.0f, kExposureLogMax = 4.0f;           // UE 기본값
+		static constexpr float kExposureLowPercent = 0.10f, kExposureHighPercent = 0.90f; // UE 기본값
+		static constexpr float kExposureMinBrightness = 0.03f, kExposureMaxBrightness = 8.0f;
+		static constexpr float kExposureSpeedUp = 3.0f, kExposureSpeedDown = 1.0f;       // 스톱/초, UE 기본값
+		static constexpr UINT  kPostDispatchSlots = 16;   // postCB 256 B 칸 수 (히스토그램 · 노출 · 내리기 6 · 올리기 5)
+		RenderTarget                bloomDown;           // R16G16B16A16_FLOAT 반 해상도, 밉 6단
+		RenderTarget                bloomUp;             // 같은 크기 · 밉 — 0 ~ 4 단만 쓴다
+		RenderTarget                histogram;           // 버퍼 uint × 256 (raw)
+		RenderTarget                exposureBuffer;      // 버퍼 float4 × 1 — (노출, 적응 log2 밝기, 목표, 유효)
+		ComPtr<ID3D12PipelineState> histogramPso, exposurePso, bloomDownPso, bloomUpPso;
+		ComPtr<ID3D12Resource>      postCB;
+		uint8_t*                    postCBData = nullptr;
+		ComPtr<ID3D12RootSignature> tonemapBindlessRootSig;
+		ComPtr<ID3D12PipelineState> tonemapBindlessPso;
+		LARGE_INTEGER               lastFrameCounter{};   // 자동 노출 적응(스톱/초)에 쓰는 프레임 시간
+		float                       frameDeltaSeconds = 1.0f / 60.0f;
+
 		D3D12_CPU_DESCRIPTOR_HANDLE ReadOnlyDsv() const   // DSV 힙 1번 — 깊이 테스트만, 쓰지 않음(셰이더가 같은 깊이를 SRV 로 읽는다)
 		{
 			D3D12_CPU_DESCRIPTOR_HANDLE handle = dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1302,7 +1352,13 @@ namespace swc {
 			if (resolved) return;
 			resolved = true;
 
-			TransitionTargets({ { &hdr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } });
+			// ★ 10단계 — 최종 화면(디버그 뷰 0)은 [8] 후처리: 자동 노출 → 블룸 → 톤맵(ACES · sRGB).
+			//   디버그 뷰 · 바인드리스 없는 장치는 예전처럼 0~1 자르기(값을 숫자 그대로 본다).
+			const bool post = tonemapBindlessPso && debugMode == 0;
+			if (post)
+				RunPostProcess();
+
+			TransitionTargets({ { &hdr, post ? kSkyReadState : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } });
 			const D3D12_RESOURCE_BARRIER toTarget = Transition(renderTargets[frameIndex].Get(),
 				D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			commandList->ResourceBarrier(1, &toTarget);
@@ -1310,14 +1366,141 @@ namespace swc {
 			// 깊이는 묶지 않는다 — 톤맵 · UI PSO 는 DSV 형식이 UNKNOWN 이다.
 			const D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rtv(frameIndex);
 			commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
-			commandList->SetGraphicsRootSignature(tonemapRootSig.Get());
-			commandList->SetPipelineState(tonemapPso.Get());
-			ID3D12DescriptorHeap* heaps[] = { targetHeap.Get() };
-			commandList->SetDescriptorHeaps(1, heaps);
-			commandList->SetGraphicsRootDescriptorTable(0, TargetGpu(SlotHdrSrv));
 			commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+			if (post)
+			{
+				ID3D12DescriptorHeap* heaps[] = { bindlessHeap.Get() };
+				commandList->SetDescriptorHeaps(1, heaps);
+				commandList->SetGraphicsRootSignature(tonemapBindlessRootSig.Get());
+				commandList->SetPipelineState(tonemapBindlessPso.Get());
+				TonemapConstants tc = {};
+				tc.hdrIndex = BindlessHdrSrv;
+				tc.bloomIndex = BindlessBloomUpSrv0;
+				tc.exposureIndex = BindlessExposureSrv;
+				tc.bloomStrength = kBloomStrength;
+				tc.bloomEnabled = 1;
+				tc.bloomScale = 1.0f / float(kBloomMips);
+				commandList->SetGraphicsRoot32BitConstants(0, sizeof(tc) / sizeof(uint32_t), &tc, 0);
+			}
+			else
+			{
+				commandList->SetGraphicsRootSignature(tonemapRootSig.Get());
+				commandList->SetPipelineState(tonemapPso.Get());
+				ID3D12DescriptorHeap* heaps[] = { targetHeap.Get() };
+				commandList->SetDescriptorHeaps(1, heaps);
+				commandList->SetGraphicsRootDescriptorTable(0, TargetGpu(SlotHdrSrv));
+			}
 			commandList->DrawInstanced(3, 1, 0, 0);   // 화면 전체 삼각형 하나
+		}
+
+		// ── [8] 후처리 컴퓨트 (2026-10-27 렌더 10단계, PostProcess.hlsl) — ResolveToBackBuffer 가 톤맵 직전에 부른다 ──
+		//  ① 히스토그램 → ② 노출(적응) → ③ 블룸 내리기 6단 → ④ 블룸 올리기 5단. 결과: 노출 버퍼 · 블룸 올리기 0단.
+		//  블룸 밉마다 상태가 달라(원본은 읽기, 대상은 UAV) 하위 자원 배리어를 직접 건다 — 색 피라미드와 같은 방식.
+		void SubresourceToRead(ID3D12Resource* resource, UINT mip)
+		{
+			const D3D12_RESOURCE_BARRIER barrier = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+				{ { resource, mip, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } } };
+			commandList->ResourceBarrier(1, &barrier);
+		}
+		void RunPostProcess()
+		{
+			ID3D12DescriptorHeap* heaps[] = { bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, heaps);
+			commandList->SetComputeRootSignature(computeRootSig.Get());
+
+			UINT slot = 0;
+			auto bindConstants = [&](const PostConstants& pc)
+			{
+				memcpy(postCBData + 256 * slot, &pc, sizeof(pc));
+				commandList->SetComputeRootConstantBufferView(0, postCB->GetGPUVirtualAddress() + 256 * slot);
+				++slot;
+			};
+			PostConstants base = {};
+			base.histogramIndex = BindlessHistogramUav;
+			base.exposureUav = BindlessExposureUav;
+			base.deltaTime = frameDeltaSeconds;
+			base.pixelCount = width * height;
+			base.logMin = kExposureLogMin;
+			base.logMax = kExposureLogMax;
+			base.lowPercent = kExposureLowPercent;
+			base.highPercent = kExposureHighPercent;
+			base.minBrightness = kExposureMinBrightness;
+			base.maxBrightness = kExposureMaxBrightness;
+			base.speedUp = kExposureSpeedUp;
+			base.speedDown = kExposureSpeedDown;
+			base.hdrWidth = width;
+			base.hdrHeight = height;
+			base.frameIndex = frameCounter;
+
+			// ① ② 자동 노출
+			TransitionTargets({
+				{ &hdr,            kSkyReadState },
+				{ &histogram,      D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+				{ &exposureBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			PostConstants pc = base;
+			pc.srcIndex = BindlessHdrSrv;
+			bindConstants(pc);
+			commandList->SetPipelineState(histogramPso.Get());
+			commandList->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
+			D3D12_RESOURCE_BARRIER uav = {};
+			uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			uav.UAV.pResource = histogram.resource.Get();
+			commandList->ResourceBarrier(1, &uav);
+			bindConstants(base);
+			commandList->SetPipelineState(exposurePso.Get());
+			commandList->Dispatch(1, 1, 1);
+			TransitionTargets({ { &exposureBuffer, kSkyReadState } });
+
+			// ③ 블룸 내리기 — 0 단은 HDR(전체 해상도)에서, 그 뒤는 윗 단계에서
+			TransitionTargets({ { &bloomDown, D3D12_RESOURCE_STATE_UNORDERED_ACCESS }, { &bloomUp, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			UINT mipWidth[kBloomMips], mipHeight[kBloomMips];
+			for (UINT mip = 0; mip < kBloomMips; ++mip)
+			{
+				mipWidth[mip] = (std::max)(1u, (width / 2) >> mip);
+				mipHeight[mip] = (std::max)(1u, (height / 2) >> mip);
+			}
+			commandList->SetPipelineState(bloomDownPso.Get());
+			for (UINT mip = 0; mip < kBloomMips; ++mip)
+			{
+				pc = base;
+				pc.srcIndex = mip == 0 ? BindlessHdrSrv : BindlessBloomDownSrv0 + mip - 1;
+				pc.dstIndex = BindlessBloomDownUav0 + mip;
+				pc.first = mip == 0 ? 1u : 0u;
+				pc.dstWidth = mipWidth[mip];
+				pc.dstHeight = mipHeight[mip];
+				const UINT srcW = mip == 0 ? width : mipWidth[mip - 1];
+				const UINT srcH = mip == 0 ? height : mipHeight[mip - 1];
+				pc.srcTexelX = 1.0f / float(srcW);
+				pc.srcTexelY = 1.0f / float(srcH);
+				if (mip > 0)
+					SubresourceToRead(bloomDown.resource.Get(), mip - 1);
+				bindConstants(pc);
+				commandList->Dispatch((mipWidth[mip] + 7) / 8, (mipHeight[mip] + 7) / 8, 1);
+			}
+			SubresourceToRead(bloomDown.resource.Get(), kBloomMips - 1);   // 이제 내리기 밉 전부 «읽기»
+
+			// ④ 블룸 올리기 — 가장 작은 단(내리기 5단)부터: 올리기 i = 내리기 i + 텐트(올리기 i+1)
+			commandList->SetPipelineState(bloomUpPso.Get());
+			for (int mip = int(kBloomMips) - 2; mip >= 0; --mip)
+			{
+				pc = base;
+				pc.srcIndex = (mip == int(kBloomMips) - 2) ? BindlessBloomDownSrv0 + kBloomMips - 1 : BindlessBloomUpSrv0 + mip + 1;
+				pc.addIndex = BindlessBloomDownSrv0 + mip;
+				pc.dstIndex = BindlessBloomUpUav0 + mip;
+				pc.dstWidth = mipWidth[mip];
+				pc.dstHeight = mipHeight[mip];
+				pc.srcTexelX = 1.0f / float(mipWidth[mip + 1]);
+				pc.srcTexelY = 1.0f / float(mipHeight[mip + 1]);
+				bindConstants(pc);
+				commandList->Dispatch((mipWidth[mip] + 7) / 8, (mipHeight[mip] + 7) / 8, 1);
+				SubresourceToRead(bloomUp.resource.Get(), UINT(mip));
+			}
+			SubresourceToRead(bloomUp.resource.Get(), kBloomMips - 1);   // 쓰지 않은 마지막 단도 맞춰 둔다
+			// 두 장 모두 밉 전부 NON_PIXEL — 상태 기록을 맞추고 «둘 다 읽기» 로(톤맵 픽셀 셰이더가 올리기 0단을 읽는다)
+			bloomDown.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			bloomUp.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			TransitionTargets({ { &bloomDown, kSkyReadState }, { &bloomUp, kSkyReadState } });
 		}
 	};
 
@@ -1701,6 +1884,35 @@ namespace swc {
 						return false;
 					}
 					impl->sceneColor.state = Impl::kSkyReadState;
+
+					// [8] 블룸 (2026-10-27 렌더 10단계) — 반 해상도, 밉 6단, 내리기 · 올리기 두 장. 처음 상태 «읽기»
+					desc.Width = (std::max)(1u, width / 2);
+					desc.Height = (std::max)(1u, height / 2);
+					desc.MipLevels = Impl::kBloomMips;
+					if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, Impl::kSkyReadState, nullptr,
+							IID_PPV_ARGS(&impl->bloomDown.resource))) ||
+						FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, Impl::kSkyReadState, nullptr,
+							IID_PPV_ARGS(&impl->bloomUp.resource))))
+					{
+						impl->status = L"블룸 텍스처 생성 실패.";
+						return false;
+					}
+					impl->bloomDown.state = impl->bloomUp.state = Impl::kSkyReadState;
+
+					// [8] 자동 노출 버퍼 — 히스토그램 uint × 256(raw) · 노출 float4 × 1. 버퍼라 COMMON 으로 만든다(#1328)
+					D3D12_RESOURCE_DESC histogramDesc = BufferDesc(256 * 4);
+					histogramDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+					D3D12_RESOURCE_DESC exposureDesc = BufferDesc(16);
+					exposureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+					if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &histogramDesc, D3D12_RESOURCE_STATE_COMMON,
+							nullptr, IID_PPV_ARGS(&impl->histogram.resource))) ||
+						FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &exposureDesc, D3D12_RESOURCE_STATE_COMMON,
+							nullptr, IID_PPV_ARGS(&impl->exposureBuffer.resource))))
+					{
+						impl->status = L"자동 노출 버퍼 생성 실패.";
+						return false;
+					}
+					impl->histogram.state = impl->exposureBuffer.state = D3D12_RESOURCE_STATE_COMMON;
 				}
 
 				createSrv(impl->probeIrradiance.resource.Get(), Impl::kProbeIrradianceFormat, Impl::SlotProbeIrradianceSrv);
@@ -1794,6 +2006,49 @@ namespace swc {
 							impl->device->CreateUnorderedAccessView(impl->sceneColor.resource.Get(), nullptr, &uavDesc,
 								impl->BindlessCpu(Impl::BindlessSceneColorMipUav0 + mip));
 						}
+					}
+
+					// 10단계 — [8] 후처리 (BindlessSlot 52 ~ 78): 블룸 두 장의 밉마다 SRV · UAV, 히스토그램 UAV, 노출 SRV · UAV
+					for (Impl::RenderTarget* bloomTarget : { &impl->bloomDown, &impl->bloomUp })
+					{
+						const uint32_t srvBase = bloomTarget == &impl->bloomDown ? Impl::BindlessBloomDownSrv0 : Impl::BindlessBloomUpSrv0;
+						const uint32_t uavBase = bloomTarget == &impl->bloomDown ? Impl::BindlessBloomDownUav0 : Impl::BindlessBloomUpUav0;
+						for (UINT mip = 0; mip < Impl::kBloomMips; ++mip)
+						{
+							D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+							srv.Format = Impl::kHdrFormat;
+							srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+							srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+							srv.Texture2D.MostDetailedMip = mip;
+							srv.Texture2D.MipLevels = 1;
+							impl->device->CreateShaderResourceView(bloomTarget->resource.Get(), &srv, impl->BindlessCpu(srvBase + mip));
+							D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+							uavDesc.Format = Impl::kHdrFormat;
+							uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+							uavDesc.Texture2D.MipSlice = mip;
+							impl->device->CreateUnorderedAccessView(bloomTarget->resource.Get(), nullptr, &uavDesc, impl->BindlessCpu(uavBase + mip));
+						}
+					}
+					{
+						D3D12_UNORDERED_ACCESS_VIEW_DESC rawUav = {};
+						rawUav.Format = DXGI_FORMAT_R32_TYPELESS;
+						rawUav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+						rawUav.Buffer.NumElements = 256;
+						rawUav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+						impl->device->CreateUnorderedAccessView(impl->histogram.resource.Get(), nullptr, &rawUav, impl->BindlessCpu(Impl::BindlessHistogramUav));
+						D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+						srv.Format = DXGI_FORMAT_UNKNOWN;
+						srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+						srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+						srv.Buffer.NumElements = 1;
+						srv.Buffer.StructureByteStride = 16;
+						impl->device->CreateShaderResourceView(impl->exposureBuffer.resource.Get(), &srv, impl->BindlessCpu(Impl::BindlessExposureSrv));
+						D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+						uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+						uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+						uavDesc.Buffer.NumElements = 1;
+						uavDesc.Buffer.StructureByteStride = 16;
+						impl->device->CreateUnorderedAccessView(impl->exposureBuffer.resource.Get(), nullptr, &uavDesc, impl->BindlessCpu(Impl::BindlessExposureUav));
 					}
 
 					// 8단계 — [2] AO (BindlessSlot 28 ~ 35)
@@ -1936,6 +2191,15 @@ namespace swc {
 			// 9단계 — [7] 반투명 상수 버퍼 (288 B → 512 B) · 색 피라미드 상수 (디스패치마다 256 B 칸 × 밉 수)
 			D3D12_RESOURCE_DESC aoDesc = BufferDesc(512);
 			D3D12_RESOURCE_DESC pyramidDesc = BufferDesc(256 * Impl::kSceneColorMips);
+			// 10단계 — [8] 후처리 상수 (디스패치마다 256 B 칸)
+			D3D12_RESOURCE_DESC postDesc = BufferDesc(256 * Impl::kPostDispatchSlots);
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &postDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->postCB))) ||
+				FAILED(impl->postCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->postCBData))))
+			{
+				impl->status = L"후처리 상수 버퍼 생성 실패.";
+				return false;
+			}
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &aoDesc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->aoCB))) ||
 				FAILED(impl->aoCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->aoCBData))) ||
@@ -2686,6 +2950,24 @@ namespace swc {
 				}
 			}
 
+			// [8] 후처리 — 네 진입점 (PostProcess.hlsl). RT 와 상관없이 바인드리스만 있으면 된다.
+			if (ok)
+			{
+				const bool postOk =
+					createCompute(L"PostProcess.hlsl", L"CSHistogram", impl->histogramPso) &&
+					createCompute(L"PostProcess.hlsl", L"CSExposure", impl->exposurePso) &&
+					createCompute(L"PostProcess.hlsl", L"CSBloomDownsample", impl->bloomDownPso) &&
+					createCompute(L"PostProcess.hlsl", L"CSBloomUpsample", impl->bloomUpPso);
+				if (!postOk)
+				{
+					impl->histogramPso.Reset();
+					impl->exposurePso.Reset();
+					impl->bloomDownPso.Reset();
+					impl->bloomUpPso.Reset();
+					OutputDebugStringW(L"[GRenderer] [8] 후처리 파이프라인 생성 실패 — 예전 톤맵(0~1 자르기)\n");
+				}
+			}
+
 			// [2] AO — 세 진입점 (AO.hlsl). RT 가 없는 장치는 RayQuery 를 빼고 컴파일한다(순수 SSAO).
 			if (ok)
 			{
@@ -2879,6 +3161,58 @@ namespace swc {
 			{
 				impl->status = L"톤맵 PSO 생성 실패.";
 				return false;
+			}
+
+			// ── 10단계 — 최종 톤맵(PSTonemap, 바인드리스) ──
+			//  루트 시그니처: 루트 상수 8개(b0) + 정적 샘플러 s0(선형 고정) + CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED.
+			//  후처리 컴퓨트 PSO 가 있어야 만든다 — 없으면 예전 PSO(자르기)만 쓴다.
+			if (impl->bindlessHeap && impl->histogramPso && impl->exposurePso && impl->bloomDownPso && impl->bloomUpPso)
+			{
+				D3D12_ROOT_PARAMETER1 constants = {};
+				constants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+				constants.Constants.ShaderRegister = 0;
+				constants.Constants.Num32BitValues = sizeof(TonemapConstants) / sizeof(uint32_t);
+				constants.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+				D3D12_STATIC_SAMPLER_DESC clampSampler = {};
+				clampSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+				clampSampler.AddressU = clampSampler.AddressV = clampSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+				clampSampler.MaxAnisotropy = 1;
+				clampSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+				clampSampler.MaxLOD = D3D12_FLOAT32_MAX;
+				clampSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+				D3D12_VERSIONED_ROOT_SIGNATURE_DESC bindlessRs = {};
+				bindlessRs.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+				bindlessRs.Desc_1_1.NumParameters = 1;
+				bindlessRs.Desc_1_1.pParameters = &constants;
+				bindlessRs.Desc_1_1.NumStaticSamplers = 1;
+				bindlessRs.Desc_1_1.pStaticSamplers = &clampSampler;
+				bindlessRs.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+				ComPtr<ID3DBlob> bindlessSig, bindlessErr;
+				std::vector<uint8_t> vs66 = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", L"vs_6_6", nullptr, 0, log);
+				std::vector<uint8_t> psTonemap = vs66.empty() ? std::vector<uint8_t>()
+					: impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSTonemap", L"ps_6_6", nullptr, 0, log);
+				bool tonemapOk = !vs66.empty() && !psTonemap.empty() &&
+					SUCCEEDED(D3D12SerializeVersionedRootSignature(&bindlessRs, &bindlessSig, &bindlessErr)) &&
+					SUCCEEDED(impl->device->CreateRootSignature(0, bindlessSig->GetBufferPointer(), bindlessSig->GetBufferSize(),
+						IID_PPV_ARGS(&impl->tonemapBindlessRootSig)));
+				if (tonemapOk)
+				{
+					D3D12_GRAPHICS_PIPELINE_STATE_DESC bindlessPso = psoDesc;
+					bindlessPso.pRootSignature = impl->tonemapBindlessRootSig.Get();
+					bindlessPso.VS = { vs66.data(), vs66.size() };
+					bindlessPso.PS = { psTonemap.data(), psTonemap.size() };
+					tonemapOk = SUCCEEDED(impl->device->CreateGraphicsPipelineState(&bindlessPso, IID_PPV_ARGS(&impl->tonemapBindlessPso)));
+				}
+				if (!tonemapOk)
+				{
+					OutputDebugStringA(("[Tonemap PSTonemap] " + log + "\n").c_str());
+					impl->tonemapBindlessPso.Reset();
+					OutputDebugStringW(L"[GRenderer] [8] 최종 톤맵 파이프라인 생성 실패 — 예전 톤맵(0~1 자르기)\n");
+				}
+				else
+				{
+					OutputDebugStringW(L"[GRenderer] [8] 후처리 준비 (블룸 Jimenez 2014 · 자동 노출 히스토그램 UE 기본값 · ACES 근사 · sRGB)\n");
+				}
 			}
 		}
 
@@ -3503,6 +3837,15 @@ namespace swc {
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 		impl->resolved = false;
 		impl->skyDoneThisFrame = false;   // 6단계 — 이번 프레임의 첫 Render 가 해 · 하늘을 처리한다
+		// 10단계 — 프레임 시간(자동 노출 적응 속도가 «스톱/초» 라서). 첫 프레임 · 멈췄다 돌아온 프레임은 0.1 초로 자른다.
+		{
+			LARGE_INTEGER now, frequency;
+			QueryPerformanceCounter(&now);
+			QueryPerformanceFrequency(&frequency);
+			if (impl->lastFrameCounter.QuadPart != 0)
+				impl->frameDeltaSeconds = (std::min)(0.1f, float(double(now.QuadPart - impl->lastFrameCounter.QuadPart) / double(frequency.QuadPart)));
+			impl->lastFrameCounter = now;
+		}
 
 		// ── 장면은 HDR 컬러에 그린다 (2026-10-27 파이프라인 1단계) ──
 		//  백버퍼는 여기서 건드리지 않는다. [8](ResolveToBackBuffer)에서 HDR 을 옮길 때 처음 쓴다.
