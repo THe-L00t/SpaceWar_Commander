@@ -16,11 +16,15 @@
 //  ★ 반사 레이는 RAY_FLAG_FORCE_OPAQUE — 투과 재질 물체도 반사에서는 불투명 표면으로 보인다(얼음 패스 [7] 전까지).
 //  ★ 바인드리스: 루트 시그니처에 CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, 힙은 GRenderer 의 bindlessHeap.
 //    히트 셰이더 안 번호는 레이마다 다를 수 있어 NonUniformResourceIndex 로 감싼다(사양 요구).
+//  ★ 2026-10-27 렌더 6단계 — 하늘
+//    · Miss 는 [6] 하늘 텍스처(Sky.hlsli)를 레이 방향으로 읽는다(예전: 지우기 색 상수).
+//    · ClosestHit 의 태양은 조도(gSunIlluminance), 주변광은 하늘 조도 텍스처(맞은 점 법선 방향) — 메인 라이팅과 같은 단위.
 // ============================================================
 
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
 #include "RtCommon.hlsli"
+#include "Sky.hlsli"
 
 // GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (144바이트)
 cbuffer ReflectionCB : register(b0)
@@ -29,14 +33,15 @@ cbuffer ReflectionCB : register(b0)
 	float3   gEyePos;        float gMaxDistance;     // 레이 길이 상한(m)
 	float3   gSunDir;        float gMaxRoughness;    // 이 거칠기 이상은 반사 레이를 쏘지 않는다
 	uint2    gSize;          uint  gNormalIndex;     uint gMaterialIndex;   // ↓ 바인드리스 힙 번호
-	uint     gDepthIndex;    uint  gOutputIndex;     uint  gFrameIndex;   uint _pad0;   // 5단계 — 난수 씨앗용 프레임 번호
-	float3   gSkyColor;      float _pad1;            // 미스 색 — 지금 하늘([6] 미정)은 지우기 색이라 같은 값
+	uint     gDepthIndex;    uint  gOutputIndex;     uint  gFrameIndex;   uint gSkyIndex;   // 5단계 난수 씨앗 · 6단계 하늘 텍스처
+	float3   gSunIlluminance; uint gSkyIrradianceIndex;   // 6단계 — 태양 조도(RGB) · 하늘 조도 텍스처
 };
 
 RaytracingAccelerationStructure gScene       : register(t0);   // TLAS (루트 SRV)
 StructuredBuffer<RtMaterial>    gRtMaterials : register(t1);   // 재질 표 (루트 SRV)
 StructuredBuffer<RtInstance>    gRtInstances : register(t2);   // TLAS 인스턴스 표 (루트 SRV, 프레임마다)
 SamplerState                    gSampler     : register(s0);   // 정적 샘플러 (선형 · WRAP)
+SamplerState                    gSkySampler  : register(s1);   // 6단계 — 선형 · U 반복 · V 고정 (등장방형 하늘)
 
 struct ReflectionPayload
 {
@@ -110,7 +115,8 @@ void RayGen()
 [shader("miss")]
 void Miss(inout ReflectionPayload payload)
 {
-	payload.color = gSkyColor;
+	Texture2D<float4> sky = ResourceDescriptorHeap[gSkyIndex];   // 6단계 — [6] 하늘 텍스처 (해 원반 제외)
+	payload.color = SampleSkyRadiance(sky, gSkySampler, WorldRayDirection());
 	payload.hitT  = -1.0;
 }
 
@@ -155,7 +161,9 @@ void ClosestHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionA
 
 	// ── 맞은 점의 조명 — 메인 라이팅과 같은 식(Shading.hlsli) + 같은 그림자 규칙(RtCommon.hlsli) ──
 	const float3 P   = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir);
+	Texture2D<float4> skyIrradiance = ResourceDescriptorHeap[gSkyIrradianceIndex];   // 6단계 — 주변광 = 하늘 조도/π
+	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir,
+		gSunIlluminance, SampleSkyIrradiance(skyIrradiance, gSkySampler, N));
 	const float3 L   = normalize(-gSunDir);
 	const float3 sun = (dot(N, L) > 0.0) ? TraceSunVisibility(gScene, gRtMaterials, P + N * 0.02, L, gMaxDistance)
 	                                     : float3(0.0, 0.0, 0.0);

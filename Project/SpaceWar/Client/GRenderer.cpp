@@ -170,6 +170,45 @@ namespace {
 
 		return fallback;
 	}
+
+	// ── [6] 하늘 — 태양 직접광 색 (2026-10-27 렌더 6단계) ──
+	//  Shaders/Sky.hlsl 의 SunTransmittance 와 같은 식 · 같은 대기 값(Hillaire 지구 기본값, 1/m).
+	//  셰이더는 하늘 텍스처를 만들 때 쓰고, 여기(CPU)는 «땅에 닿는 태양 조도» 를 한 번 구해 모든 패스의 상수로 넘긴다.
+	constexpr double kAtmBottomRadius = 6360.0e3;
+	constexpr double kAtmTopRadius = 6460.0e3;
+	constexpr double kAtmRayleigh[3] = { 5.802e-6, 13.558e-6, 33.1e-6 };
+	constexpr double kAtmRayleighScaleHeight = 8.0e3;
+	constexpr double kAtmMieExtinction = 4.440e-6;
+	constexpr double kAtmMieScaleHeight = 1.2e3;
+	constexpr double kAtmOzone[3] = { 0.650e-6, 1.881e-6, 0.085e-6 };
+
+	// 관측 높이(m)에서 «위와 cos muS» 인 해 쪽으로 대기 끝까지의 투과율(RGB). 해가 지평선(대기 속 지면)에 막히면 0.
+	XMFLOAT3 SunTransmittance(double muS, double observerHeight)
+	{
+		const double r = kAtmBottomRadius + observerHeight;
+		if (muS < 0.0)
+		{
+			const double disc = r * r * muS * muS - (r - kAtmBottomRadius) * (r + kAtmBottomRadius);
+			if (disc >= 0.0 && -r * muS - std::sqrt(disc) >= 0.0)
+				return XMFLOAT3(0.0f, 0.0f, 0.0f);
+		}
+		const double tTop = -r * muS + std::sqrt((std::max)(0.0, (kAtmTopRadius - r) * (kAtmTopRadius + r) + r * r * muS * muS));
+		constexpr int kSteps = 64;
+		const double dt = tTop / kSteps;
+		double depth[3] = { 0.0, 0.0, 0.0 };
+		for (int i = 0; i < kSteps; ++i)
+		{
+			const double t = (i + 0.5) * dt;
+			const double h = std::sqrt(r * r + t * t + 2.0 * r * muS * t) - kAtmBottomRadius;
+			const double rayleigh = std::exp(-h / kAtmRayleighScaleHeight);
+			const double mie = std::exp(-h / kAtmMieScaleHeight);
+			const double km = h * 1.0e-3;
+			const double ozone = std::clamp(km < 25.0 ? km / 15.0 - 2.0 / 3.0 : -km / 15.0 + 8.0 / 3.0, 0.0, 1.0);
+			for (int c = 0; c < 3; ++c)
+				depth[c] += (kAtmRayleigh[c] * rayleigh + kAtmMieExtinction * mie + kAtmOzone[c] * ozone) * dt;
+		}
+		return XMFLOAT3(float(std::exp(-depth[0])), float(std::exp(-depth[1])), float(std::exp(-depth[2])));
+	}
 }
 
 namespace swc {
@@ -183,8 +222,9 @@ namespace swc {
 		XMFLOAT3   eyePos;    float pad0;
 		XMFLOAT3   sunDir;    uint32_t debugMode;
 		XMFLOAT4X4 prevViewProj;   // 이전 프레임 viewProj(전치해서 올림). 첫 프레임 · 배경 패스는 viewProj 와 같다
+		XMFLOAT3   sunIlluminance; float pad1;   // 6단계 — 땅에 닿는 태양 조도(RGB, 대기 투과 포함). 배경 패스가 쓴다
 	};
-	static_assert(sizeof(FrameConstants) == 160, "FrameCB 는 160바이트");
+	static_assert(sizeof(FrameConstants) == 176, "FrameCB 는 176바이트");
 
 	// Lighting.hlsl 의 LightingCB 와 같은 순서 · 크기 (2026-10-27 파이프라인 1단계, [5] 라이팅 합성)
 	struct LightingConstants
@@ -198,8 +238,10 @@ namespace swc {
 		uint32_t   shadowEnabled;       // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
 		uint32_t   reflectionEnabled;   // 2026-10-27 4단계 — 1 이면 반사 텍스처를 읽는다(이번 프레임에 [4b] 가 돌았다)
 		uint32_t   pad3[3];
+		XMFLOAT3   sunIlluminance;      // 2026-10-27 6단계 — 땅에 닿는 태양 조도(RGB)
+		uint32_t   skyEnabled;          // 2026-10-27 6단계 — 1 이면 하늘 조도 텍스처(t9)를 주변광으로 읽는다
 	};
-	static_assert(sizeof(LightingConstants) == 128, "LightingCB 는 128바이트");
+	static_assert(sizeof(LightingConstants) == 144, "LightingCB 는 144바이트");
 
 	// ── RT 표 (2026-10-27 렌더 4단계) — Shaders/RtCommon.hlsli 와 같은 배치 ──
 	//  재질 표: 재질 번호(TLAS InstanceID)로 찾는다. 텍스처 번호는 SM 6.6 바인드리스 힙 번호.
@@ -233,10 +275,26 @@ namespace swc {
 		uint32_t   normalIndex, materialIndex;   // 바인드리스 힙 번호
 		uint32_t   depthIndex, outputIndex;
 		uint32_t   frameIndex;   // 5단계 — B 방식 난수 씨앗(프레임마다 다른 방향)
-		uint32_t   pad0;
-		XMFLOAT3   skyColor;  float pad1;
+		uint32_t   skyIndex;     // 6단계 — [6] 하늘 텍스처(바인드리스) — 미스 색
+		XMFLOAT3   sunIlluminance;            // 6단계 — 태양 조도(RGB) — 맞은 점 조명
+		uint32_t   skyIrradianceIndex;        // 6단계 — 하늘 조도 텍스처(바인드리스) — 맞은 점 주변광
 	};
 	static_assert(sizeof(ReflectionConstants) == 144, "ReflectionCB 는 144바이트");
+
+	// Sky.hlsl 의 SkyCB 와 같은 순서 · 크기 (2026-10-27 렌더 6단계, [6] 하늘) — 세 진입점이 같은 상수를 쓴다
+	struct SkyConstants
+	{
+		XMFLOAT4X4 invViewProj;            // 픽셀 방향 되살리기 (전치해서 올림)
+		XMFLOAT3   eyePos;           float sunIlluminanceTop;   // 대기 위 태양 조도 (π)
+		XMFLOAT3   toSun;            float cosSunRadius;        // 해 쪽 단위 방향 = −sunDir, 해 원반 반지름의 cos
+		XMFLOAT3   up;               float observerHeight;      // 카메라 자리의 위, 대기 계산 속 관측 높이(m)
+		XMFLOAT3   sunDiskRadiance;  uint32_t hdrUav;           // 해 원반 휘도 · HDR UAV(바인드리스)
+		uint32_t   width, height, skyWidth, skyHeight;
+		uint32_t   irradianceWidth, irradianceHeight, skyUav, skySrv;
+		uint32_t   irradianceUav;
+		uint32_t   msUav, msSrv, msSize;          // 다중 산란 LUT (정사각, 바인드리스)
+	};
+	static_assert(sizeof(SkyConstants) == 176, "SkyCB 는 176바이트");
 
 	// RtReflectionDenoise.hlsl 의 DenoiseCB 와 같은 순서 · 크기 (2026-10-27 렌더 5단계, [4d] 임시 노이즈 제거)
 	//  번호는 전부 바인드리스 힙 번호. 시간 누적 · 공간 필터 두 패스가 같은 상수를 쓴다.
@@ -352,7 +410,14 @@ namespace swc {
 			BindlessHistorySrv0 = 8, BindlessHistoryUav0 = 9,  // 반사 이력 0번 (프레임마다 0 · 1 을 번갈아 읽고 쓴다)
 			BindlessHistorySrv1 = 10, BindlessHistoryUav1 = 11,
 			BindlessDenoisedUav = 12,                          // [4d] 결과(라이팅 t7 이 읽는 텍스처)
-			BindlessReserved = 16 };
+			// 6단계 — [6] 하늘
+			BindlessHdrUav = 13,                               // HDR 컬러 UAV — 하늘 그리기(CSDrawSky)
+			BindlessSkySrv = 14, BindlessSkyUav = 15,          // 하늘 텍스처 (등장방형 256×128)
+			BindlessSkyIrradianceSrv = 16, BindlessSkyIrradianceUav = 17,   // 하늘 조도 / π (32×16)
+			BindlessSkyMsSrv = 18, BindlessSkyMsUav = 19,      // 다중 산란 LUT (32×32)
+			// 앞 64칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64 — 뒤 단계 GI · AO · 후처리 자원이 들어온다).
+			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
+			BindlessReserved = 64 };
 		bool                         bindlessSupported = false;
 		ComPtr<ID3D12DescriptorHeap> bindlessHeap;
 		UINT                         bindlessDescriptorSize = 0;
@@ -401,6 +466,13 @@ namespace swc {
 		ComPtr<ID3D12PipelineState> denoiseSpatialPso;      // cs_6_6 CSSpatial
 		ComPtr<ID3D12Resource>      denoiseCB;              // UPLOAD, 영속 매핑
 		uint8_t*                    denoiseCBData = nullptr;
+
+		// ── 바인드리스 컴퓨트 공용 루트 시그니처 (2026-10-27 렌더 6단계) ──
+		//  6단계부터 새로 붙는 컴퓨트 패스([6] 하늘, 뒤의 GI · AO · 후처리)가 같이 쓴다.
+		//   b0 = 패스 상수(루트 CBV), t0 = TLAS, t1 = 재질 표, t2 = 인스턴스 표 (루트 SRV — RT 를 안 쓰는 패스는 안 읽는다)
+		//   s0 = 선형 반복, s1 = 선형 U 반복 · V 고정(등장방형), s2 = 선형 고정
+		//   플래그 CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED — 텍스처는 전부 바인드리스 번호로 읽고 쓴다.
+		ComPtr<ID3D12RootSignature> computeRootSig;
 		uint32_t                    historyIndex = 0;       // 이번 프레임에 쓸 이력 번호 (지난 프레임 것 = 1 - historyIndex)
 		bool                        historyValid = false;   // 지난 프레임에 반사 · 노이즈 제거가 돌아 이력 · 사본이 유효한가
 
@@ -483,11 +555,14 @@ namespace swc {
 			SlotShadowUav = 8, SlotShadowSrv = 9,
 			SlotReflectionSrv = 10,    // 4단계 — 라이팅 t7 (5단계부터 [4d] 노이즈 제거 후 반사)
 			SlotReflectionRawSrv = 11, // 5단계 — 라이팅 t8 (노이즈 제거 전 반사, 디버그 뷰 7)
-			TargetSlotCount = 12 };
+			SlotSkyIrradianceSrv = 12, // 6단계 — 라이팅 t9 ([6] 하늘 조도 / π — 주변광)
+			TargetSlotCount = 13 };
 		// static_assert 메시지는 좁은 문자열(CP949)이라 «—» 같은 문자를 쓰면 C4566 경고가 난다 — 쓰지 않는다.
 		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤: 라이팅 테이블 t5");
-		static_assert(SlotReflectionSrv == SlotShadowSrv + 1 && SlotReflectionRawSrv == SlotShadowSrv + 2,
-			"그림자 마스크 / 반사 / 제거 전 반사 SRV 는 붙어 있어야 한다: 라이팅 테이블 t6~t8 한 범위");
+		static_assert(SlotReflectionSrv == SlotShadowSrv + 1 && SlotReflectionRawSrv == SlotShadowSrv + 2 &&
+			SlotSkyIrradianceSrv == SlotShadowSrv + 3,
+			"그림자 마스크 / 반사 / 제거 전 반사 / 하늘 조도 SRV 는 붙어 있어야 한다: 라이팅 테이블 t6~t9 한 범위");
+		static constexpr UINT kLightingTailSrvCount = SlotSkyIrradianceSrv - SlotShadowSrv + 1;   // t6 부터 이어지는 SRV 수
 
 		// ── [4a] RT 그림자 (2026-10-27 렌더 2단계) ──
 		//  그림자 마스크: 픽셀마다 태양 가시도 rgb(투과 물체를 지나면 연하게). RtShadow.hlsl 이 쓰고 Lighting.hlsl 이 읽는다.
@@ -502,6 +577,32 @@ namespace swc {
 		RenderTarget                reflectionDenoised;     // R16G16B16A16_FLOAT — [5] 라이팅 t7
 		RenderTarget                prevDepth;              // R32_TYPELESS — 깊이 사본 (SRV R32_FLOAT)
 		RenderTarget                prevNormal;             // R16G16_SNORM — GB1 사본
+		// ── [6] 하늘 (2026-10-27 렌더 6단계, Sky.hlsl) ──
+		//  하늘 텍스처(방향 → 휘도)를 하늘 그리기 · 반사 미스 · 주변광이 같이 읽는다. 지금은 대기 산란으로 계산해 채운다(임시).
+		//  바인드리스(SM 6.6)가 있어야 만든다 — 없으면 예전처럼 지우기 색 하늘 · 상수 주변광.
+		static constexpr UINT  kSkyWidth = 256, kSkyHeight = 128;                     // 등장방형 하늘 텍스처
+		static constexpr UINT  kSkyIrradianceWidth = 32, kSkyIrradianceHeight = 16;   // 하늘 조도 / π
+		static constexpr UINT  kSkyMsSize = 32;                                       // 다중 산란 LUT (Hillaire 2020 과 같은 32×32)
+		static constexpr DXGI_FORMAT kSkyFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		static constexpr float kSunIlluminanceTop = 3.14159265f;   // 대기 위 태양 조도 — 흰 표면이 해를 정면으로 받으면 휘도 1
+		static constexpr float kSunAngularRadius = 0.004675f;      // 해 원반 각반지름(rad) — Hillaire 기본값
+		static constexpr float kSkyObserverHeight = 2.0f;          // 대기 계산 속 관측 높이(m)
+		RenderTarget                skyTexture;        // UAV(CSGenerateSky) + SRV
+		RenderTarget                skyIrradiance;     // UAV(CSSkyIrradiance) + SRV(라이팅 t9 · 반사 히트)
+		RenderTarget                skyMultiScattering;   // UAV(CSMultiScattering) + SRV(CSGenerateSky) — 처음 한 번
+		bool                        skyMsValid = false;
+		ComPtr<ID3D12PipelineState> skyMultiScatteringPso;
+		ComPtr<ID3D12PipelineState> skyGeneratePso;
+		ComPtr<ID3D12PipelineState> skyIrradiancePso;
+		ComPtr<ID3D12PipelineState> skyDrawPso;
+		ComPtr<ID3D12Resource>      skyCB;             // UPLOAD, 영속 매핑
+		uint8_t*                    skyCBData = nullptr;
+		bool                        skyValid = false;  // 하늘 텍스처가 지금 해 · 위 값으로 만들어져 있다
+		XMFLOAT3                    skyBuiltUp{};       // 하늘 텍스처를 만든 때의 위 · 해 방향 — 바뀌면 다시 만든다
+		XMFLOAT3                    skyBuiltSunDir{};
+		bool                        skyDoneThisFrame = false;   // 이번 프레임의 첫 Render 에서 해 · 하늘을 이미 처리했다
+		XMFLOAT3                    sunIlluminance{ 0.85f, 0.85f, 0.85f };   // 이번 프레임 «땅에 닿는 태양 조도» (모든 패스 상수)
+
 		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
 		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
 		ComPtr<ID3D12Resource>      shadowCB;           // UPLOAD, 영속 매핑
@@ -822,6 +923,104 @@ namespace swc {
 				WaitForSingleObject(fenceEvent, INFINITE);
 		}
 
+		// ── [6] 해 · 하늘 (2026-10-27 렌더 6단계) — 프레임의 첫 Render(배경이든 메인이든)에서 한 번 ──
+		//  ① 땅에 닿는 태양 조도 = 대기 위 조도 × 해 쪽 대기 투과율 (카메라 자리의 위 기준 — 행성 위치마다 해 높이가 다르다)
+		//  ② 해 · 위가 바뀌었으면 하늘 텍스처 → 하늘 조도 텍스처를 다시 만든다 (Sky.hlsl CSGenerateSky · CSSkyIrradiance)
+		//  ③ HDR 컬러 전체에 하늘 + 해 원반을 쓴다 (CSDrawSky). 그 위에 배경 행성 · 메인 라이팅이 덮어 그린다.
+		//  바인드리스가 없어 하늘 파이프라인을 못 만든 장치는 ① 만 하고, 하늘은 BeginFrame 의 지우기 색이 남는다.
+		static constexpr D3D12_RESOURCE_STATES kSkyReadState =
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		void UpdateSunAndSky(const RenderView& view)
+		{
+			if (skyDoneThisFrame) return;
+			skyDoneThisFrame = true;
+
+			// ① 태양 조도
+			XMVECTOR up = XMLoadFloat3(&view.up);
+			up = XMVectorGetX(XMVector3LengthSq(up)) > 1.0e-12f ? XMVector3Normalize(up) : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+			const XMVECTOR toSun = XMVector3Normalize(XMVectorNegate(XMLoadFloat3(&sunDir)));
+			const float muS = XMVectorGetX(XMVector3Dot(up, toSun));
+			const XMFLOAT3 transmittance = SunTransmittance(muS, kSkyObserverHeight);
+			sunIlluminance = XMFLOAT3(kSunIlluminanceTop * transmittance.x,
+				kSunIlluminanceTop * transmittance.y, kSunIlluminanceTop * transmittance.z);
+
+			if (!skyDrawPso || !bindlessHeap) return;
+
+			XMFLOAT3 upF, toSunF;
+			XMStoreFloat3(&upF, up);
+			XMStoreFloat3(&toSunF, toSun);
+
+			SkyConstants sc = {};
+			XMStoreFloat4x4(&sc.invViewProj, XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj))));
+			sc.eyePos = view.eyePosition;
+			sc.sunIlluminanceTop = kSunIlluminanceTop;
+			sc.toSun = toSunF;
+			sc.cosSunRadius = std::cos(kSunAngularRadius);
+			sc.up = upF;
+			sc.observerHeight = kSkyObserverHeight;
+			// 해 원반 휘도 = 땅에 닿는 조도 ÷ 원반 입체각 2π(1 − cos r)
+			const float sunSolidAngle = 2.0f * 3.14159265f * (1.0f - std::cos(kSunAngularRadius));
+			sc.sunDiskRadiance = XMFLOAT3(sunIlluminance.x / sunSolidAngle, sunIlluminance.y / sunSolidAngle, sunIlluminance.z / sunSolidAngle);
+			sc.hdrUav = BindlessHdrUav;
+			sc.width = width;
+			sc.height = height;
+			sc.skyWidth = kSkyWidth;
+			sc.skyHeight = kSkyHeight;
+			sc.irradianceWidth = kSkyIrradianceWidth;
+			sc.irradianceHeight = kSkyIrradianceHeight;
+			sc.skyUav = BindlessSkyUav;
+			sc.skySrv = BindlessSkySrv;
+			sc.irradianceUav = BindlessSkyIrradianceUav;
+			sc.msUav = BindlessSkyMsUav;
+			sc.msSrv = BindlessSkyMsSrv;
+			sc.msSize = kSkyMsSize;
+			memcpy(skyCBData, &sc, sizeof(sc));
+
+			// 힙을 먼저, 루트 시그니처를 나중에 (CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED 규칙)
+			ID3D12DescriptorHeap* heaps[] = { bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, heaps);
+			commandList->SetComputeRootSignature(computeRootSig.Get());
+			commandList->SetComputeRootConstantBufferView(0, skyCB->GetGPUVirtualAddress());
+
+			// ⓪ 다중 산란 LUT — 대기 값만으로 정해지므로 처음 한 번
+			if (!skyMsValid)
+			{
+				TransitionTargets({ { &skyMultiScattering, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+				commandList->SetPipelineState(skyMultiScatteringPso.Get());
+				commandList->Dispatch((kSkyMsSize + 7) / 8, (kSkyMsSize + 7) / 8, 1);
+				TransitionTargets({ { &skyMultiScattering, kSkyReadState } });
+				skyMsValid = true;
+				skyValid = false;   // LUT 가 새로 생겼으니 하늘도 다시
+			}
+
+			// ② 해 · 위가 바뀔 때만 하늘 텍스처를 다시 만든다 (방향 차이 1e-4 넘게)
+			auto differs = [](const XMFLOAT3& a, const XMFLOAT3& b)
+			{
+				return std::fabs(a.x - b.x) > 1.0e-4f || std::fabs(a.y - b.y) > 1.0e-4f || std::fabs(a.z - b.z) > 1.0e-4f;
+			};
+			if (!skyValid || differs(upF, skyBuiltUp) || differs(sunDir, skyBuiltSunDir))
+			{
+				TransitionTargets({ { &skyTexture, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+				commandList->SetPipelineState(skyGeneratePso.Get());
+				commandList->Dispatch((kSkyWidth + 7) / 8, (kSkyHeight + 7) / 8, 1);
+				TransitionTargets({
+					{ &skyTexture,    kSkyReadState },
+					{ &skyIrradiance, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+				commandList->SetPipelineState(skyIrradiancePso.Get());
+				commandList->Dispatch((kSkyIrradianceWidth + 7) / 8, (kSkyIrradianceHeight + 7) / 8, 1);
+				TransitionTargets({ { &skyIrradiance, kSkyReadState } });
+				skyValid = true;
+				skyBuiltUp = upF;
+				skyBuiltSunDir = sunDir;
+			}
+
+			// ③ 화면에 하늘 — HDR 을 UAV 로 쓰고 다시 그리기 상태로 돌려 둔다(뒤 패스가 RTV 로 덮어 그린다).
+			TransitionTargets({ { &hdr, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			commandList->SetPipelineState(skyDrawPso.Get());
+			commandList->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+			TransitionTargets({ { &hdr, D3D12_RESOURCE_STATE_RENDER_TARGET } });
+		}
+
 		// ── [8] HDR 컬러 → 백버퍼 (2026-10-27) ──
 		//  UI(DrawSprites)는 백버퍼 위에 덮어 그리므로 UI 전에 한 번 옮겨야 한다.
 		//  UI 가 없는 프레임은 EndFrame 이 부른다. 한 프레임에 한 번만 돈다(resolved).
@@ -1138,6 +1337,38 @@ namespace swc {
 			}
 			createSrv(impl->reflectionDenoised.resource.Get(), Impl::kReflectionFormat, Impl::SlotReflectionSrv);
 
+			// [6] 하늘 텍스처 · 하늘 조도 (2026-10-27 렌더 6단계) — 크기가 화면과 달라 따로 만든다.
+			//  처음 상태 «읽기»: 라이팅 t9 가 항상 가리키므로(하늘을 못 만드는 장치는 gSkyEnabled 0 이라 읽지 않는다).
+			auto createSized = [&](UINT w, UINT h, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags,
+				D3D12_RESOURCE_STATES initial, Impl::RenderTarget& out) -> bool
+			{
+				D3D12_RESOURCE_DESC desc = {};
+				desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+				desc.Width = w;
+				desc.Height = h;
+				desc.DepthOrArraySize = 1;
+				desc.MipLevels = 1;
+				desc.Format = format;
+				desc.SampleDesc.Count = 1;
+				desc.Flags = flags;
+				if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, initial, nullptr,
+					IID_PPV_ARGS(&out.resource))))
+					return false;
+				out.state = initial;
+				return true;
+			};
+			if (!createSized(Impl::kSkyWidth, Impl::kSkyHeight, Impl::kSkyFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					Impl::kSkyReadState, impl->skyTexture) ||
+				!createSized(Impl::kSkyIrradianceWidth, Impl::kSkyIrradianceHeight, Impl::kSkyFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					Impl::kSkyReadState, impl->skyIrradiance) ||
+				!createSized(Impl::kSkyMsSize, Impl::kSkyMsSize, Impl::kSkyFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					Impl::kSkyReadState, impl->skyMultiScattering))
+			{
+				impl->status = L"하늘 텍스처 생성 실패.";
+				return false;
+			}
+			createSrv(impl->skyIrradiance.resource.Get(), Impl::kSkyFormat, Impl::SlotSkyIrradianceSrv);
+
 			// ── SM 6.6 바인드리스 힙 (2026-10-27 렌더 4단계) ──
 			//  텍스처 · 메시가 만들어질 때(CreateTexture · CreateMesh) 칸을 받으므로 그보다 먼저 만든다.
 			//  앞 16칸(BindlessSlot)은 RT 반사가 읽고 쓰는 프레임 자원: GB1 법선 · GB2 거칠기/금속 · 깊이 SRV, 반사 UAV.
@@ -1186,6 +1417,15 @@ namespace swc {
 					bindlessSrv(impl->reflectionHistory[1].resource.Get(), Impl::kReflectionFormat, Impl::BindlessHistorySrv1);
 					bindlessUav(impl->reflectionHistory[1].resource.Get(), Impl::kReflectionFormat, Impl::BindlessHistoryUav1);
 					bindlessUav(impl->reflectionDenoised.resource.Get(), Impl::kReflectionFormat, Impl::BindlessDenoisedUav);
+
+					// 6단계 — [6] 하늘 (BindlessSlot 13 ~ 17)
+					bindlessUav(impl->hdr.resource.Get(), Impl::kHdrFormat, Impl::BindlessHdrUav);
+					bindlessSrv(impl->skyTexture.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkySrv);
+					bindlessUav(impl->skyTexture.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyUav);
+					bindlessSrv(impl->skyIrradiance.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyIrradianceSrv);
+					bindlessUav(impl->skyIrradiance.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyIrradianceUav);
+					bindlessSrv(impl->skyMultiScattering.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyMsSrv);
+					bindlessUav(impl->skyMultiScattering.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyMsUav);
 				}
 			}
 		}
@@ -1271,6 +1511,20 @@ namespace swc {
 				FAILED(impl->denoiseCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->denoiseCBData))))
 			{
 				impl->status = L"RT 인스턴스 표 · 반사 · 노이즈 제거 상수 버퍼 생성 실패.";
+				return false;
+			}
+		}
+
+		// [6] 하늘 상수 버퍼 (2026-10-27 렌더 6단계) — UPLOAD 영속 매핑, 176 B → 256 B 칸
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(256);
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->skyCB))) ||
+				FAILED(impl->skyCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->skyCBData))))
+			{
+				impl->status = L"하늘 상수 버퍼 생성 실패.";
 				return false;
 			}
 		}
@@ -1553,9 +1807,9 @@ namespace swc {
 			ranges[1].NumDescriptors = 1;
 			ranges[1].BaseShaderRegister = 0;
 			ranges[1].OffsetInDescriptorsFromTableStart = Impl::SlotHdrUav;
-			ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 그림자 마스크 · 반사 · 제거 전 반사
-			ranges[2].NumDescriptors = 3;
-			ranges[2].BaseShaderRegister = 6;   // t6 ~ t8
+			ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 그림자 마스크 · 반사 · 제거 전 반사 · (6단계) 하늘 조도
+			ranges[2].NumDescriptors = Impl::kLightingTailSrvCount;
+			ranges[2].BaseShaderRegister = 6;   // t6 ~ t9
 			ranges[2].OffsetInDescriptorsFromTableStart = Impl::SlotShadowSrv;
 
 			D3D12_ROOT_PARAMETER params[2] = {};
@@ -1567,9 +1821,23 @@ namespace swc {
 			params[1].DescriptorTable.pDescriptorRanges = ranges;
 			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+			// 6단계 — s1 = 하늘(등장방형) 샘플러: 선형 · U 반복 · V 고정
+			D3D12_STATIC_SAMPLER_DESC skySampler = {};
+			skySampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			skySampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+			skySampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			skySampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			skySampler.MaxAnisotropy = 1;
+			skySampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+			skySampler.MaxLOD = D3D12_FLOAT32_MAX;
+			skySampler.ShaderRegister = 1;
+			skySampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
 			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
 			rsDesc.NumParameters = 2;
 			rsDesc.pParameters = params;
+			rsDesc.NumStaticSamplers = 1;
+			rsDesc.pStaticSamplers = &skySampler;
 			ComPtr<ID3DBlob> sig, err;
 			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
 				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->lightingRootSig))))
@@ -1695,13 +1963,18 @@ namespace swc {
 			sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
 			sampler.MaxLOD = D3D12_FLOAT32_MAX;
 			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			// 6단계 — s1 = 하늘(등장방형) 샘플러: 선형 · U 반복 · V 고정 (Miss 가 하늘 텍스처를 읽는다)
+			D3D12_STATIC_SAMPLER_DESC samplers[2] = { sampler, sampler };
+			samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			samplers[1].ShaderRegister = 1;
 
 			D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
 			rsDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
 			rsDesc.Desc_1_1.NumParameters = 4;
 			rsDesc.Desc_1_1.pParameters = params;
-			rsDesc.Desc_1_1.NumStaticSamplers = 1;
-			rsDesc.Desc_1_1.pStaticSamplers = &sampler;
+			rsDesc.Desc_1_1.NumStaticSamplers = 2;
+			rsDesc.Desc_1_1.pStaticSamplers = samplers;
 			rsDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 			ComPtr<ID3DBlob> sig, err;
 			if (FAILED(D3D12SerializeVersionedRootSignature(&rsDesc, &sig, &err)) ||
@@ -1847,6 +2120,94 @@ namespace swc {
 			else
 			{
 				OutputDebugStringW(L"[GRenderer] [4b] RT 반사 파이프라인 준비 (DispatchRays · SM 6.6 바인드리스, B 방식 + [4d] 임시 노이즈 제거)\n");
+			}
+		}
+
+		// ── 바인드리스 컴퓨트 공용 루트 시그니처 + 파이프라인 (2026-10-27 렌더 6단계~) ──
+		//  6단계부터 새로 붙는 컴퓨트 패스는 전부 이 루트 시그니처 하나를 쓴다(Impl::computeRootSig 주석).
+		//  SM 6.6 바인드리스 장치에서만 만든다. 실패하면 그 패스만 꺼지고 예전 화면으로 돈다.
+		if (impl->bindlessHeap)
+		{
+			bool ok = true;
+			D3D12_ROOT_PARAMETER1 params[4] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+			params[0].Descriptor.ShaderRegister = 0;
+			for (UINT i = 1; i < 4; ++i)
+			{
+				params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+				params[i].Descriptor.ShaderRegister = i - 1;   // t0 TLAS · t1 재질 표 · t2 인스턴스 표
+			}
+			for (D3D12_ROOT_PARAMETER1& param : params)
+			{
+				param.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+			D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
+			for (UINT i = 0; i < 3; ++i)
+			{
+				samplers[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+				samplers[i].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplers[i].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplers[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplers[i].MaxAnisotropy = 1;
+				samplers[i].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+				samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
+				samplers[i].ShaderRegister = i;
+				samplers[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+			samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;   // s1 등장방형: U 반복 · V 고정
+			samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;   // s2 고정
+
+			D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+			rsDesc.Desc_1_1.NumParameters = 4;
+			rsDesc.Desc_1_1.pParameters = params;
+			rsDesc.Desc_1_1.NumStaticSamplers = 3;
+			rsDesc.Desc_1_1.pStaticSamplers = samplers;
+			rsDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeVersionedRootSignature(&rsDesc, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->computeRootSig))))
+			{
+				if (err) OutputDebugStringA(("[컴퓨트 공용 루트] " + std::string(static_cast<const char*>(err->GetBufferPointer()), err->GetBufferSize()) + "\n").c_str());
+				ok = false;
+			}
+
+			// 셰이더 파일 · 진입점 → cs_6_6 컴퓨트 PSO (공용 루트 시그니처)
+			auto createCompute = [&](const wchar_t* file, const wchar_t* entry, ComPtr<ID3D12PipelineState>& out) -> bool
+			{
+				std::string log;
+				const std::vector<uint8_t> cs = impl->shaderCompiler.CompileFromFile(ShaderPath(file).c_str(), entry, L"cs_6_6", nullptr, 0, log);
+				if (cs.empty())
+				{
+					OutputDebugStringW((std::wstring(L"[") + file + L" " + entry + L"] 컴파일 실패\n").c_str());
+					OutputDebugStringA((log + "\n").c_str());
+					return false;
+				}
+				D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+				desc.pRootSignature = impl->computeRootSig.Get();
+				desc.CS = { cs.data(), cs.size() };
+				return SUCCEEDED(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(out.ReleaseAndGetAddressOf())));
+			};
+
+			// [6] 하늘 — 세 진입점 (Sky.hlsl)
+			const bool skyOk = ok &&
+				createCompute(L"Sky.hlsl", L"CSMultiScattering", impl->skyMultiScatteringPso) &&
+				createCompute(L"Sky.hlsl", L"CSGenerateSky", impl->skyGeneratePso) &&
+				createCompute(L"Sky.hlsl", L"CSSkyIrradiance", impl->skyIrradiancePso) &&
+				createCompute(L"Sky.hlsl", L"CSDrawSky", impl->skyDrawPso);
+			if (!skyOk)
+			{
+				impl->skyMultiScatteringPso.Reset();
+				impl->skyGeneratePso.Reset();
+				impl->skyIrradiancePso.Reset();
+				impl->skyDrawPso.Reset();
+				impl->status += L"  (하늘 파이프라인 생성 실패 — 지우기 색 하늘)";
+				OutputDebugStringW(L"[GRenderer] [6] 하늘 파이프라인 생성 실패 — 지우기 색 하늘 · 상수 주변광\n");
+			}
+			else
+			{
+				OutputDebugStringW(L"[GRenderer] [6] 하늘 파이프라인 준비 (하늘 텍스처 256x128 · 단일 산란 대기, 임시)\n");
 			}
 		}
 
@@ -2524,6 +2885,7 @@ namespace swc {
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
 		impl->resolved = false;
+		impl->skyDoneThisFrame = false;   // 6단계 — 이번 프레임의 첫 Render 가 해 · 하늘을 처리한다
 
 		// ── 장면은 HDR 컬러에 그린다 (2026-10-27 파이프라인 1단계) ──
 		//  백버퍼는 여기서 건드리지 않는다. [8](ResolveToBackBuffer)에서 HDR 을 옮길 때 처음 쓴다.
@@ -2551,6 +2913,10 @@ namespace swc {
 		if (impl->materials.empty()) return;
 		const bool rtActive = !view.background && impl->rtSupported && impl->rtParams.enabled;
 		ID3D12GraphicsCommandList4* const commandList = impl->commandList.Get();
+
+		// ── [6] 해 · 하늘 (2026-10-27 렌더 6단계) — 프레임의 첫 Render 에서 한 번(배경이 먼저면 배경에서) ──
+		//  땅에 닿는 태양 조도를 구하고(아래 모든 상수가 쓴다), HDR 컬러 전체에 하늘을 그린다.
+		impl->UpdateSunAndSky(view);
 
 		// ── TLAS 재빌드 (패킷 인스턴스 → TLAS 인스턴스) ──
 		if (rtActive)
@@ -2598,6 +2964,7 @@ namespace swc {
 		//   첫 프레임 · 배경 패스(G-buffer 를 안 씀)는 이번 값과 같게 둔다 → 카메라 몫 모션 벡터 0.
 		const XMFLOAT4X4 prevViewProj = (!view.background && impl->hasPrevMainView) ? impl->prevMainViewProj : view.viewProj;
 		XMStoreFloat4x4(&fc.prevViewProj, XMMatrixTranspose(XMLoadFloat4x4(&prevViewProj)));
+		fc.sunIlluminance = impl->sunIlluminance;   // 6단계 — 배경 패스 PSMain 의 태양
 		// 한 커맨드 리스트에 두 패스를 기록하므로 서로 다른 256바이트 CBV를 사용한다.
 		// 같은 CPU 메모리를 덮어쓰면 GPU가 배경에서도 마지막 메인 행렬을 읽는다.
 		const UINT frameOffset = view.background ? 0 : Impl::FrameCBSize;
@@ -2865,7 +3232,9 @@ namespace swc {
 			rc.depthIndex = Impl::BindlessDepth;
 			rc.outputIndex = Impl::BindlessReflectionUav;
 			rc.frameIndex = impl->frameCounter;   // 5단계 — B 방식 난수 씨앗 (프레임마다 다른 방향)
-			rc.skyColor = XMFLOAT3(Impl::kClearColor[0], Impl::kClearColor[1], Impl::kClearColor[2]);   // 하늘([6])이 아직 지우기 색
+			rc.skyIndex = Impl::BindlessSkySrv;                       // 6단계 — 미스 = [6] 하늘 텍스처
+			rc.sunIlluminance = impl->sunIlluminance;                 // 6단계 — 맞은 점의 태양
+			rc.skyIrradianceIndex = Impl::BindlessSkyIrradianceSrv;   // 6단계 — 맞은 점의 주변광
 			memcpy(impl->reflectionCBData, &rc, sizeof(rc));
 
 			// ★ 순서: 힙을 먼저 묶고 루트 시그니처를 묶는다 — CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED 루트 시그니처는
@@ -2973,6 +3342,8 @@ namespace swc {
 		lc.debugMode = impl->debugMode;
 		lc.shadowEnabled = shadowPass ? 1u : 0u;
 		lc.reflectionEnabled = reflectionPass ? 1u : 0u;
+		lc.sunIlluminance = impl->sunIlluminance;   // 6단계
+		lc.skyEnabled = impl->skyValid ? 1u : 0u;   // 6단계 — 하늘 조도 텍스처가 만들어져 있으면 주변광으로 읽는다
 		memcpy(impl->lightingCBData, &lc, sizeof(lc));
 
 		commandList->SetDescriptorHeaps(1, targetHeaps);

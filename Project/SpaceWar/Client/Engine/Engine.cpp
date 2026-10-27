@@ -561,7 +561,7 @@ namespace swc {
 		//  (2026-10-27 렌더 2단계 — 룰렛 무릎점 [ ] 키는 RayTracingParams 에서 룰렛이 빠져 없앴다)
 		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
-			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~10
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 12);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~11 (6단계: 11 주변광)
 		if (input.WasPressed('R'))
 		{
 			RayTracingParams p = renderer.GetRayTracingParams();
@@ -818,6 +818,8 @@ namespace swc {
 		packet.view = RenderView{ };
 		packet.view.viewProj = camera.ViewProj();
 		packet.view.eyePosition = camera.EyePosition();
+		// 2026-10-27 렌더 6단계 — 하늘 · 해 높이의 기준(행성 위 플레이어 자리의 위)
+		packet.view.up = XMFLOAT3(float(controller.Up().x), float(controller.Up().y), float(controller.Up().z));
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);

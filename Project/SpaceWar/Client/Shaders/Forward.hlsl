@@ -30,13 +30,14 @@
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
 
-// GRenderer.cpp 의 FrameConstants 와 같은 배치 (160바이트 — 5단계에서 96 → 160)
+// GRenderer.cpp 의 FrameConstants 와 같은 배치 (176바이트 — 5단계에서 96 → 160, 6단계에서 → 176)
 cbuffer FrameCB : register(b0)
 {
 	float4x4 gViewProj;
 	float3   gEyePos;        float _pad0;
 	float3   gSunDir;        uint  gDebugMode;
 	float4x4 gPrevViewProj;  // 5단계 — 이전 프레임 viewProj (모션 벡터용). 첫 프레임 · 배경 패스는 gViewProj 와 같다
+	float3   gSunIlluminance; float _pad1;   // 6단계 — 땅에 닿는 태양 조도(RGB, 대기 투과 포함). 배경 패스 PSMain 이 쓴다
 };
 
 // ── 인스턴스 (수정방향 3.2, 2026-10-11) ──
@@ -181,11 +182,14 @@ GBufferOut PSGBuffer(VOut i, bool frontFace : SV_IsFrontFace)
 // ── 배경 패스 (forward) ──
 //  메인 패스의 Lighting.hlsl 과 같은 식(Shading.hlsli)으로 태양 · 앰비언트만 계산한다.
 //  배경(먼 행성)에는 RT 그림자 · 반사를 하지 않는다.
+//  ★ 6단계 — 태양은 렌더러가 넘긴 조도(gSunIlluminance). 주변광은 아직 상수(kAmbient) —
+//    배경 패스의 루트 시그니처는 재질 테이블 힙만 묶어서 하늘 조도 텍스처를 못 읽는다(미정: 배경 행성 주변광).
 float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 {
 	const Surface s = SampleSurface(i, frontFace);
 	const float3 V = normalize(gEyePos - i.world);
-	const DirectLighting lit = EvaluateSunAndAmbient(s.albedo, s.N, V, s.rough, s.metallic, gSunDir);
+	const DirectLighting lit = EvaluateSunAndAmbient(s.albedo, s.N, V, s.rough, s.metallic, gSunDir,
+		gSunIlluminance, float3(kAmbient, kAmbient, kAmbient));
 
 	float3 color = lit.diffuse + lit.specular + lit.ambient + s.emissive;
 
@@ -198,6 +202,7 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	case 4:  color = lit.F_env;                        break;   // 환경 프레넬
 	case 8:  color = lit.specular;                     break;   // 태양 하이라이트만
 	case 10: color = float3(s.rough, s.metallic, 0.0); break;   // 거칠기(R) · 금속성(G)
+	case 11: color = float3(kAmbient, kAmbient, kAmbient); break;   // 6단계 — 주변 조도 / π (배경은 상수)
 	case 5: case 6: case 7: case 9:
 		color = float3(0.0, 0.0, 0.0);                          // 5 · 7 · 9 는 메인 패스의 [4b] 반사, 6 은 메인 패스 모션 벡터(배경은 둘 다 없음)
 		break;
