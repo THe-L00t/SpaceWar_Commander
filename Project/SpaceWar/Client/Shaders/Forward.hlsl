@@ -1,5 +1,14 @@
 // ============================================================
-//  Forward.hlsl — 하이브리드 렌더링 골격
+//  Forward.hlsl — 표면 셰이더 (정점 · 재질 샘플링 공용, 픽셀 진입점 둘)
+//
+//  ★ 2026-10-27 파이프라인 1단계 — 진입점이 둘이 됐다
+//    PSGBuffer : 메인 패스. [1] G-buffer 에 표면 정보만 쓴다. 조명은 Lighting.hlsl([5])이 컴퓨트로 한다.
+//    PSMain    : 배경 패스(먼 행성). 예전처럼 forward 로 HDR 컬러에 바로 그린다.
+//                배경 패스는 자기 투영(넓은 near/far)을 쓰고 끝나면 깊이를 지우므로
+//                메인 G-buffer 와 깊이를 섞을 수 없다 — 그래서 forward 로 남겨 둔다.
+//    BRDF · 임시 광원 상수는 Shading.hlsli, G-buffer 배치는 GBuffer.hlsli 로 옮겼다.
+//
+//  (이전 설명 — PSMain 에 그대로 남아 있다)
 //    래스터 : 1차 가시성 + 직접광 (전체 화면)
 //    RT     : 스페큘러 반사만 (인라인 RayQuery, 반사 레이 1개)
 //
@@ -20,6 +29,9 @@
 #ifndef RT_SUPPORTED
 #define RT_SUPPORTED 0
 #endif
+
+#include "Shading.hlsli"
+#include "GBuffer.hlsli"
 
 cbuffer FrameCB : register(b0)
 {
@@ -73,16 +85,6 @@ SamplerState gSampler : register(s0);   // 루트 시그니처의 정적 샘플�
 RaytracingAccelerationStructure gScene : register(t0);
 #endif
 
-// 기존 (albedo * (NdotL*0.85 + 0.15)) 를 그대로 재현하는 값.
-// 한 번에 하나만 바꾼다 — 새로 생기는 건 태양 하이라이트뿐이어야 검증이 쉽다.
-static const float3 kSunColor = float3(0.85, 0.85, 0.85);
-static const float  kAmbient  = 0.15;
-
-// GGX 는 rough 0 에서 분모가 터진다. 거울도 이 바닥값으로 둔다.
-static const float kMinRoughness = 0.02;
-
-static const float kPi = 3.14159265;
-
 struct VIn
 {
 	float3 pos : POSITION;
@@ -125,38 +127,12 @@ float InterleavedGradientNoise(float2 pixel)
 
 // ★ 여기에 태양 원반을 넣으면 안 된다.
 //   반사 레이가 태양을 맞히면 그게 곧 태양 정반사인데,
-//   아래 분석적 GGX 항이 이미 같은 걸 계산한다 → 이중 계산.
+//   분석적 GGX 항(Shading.hlsli)이 이미 같은 걸 계산한다 → 이중 계산.
 //   상용 렌더러가 환경맵에서 태양을 분리해두는 이유가 이것이다.
 float3 SkyColor(float3 dir)
 {
 	float t = saturate(dir.y * 0.5 + 0.5);
 	return lerp(float3(0.30, 0.34, 0.42), float3(0.06, 0.14, 0.38), t);
-}
-
-float3 FresnelSchlick(float3 F0, float cosTheta)
-{
-	return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
-}
-
-// GGX 정반사 BRDF — 직접광(델타 광원)용.
-// 방향광은 입체각이 0이라 적분이 닫힌 형태로 풀린다. 레이로는 명중 확률이 0이다.
-// 패스 트레이서도 NEE 로 이 계산을 한다.
-float3 SpecularGGX(float NdotL, float NdotV, float NdotH, float rough, float3 F)
-{
-	float a  = rough * rough;
-	float a2 = a * a;
-
-	// GGX 법선 분포
-	float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
-	float D = a2 / (kPi * d * d);
-
-	// Smith 가시성 (Schlick-GGX, 직접광용 k)
-	float k  = a * 0.5;
-	float gv = NdotV / (NdotV * (1.0 - k) + k);
-	float gl = NdotL / (NdotL * (1.0 - k) + k);
-	float G  = gv * gl;
-
-	return F * D * G / max(4.0 * NdotV * NdotL, 1e-4);
 }
 
 // 노멀맵을 월드 법선으로 바꾼다.
@@ -184,6 +160,42 @@ float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
 	return normalize(T * nTex.x + B * nTex.y + N * nTex.z);
 }
 
+// ── 재질 샘플링 (2026-10-27) ──
+//  PSMain(배경 forward)과 PSGBuffer(메인 G-buffer)가 같은 표면 값을 써야 하므로 한 함수로 묶었다.
+//  텍스처가 없는 재질에는 흰색·평면 노멀 폴백이 묶여 있어 분기 없이 곱해도 된다.
+struct Surface
+{
+	float3 albedo;
+	float3 N;          // 노멀맵까지 적용한 월드 법선 (뒷면이면 뒤집음)
+	float  rough;      // kMinRoughness 이상으로 자른 값
+	float  metallic;
+	float3 emissive;
+};
+
+Surface SampleSurface(VOut i, bool frontFace)
+{
+	Surface s;
+	float4 baseTex = gBaseColorMap.Sample(gSampler, i.uv);
+	s.albedo   = baseTex.rgb * gBaseColor.rgb * i.col;
+	s.rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).r, kMinRoughness, 1.0);
+	s.metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).r);
+	s.emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
+
+	s.N = normalize(i.nrm);
+	if (!frontFace) s.N = -s.N;
+	if (gHasNormalMap != 0)
+		s.N = ApplyNormalMap(s.N, i.tan, i.uv);
+	return s;
+}
+
+// ── [1] G-buffer (메인 패스) ──
+//  조명 계산 없이 표면 정보만 쓴다. 배치는 GBuffer.hlsli.
+GBufferOut PSGBuffer(VOut i, bool frontFace : SV_IsFrontFace)
+{
+	const Surface s = SampleSurface(i, frontFace);
+	return PackGBuffer(s.albedo, s.N, s.rough, s.metallic, s.emissive);
+}
+
 #if RT_SUPPORTED
 // 반사 레이 1개. 재귀 없음, 히트 셰이딩 없음 — 구조 검증용.
 float3 TraceReflection(float3 P, float3 N, float3 V)
@@ -208,49 +220,22 @@ float3 TraceReflection(float3 P, float3 N, float3 V)
 }
 #endif
 
+// ── 배경 패스 (forward) ──
 float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 {
-	// ── 재질 ────────────────────────────────────────────────
-	//  텍스처가 없는 재질에는 흰색·평면 노멀 폴백이 묶여 있어 분기 없이 곱해도 된다.
-	float4 baseTex  = gBaseColorMap.Sample(gSampler, i.uv);
-	float3 albedo   = baseTex.rgb * gBaseColor.rgb * i.col;
-	float  rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).r, kMinRoughness, 1.0);
-	float  metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).r);
-	float3 emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
-
-	float3 N = normalize(i.nrm);
-	if (!frontFace) N = -N;
-	if (gHasNormalMap != 0)
-		N = ApplyNormalMap(N, i.tan, i.uv);
+	const Surface s = SampleSurface(i, frontFace);
 
 	float3 V = normalize(gEyePos - i.world);
-	float  NdotV = saturate(dot(N, V));
+	float  NdotV = saturate(dot(s.N, V));
 	float  grazing = pow(1.0 - NdotV, 5.0);
 
-	float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
-
-	// ① 태양 (방향광) — 분석적. 델타 광원이라 적분이 닫힌 형태다.
-	float3 L = normalize(-gSunDir);
-	float3 H = normalize(L + V);
-	float  NdotL = saturate(dot(N, L));
-	float  NdotH = saturate(dot(N, H));
-	float  VdotH = saturate(dot(V, H));
-
-	float3 F_dir   = FresnelSchlick(F0, VdotH);          // ★ 반각 기준
-	float3 specSun = SpecularGGX(NdotL, NdotV, NdotH, rough, F_dir) * NdotL * kSunColor;
-	float3 diffSun = (1.0 - F_dir) * (1.0 - metallic) * albedo * NdotL * kSunColor;
-
-	// ② 환경 프레넬 — 완전 거울이므로 반각 H = N, 즉 N·V 기준
-	float3 F  = FresnelSchlick(F0, NdotV);
-	float  w  = max(F.r, max(F.g, F.b));
-
-	// 앰비언트는 반구 전체에서 오는 빛이라 각도 의존 F 로 나누면 안 된다.
-	// (1-F) 로 나누면 grazing 에서 확산이 0이 되어 먼 지형이 색을 잃는다.
-	float3 F_avg   = F0 + (1.0 - F0) * 0.05;
-	float3 diffAmb = (1.0 - F_avg) * (1.0 - metallic) * albedo * kAmbient;
+	// ①② 태양 · 앰비언트 · 환경 프레넬 — 라이팅 컴퓨트와 같은 식(Shading.hlsli)
+	const DirectLighting lit = EvaluateSunAndAmbient(s.albedo, s.N, V, s.rough, s.metallic, gSunDir);
+	float3 F = lit.F_env;
+	float  w = max(F.r, max(F.g, F.b));
 
 	// ③ FGPS F(p) — 예산 신호. 그려지는 값은 건드리지 않고 확률만 밀어올린다.
-	float fp = grazing * saturate(1.0 - rough) * saturate(metallic);
+	float fp = grazing * saturate(1.0 - s.rough) * saturate(s.metallic);
 
 	// ④ 러시안 룰렛 — 임계값 대신 확률로 발사하므로 화면에 경계선이 생기지 않는다.
 	//    w >= knee 구간은 p=1 (확정 발사, 노이즈 0).
@@ -267,7 +252,7 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 		float xi = InterleavedGradientNoise(i.pos.xy + 5.588238 * float(gFrameIndex % 64u));
 		if (xi < p)
 		{
-			reflection = TraceReflection(i.world, N, V) / p;
+			reflection = TraceReflection(i.world, s.N, V) / p;
 			fired = 1.0;
 		}
 	}
@@ -277,13 +262,13 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	//    태양과 환경은 같은 정반사 로브로 들어오는 다른 빛이므로 서로를 약화시키지 않는다.
 	//    ★ 확산 몫(kd)이 정반사에 곱해지지 않는다. 곱하면 프레넬 분배를 두 번 적용하는 셈이다.
 	float3 specEnv = F * reflection;
-	float3 color = diffSun + specSun + diffAmb + specEnv + emissive;
-	//             └─ 확산 ─┘  └──── 정반사 (둘 다 F 를 품음) ────┘  └ 자체발광 ┘
+	float3 color = lit.diffuse + lit.specular + lit.ambient + specEnv + s.emissive;
+	//             └── 확산 ──┘  └──── 정반사 (둘 다 F 를 품음) ────┘  └ 자체발광 ┘
 
 	switch (gDebugMode)
 	{
-	case 1: color = albedo;              break;   // albedo (기본 색상 텍스처 포함)
-	case 2: color = N * 0.5 + 0.5;       break;   // world normal (노멀맵 적용 후)
+	case 1: color = s.albedo;            break;   // albedo (기본 색상 텍스처 포함)
+	case 2: color = s.N * 0.5 + 0.5;     break;   // world normal (노멀맵 적용 후)
 	case 3: color = fp.xxx;              break;   // F(p) 예산 신호
 	case 4: color = F;                   break;   // 환경 프레넬 F_env (반사 배분 비율)
 	case 5: color = reflection;          break;   // 반사 원본 (F 곱하기 전)
@@ -291,9 +276,9 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	case 7: color = fired > 0.5 ? float3(1.0, 0.25, 0.0)   // 실제 발사 패턴
 	                            : float3(0.0, 0.08, 0.12);
 		break;
-	case 8: color = specSun;             break;   // 태양 하이라이트만
+	case 8: color = lit.specular;        break;   // 태양 하이라이트만
 	case 9: color = specEnv;             break;   // 환경 반사 몫만 (F 곱한 뒤)
-	case 10: color = float3(rough, metallic, 0.0); break;   // 거칠기(R) · 금속성(G) — 재질 확인용
+	case 10: color = float3(s.rough, s.metallic, 0.0); break;   // 거칠기(R) · 금속성(G) — 재질 확인용
 	}
 
 	return float4(color, 1.0);
