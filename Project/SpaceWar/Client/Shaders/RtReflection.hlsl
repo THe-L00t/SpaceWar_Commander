@@ -19,6 +19,10 @@
 //  ★ 2026-10-27 렌더 6단계 — 하늘
 //    · Miss 는 [6] 하늘 텍스처(Sky.hlsli)를 레이 방향으로 읽는다(예전: 지우기 색 상수).
 //    · ClosestHit 의 태양은 조도(gSunIlluminance), 주변광은 하늘 조도 텍스처(맞은 점 법선 방향) — 메인 라이팅과 같은 단위.
+//  ★ 2026-10-27 렌더 11단계 — [3] 분류
+//    GRenderer 가 ExecuteIndirect 로 «레이가 필요한 8×8 타일 수 × 64» 만큼만 RayGen 을 띄운다(ReflectionClassify.hlsl).
+//    RayGen 은 1차원 순번 → 타일 목록 칸(순번 / 64) · 타일 안 자리(순번 % 64) → 픽셀. 고르지 않은 타일의 0 은 분류가 이미 썼다.
+//    gTileListIndex == kNoTileList 면 예전처럼 DispatchRays(화면 크기) · 픽셀 = DispatchRaysIndex().xy.
 // ============================================================
 
 #include "Shading.hlsli"
@@ -26,6 +30,7 @@
 #include "RtSurface.hlsli"   // 7단계 — FetchHitSurface (RtCommon.hlsli 포함)
 #include "Sky.hlsli"
 #include "Probes.hlsli"      // 7단계 — [4c] GI 프로브 샘플
+#include "ReflectionTiles.hlsli"   // 11단계 — [3] 분류와 같은 «레이가 필요한가» 판정 · 타일 번호 규칙
 
 // GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (224바이트 — 7단계에서 144 → 224)
 cbuffer ReflectionCB : register(b0)
@@ -37,7 +42,8 @@ cbuffer ReflectionCB : register(b0)
 	uint     gDepthIndex;    uint  gOutputIndex;     uint  gFrameIndex;   uint gSkyIndex;   // 5단계 난수 씨앗 · 6단계 하늘 텍스처
 	float3   gSunIlluminance; uint gSkyIrradianceIndex;   // 6단계 — 태양 조도(RGB) · 하늘 조도 텍스처
 	ProbeVolume gProbeVolume;                             // 7단계 — [4c] GI 프로브 격자 (64 B)
-	uint     gProbeIrradianceIndex; uint gProbeDistanceIndex; uint gProbeStateIndex; uint _pad7;
+	uint     gProbeIrradianceIndex; uint gProbeDistanceIndex; uint gProbeStateIndex;
+	uint     gTileListIndex;   // 11단계 — [3] 분류 타일 목록 SRV (kNoTileList 면 화면 전체 디스패치)
 };
 
 RaytracingAccelerationStructure gScene       : register(t0);   // TLAS (루트 SRV)
@@ -71,24 +77,34 @@ float3 ReflectionDirection(float3 N, float3 V, float rough, float2 u)
 [shader("raygeneration")]
 void RayGen()
 {
-	const uint2 pixel = DispatchRaysIndex().xy;
+	// 11단계 — [3] 분류 타일 목록이 있으면 1차원 순번 → 타일 → 픽셀
+	uint2 pixel;
+	if (gTileListIndex != kNoTileList)
+	{
+		StructuredBuffer<uint> tiles = ResourceDescriptorHeap[gTileListIndex];
+		const uint ray = DispatchRaysIndex().x;
+		pixel = ReflectionTilePixel(tiles[ray / kReflectionTilePixels], ray % kReflectionTilePixels);
+		if (any(pixel >= gSize))
+			return;   // 오른쪽 · 아래 끝 타일의 화면 밖 자리
+	}
+	else
+	{
+		pixel = DispatchRaysIndex().xy;
+	}
 	RWTexture2D<float4> output      = ResourceDescriptorHeap[gOutputIndex];
 	Texture2D<float>    depthTex    = ResourceDescriptorHeap[gDepthIndex];
 	Texture2D<float2>   normalTex   = ResourceDescriptorHeap[gNormalIndex];
 	Texture2D<float4>   materialTex = ResourceDescriptorHeap[gMaterialIndex];
 
+	// 메인 패스 물체 없음(깊이 1) · 거친 면 → 레이 없음(라이팅은 반사 0). 판정은 [3] 분류와 같은 함수(ReflectionTiles.hlsli).
 	const float depth = depthTex[pixel];
-	if (depth >= 1.0)
+	const float rawRough = materialTex[pixel].r;
+	if (!NeedsReflectionRay(depth, rawRough, gMaxRoughness))
 	{
-		output[pixel] = float4(0.0, 0.0, 0.0, 0.0);   // 메인 패스 물체 없음
+		output[pixel] = float4(0.0, 0.0, 0.0, 0.0);
 		return;
 	}
-	const float rough = max(materialTex[pixel].r, kMinRoughness);
-	if (rough >= gMaxRoughness)
-	{
-		output[pixel] = float4(0.0, 0.0, 0.0, 0.0);   // 거친 면 — 레이 없음(라이팅은 반사 0)
-		return;
-	}
+	const float rough = max(rawRough, kMinRoughness);
 
 	const float3 P   = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj);
 	const float3 N   = DecodeNormalOct(normalTex[pixel]);

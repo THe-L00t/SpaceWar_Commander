@@ -423,6 +423,12 @@
     <None Include="Shaders\PostProcess.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\ReflectionTiles.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ReflectionClassify.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">
