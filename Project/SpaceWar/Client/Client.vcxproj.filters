@@ -234,5 +234,8 @@
     <None Include="Shaders\ProbeGI.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\AO.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
 </Project>

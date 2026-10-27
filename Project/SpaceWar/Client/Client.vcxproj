@@ -123,6 +123,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <None Include="Shaders\RtSurface.hlsli" />
     <None Include="Shaders\Probes.hlsli" />
     <None Include="Shaders\ProbeGI.hlsl" />
+    <None Include="Shaders\AO.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">

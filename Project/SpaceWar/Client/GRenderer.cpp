@@ -237,7 +237,8 @@ namespace swc {
 		uint32_t   debugMode;
 		uint32_t   shadowEnabled;       // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
 		uint32_t   reflectionEnabled;   // 2026-10-27 4단계 — 1 이면 반사 텍스처를 읽는다(이번 프레임에 [4b] 가 돌았다)
-		uint32_t   pad3[3];
+		uint32_t   aoEnabled;           // 2026-10-27 8단계 — 1 이면 AO 텍스처(t13)를 읽는다(이번 프레임에 [2] 가 돌았다)
+		uint32_t   pad3[2];
 		XMFLOAT3   sunIlluminance;      // 2026-10-27 6단계 — 땅에 닿는 태양 조도(RGB)
 		uint32_t   skyEnabled;          // 2026-10-27 6단계 — 1 이면 하늘 조도 텍스처(t9)를 주변광으로 읽는다
 		struct ProbeVolumeGpu
@@ -306,6 +307,21 @@ namespace swc {
 		uint32_t   skySrv, skyIrradianceSrv, probesThisFrame;  float maxDistance;
 	};
 	static_assert(sizeof(GiConstants) == 192, "GiCB 는 192바이트");
+
+	// AO.hlsl 의 AoCB 와 같은 순서 · 크기 (2026-10-27 렌더 8단계, [2] AO) — 세 진입점이 같은 상수를 쓴다
+	struct AoConstants
+	{
+		XMFLOAT4X4 viewProj;          // 월드 → 클립 (화면 공간 추적, 전치해서 올림)
+		XMFLOAT4X4 invViewProj;
+		XMFLOAT4X4 prevInvViewProj;
+		XMFLOAT3   eyePos;     float radius;       // AO 반경(m)
+		uint32_t   width, height, frameIndex, rtEnabled;
+		uint32_t   depthIndex, normalIndex, motionIndex, prevDepthIndex;   // ↓ 바인드리스 번호
+		uint32_t   prevNormalIndex, rawUav, rawSrv, historyInSrv;
+		uint32_t   historyOutUav, historyOutSrv, outputUav, historyValid;
+		float      thickness;  uint32_t pad0[3];   // 화면 공간 추적에서 «깊이 표면 바로 뒤» 로 볼 두께(m)
+	};
+	static_assert(sizeof(AoConstants) == 288, "AoCB 는 288바이트");
 
 	// Sky.hlsl 의 SkyCB 와 같은 순서 · 크기 (2026-10-27 렌더 6단계, [6] 하늘) — 세 진입점이 같은 상수를 쓴다
 	struct SkyConstants
@@ -446,6 +462,11 @@ namespace swc {
 			BindlessProbeIrradianceSrv = 22, BindlessProbeIrradianceUav = 23,   // 조도 아틀라스
 			BindlessProbeDistanceSrv = 24, BindlessProbeDistanceUav = 25,       // 거리 아틀라스
 			BindlessProbeStateSrv = 26, BindlessProbeStateUav = 27,             // 상태 버퍼 (int4 × 프로브 수)
+			// 8단계 — [2] AO
+			BindlessAoRawSrv = 28, BindlessAoRawUav = 29,                       // 레이 결과 (가시성, RT 썼나)
+			BindlessAoHistorySrv0 = 30, BindlessAoHistoryUav0 = 31,             // 이력 0번 (AO, 누적 수)
+			BindlessAoHistorySrv1 = 32, BindlessAoHistoryUav1 = 33,             // 이력 1번
+			BindlessAoOutputSrv = 34, BindlessAoOutputUav = 35,                 // 노이즈 제거 결과 = 라이팅 t13
 			// 앞 64칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64 — 뒤 단계 GI · AO · 후처리 자원이 들어온다).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
 			BindlessReserved = 64 };
@@ -588,14 +609,15 @@ namespace swc {
 			SlotReflectionRawSrv = 11, // 5단계 — 라이팅 t8 (노이즈 제거 전 반사, 디버그 뷰 7)
 			SlotSkyIrradianceSrv = 12, // 6단계 — 라이팅 t9 ([6] 하늘 조도 / π — 주변광)
 			SlotProbeIrradianceSrv = 13, SlotProbeDistanceSrv = 14, SlotProbeStateSrv = 15,   // 7단계 — 라이팅 t10 ~ t12 ([4c] GI 프로브)
-			TargetSlotCount = 16 };
+			SlotAoSrv = 16,            // 8단계 — 라이팅 t13 ([2] AO)
+			TargetSlotCount = 17 };
 		// static_assert 메시지는 좁은 문자열(CP949)이라 «—» 같은 문자를 쓰면 C4566 경고가 난다 — 쓰지 않는다.
 		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤: 라이팅 테이블 t5");
 		static_assert(SlotReflectionSrv == SlotShadowSrv + 1 && SlotReflectionRawSrv == SlotShadowSrv + 2 &&
 			SlotSkyIrradianceSrv == SlotShadowSrv + 3 && SlotProbeIrradianceSrv == SlotShadowSrv + 4 &&
-			SlotProbeDistanceSrv == SlotShadowSrv + 5 && SlotProbeStateSrv == SlotShadowSrv + 6,
-			"라이팅 테이블 t6 부터 SRV 는 붙어 있어야 한다: 그림자 / 반사 / 제거 전 반사 / 하늘 조도 / 프로브 3개");
-		static constexpr UINT kLightingTailSrvCount = SlotProbeStateSrv - SlotShadowSrv + 1;   // t6 부터 이어지는 SRV 수
+			SlotProbeDistanceSrv == SlotShadowSrv + 5 && SlotProbeStateSrv == SlotShadowSrv + 6 && SlotAoSrv == SlotShadowSrv + 7,
+			"라이팅 테이블 t6 부터 SRV 는 붙어 있어야 한다: 그림자 / 반사 / 제거 전 반사 / 하늘 조도 / 프로브 3개 / AO");
+		static constexpr UINT kLightingTailSrvCount = SlotAoSrv - SlotShadowSrv + 1;   // t6 부터 이어지는 SRV 수 (t6 ~ t13)
 
 		// ── [4a] RT 그림자 (2026-10-27 렌더 2단계) ──
 		//  그림자 마스크: 픽셀마다 태양 가시도 rgb(투과 물체를 지나면 연하게). RtShadow.hlsl 이 쓰고 Lighting.hlsl 이 읽는다.
@@ -665,6 +687,24 @@ namespace swc {
 		uint32_t                    probeGeneration = 0;
 		uint32_t                    probeCursor = 0;              // 다음 프레임에 갱신할 첫 저장 번호
 		ProbeVolumeGpu              probeVolume{};                // 이번 프레임 라이팅 · 반사가 쓸 격자 (enabled 0 = 못 씀)
+
+		// ── [2] AO (2026-10-27 렌더 8단계, AO.hlsl) ──
+		//  화면 공간으로 레이를 따라가다 «모름» 인 레이만 RayQuery — 사용자 생각(«기본 SSAO + 화면에 없는 부분만 RTAO»)을 레이 단위로.
+		//  레이 1개/픽셀 → 시간 누적 + 공간 필터. 바인드리스 장치에서만(RT 가 없으면 순수 SSAO 로 돈다).
+		static constexpr float kAoRadius = 1.5f;      // AO 반경(m) — 임시값(미정)
+		static constexpr float kAoThickness = 0.5f;   // 깊이 표면 뒤 이 두께 안이면 «가려짐» — 임시값(미정)
+		static constexpr DXGI_FORMAT kAoRawFormat = DXGI_FORMAT_R16G16_FLOAT;   // (가시성, RT 썼나) · 이력 (AO, 누적 수)
+		static constexpr DXGI_FORMAT kAoFormat = DXGI_FORMAT_R16_FLOAT;
+		RenderTarget                aoRaw;
+		RenderTarget                aoHistory[2];
+		RenderTarget                aoOutput;          // 라이팅 t13
+		ComPtr<ID3D12PipelineState> aoTracePso;
+		ComPtr<ID3D12PipelineState> aoTemporalPso;
+		ComPtr<ID3D12PipelineState> aoSpatialPso;
+		ComPtr<ID3D12Resource>      aoCB;              // UPLOAD, 영속 매핑 (288 B → 512 B 칸)
+		uint8_t*                    aoCBData = nullptr;
+		uint32_t                    aoHistoryIndex = 0;
+		bool                        aoHistoryValid = false;
 
 		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
 		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
@@ -1567,6 +1607,24 @@ namespace swc {
 					return false;
 				}
 				impl->probeStates.state = D3D12_RESOURCE_STATE_COMMON;
+				// [2] AO 텍스처 (2026-10-27 렌더 8단계) — 처음 상태 «읽기»(라이팅 t13 이 항상 가리킨다)
+				for (Impl::RenderTarget* aoTarget : { &impl->aoRaw, &impl->aoHistory[0], &impl->aoHistory[1] })
+				{
+					if (!createSized(width, height, Impl::kAoRawFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+							Impl::kSkyReadState, *aoTarget))
+					{
+						impl->status = L"AO 텍스처 생성 실패.";
+						return false;
+					}
+				}
+				if (!createSized(width, height, Impl::kAoFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+						Impl::kSkyReadState, impl->aoOutput))
+				{
+					impl->status = L"AO 텍스처 생성 실패.";
+					return false;
+				}
+				createSrv(impl->aoOutput.resource.Get(), Impl::kAoFormat, Impl::SlotAoSrv);
+
 				createSrv(impl->probeIrradiance.resource.Get(), Impl::kProbeIrradianceFormat, Impl::SlotProbeIrradianceSrv);
 				createSrv(impl->probeDistance.resource.Get(), Impl::kProbeDistanceFormat, Impl::SlotProbeDistanceSrv);
 				D3D12_SHADER_RESOURCE_VIEW_DESC stateSrv = {};
@@ -1635,6 +1693,16 @@ namespace swc {
 					bindlessUav(impl->skyIrradiance.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyIrradianceUav);
 					bindlessSrv(impl->skyMultiScattering.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyMsSrv);
 					bindlessUav(impl->skyMultiScattering.resource.Get(), Impl::kSkyFormat, Impl::BindlessSkyMsUav);
+
+					// 8단계 — [2] AO (BindlessSlot 28 ~ 35)
+					bindlessSrv(impl->aoRaw.resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoRawSrv);
+					bindlessUav(impl->aoRaw.resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoRawUav);
+					bindlessSrv(impl->aoHistory[0].resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoHistorySrv0);
+					bindlessUav(impl->aoHistory[0].resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoHistoryUav0);
+					bindlessSrv(impl->aoHistory[1].resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoHistorySrv1);
+					bindlessUav(impl->aoHistory[1].resource.Get(), Impl::kAoRawFormat, Impl::BindlessAoHistoryUav1);
+					bindlessSrv(impl->aoOutput.resource.Get(), Impl::kAoFormat, Impl::BindlessAoOutputSrv);
+					bindlessUav(impl->aoOutput.resource.Get(), Impl::kAoFormat, Impl::BindlessAoOutputUav);
 
 					// 7단계 — [4c] GI 프로브 (BindlessSlot 20 ~ 27)
 					bindlessSrv(impl->probeRayData.resource.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, Impl::BindlessProbeRayDataSrv);
@@ -1760,6 +1828,15 @@ namespace swc {
 				FAILED(impl->giCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->giCBData))))
 			{
 				impl->status = L"하늘 · GI 상수 버퍼 생성 실패.";
+				return false;
+			}
+			// 8단계 — [2] AO 상수 버퍼 (288 B → 512 B, CBV 크기는 256 배수)
+			D3D12_RESOURCE_DESC aoDesc = BufferDesc(512);
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &aoDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->aoCB))) ||
+				FAILED(impl->aoCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->aoCBData))))
+			{
+				impl->status = L"AO 상수 버퍼 생성 실패.";
 				return false;
 			}
 		}
@@ -2414,21 +2491,35 @@ namespace swc {
 				ok = false;
 			}
 
-			// 셰이더 파일 · 진입점 → cs_6_6 컴퓨트 PSO (공용 루트 시그니처)
-			auto createCompute = [&](const wchar_t* file, const wchar_t* entry, ComPtr<ID3D12PipelineState>& out) -> bool
+			// 셰이더 파일 · 진입점 → cs_6_6 컴퓨트 PSO (공용 루트 시그니처). define 은 L"이름=값" 하나(선택).
+			//  (8단계 — 컴파일 · PSO 생성에 걸린 시간을 출력한다. Debug(-Od) 에서 드라이버 PSO 생성이 아주 느린 셰이더를 찾으려고)
+			auto createCompute = [&](const wchar_t* file, const wchar_t* entry, ComPtr<ID3D12PipelineState>& out,
+				const wchar_t* define = nullptr) -> bool
 			{
+				LARGE_INTEGER frequency, t0, t1, t2;
+				QueryPerformanceFrequency(&frequency);
+				QueryPerformanceCounter(&t0);
 				std::string log;
-				const std::vector<uint8_t> cs = impl->shaderCompiler.CompileFromFile(ShaderPath(file).c_str(), entry, L"cs_6_6", nullptr, 0, log);
+				const std::vector<uint8_t> cs = impl->shaderCompiler.CompileFromFile(ShaderPath(file).c_str(), entry, L"cs_6_6",
+					define ? &define : nullptr, define ? 1 : 0, log);
 				if (cs.empty())
 				{
 					OutputDebugStringW((std::wstring(L"[") + file + L" " + entry + L"] 컴파일 실패\n").c_str());
 					OutputDebugStringA((log + "\n").c_str());
 					return false;
 				}
+				QueryPerformanceCounter(&t1);
 				D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
 				desc.pRootSignature = impl->computeRootSig.Get();
 				desc.CS = { cs.data(), cs.size() };
-				return SUCCEEDED(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(out.ReleaseAndGetAddressOf())));
+				const bool created = SUCCEEDED(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(out.ReleaseAndGetAddressOf())));
+				QueryPerformanceCounter(&t2);
+				wchar_t line[192];
+				swprintf_s(line, L"[GRenderer]   %s %s — 컴파일 %.0f ms · PSO %.0f ms (DXIL %zu B)\n", file, entry,
+					double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(frequency.QuadPart),
+					double(t2.QuadPart - t1.QuadPart) * 1000.0 / double(frequency.QuadPart), cs.size());
+				OutputDebugStringW(line);
+				return created;
 			};
 
 			// [6] 하늘 — 세 진입점 (Sky.hlsl)
@@ -2469,6 +2560,30 @@ namespace swc {
 				else
 				{
 					OutputDebugStringW(L"[GRenderer] [4c] GI 프로브 파이프라인 준비 (DDGI 32x8x32 · 4 m · 프레임당 2048개 x 64 레이)\n");
+				}
+			}
+
+			// [2] AO — 세 진입점 (AO.hlsl). RT 가 없는 장치는 RayQuery 를 빼고 컴파일한다(순수 SSAO).
+			if (ok)
+			{
+				const wchar_t* aoDefine = impl->rtSupported ? L"AO_RAYQUERY=1" : L"AO_RAYQUERY=0";
+				const bool aoOk =
+					createCompute(L"AO.hlsl", L"CSAoTrace", impl->aoTracePso, aoDefine) &&
+					createCompute(L"AO.hlsl", L"CSAoTemporal", impl->aoTemporalPso, aoDefine) &&
+					createCompute(L"AO.hlsl", L"CSAoSpatial", impl->aoSpatialPso, aoDefine);
+				if (!aoOk)
+				{
+					impl->aoTracePso.Reset();
+					impl->aoTemporalPso.Reset();
+					impl->aoSpatialPso.Reset();
+					impl->status += L"  (AO 파이프라인 생성 실패 — AO 없이)";
+					OutputDebugStringW(L"[GRenderer] [2] AO 파이프라인 생성 실패 — AO 없이\n");
+				}
+				else
+				{
+					OutputDebugStringW(impl->rtSupported
+						? L"[GRenderer] [2] AO 파이프라인 준비 (화면 공간 추적 + 모르는 레이만 RayQuery, 반경 1.5 m)\n"
+						: L"[GRenderer] [2] AO 파이프라인 준비 (RT 없음 — 화면 공간만)\n");
 				}
 			}
 		}
@@ -3583,8 +3698,81 @@ namespace swc {
 			commandList->SetPipelineState(impl->denoiseSpatialPso.Get());
 			commandList->Dispatch(groupsX, groupsY, 1);
 
-			// 이번 프레임 깊이 · 법선을 «이전 프레임 사본» 으로 떠 둔다 — 다음 프레임 시간 누적이 같은 표면인지 볼 때 쓴다.
-			//  (이번 시간 누적은 위에서 이미 지난 프레임 사본을 읽었다 — 순서가 중요하다)
+			impl->historyIndex = prev;   // 다음 프레임은 반대쪽에 쓴다
+			// (8단계 — 이전 깊이 · 법선 사본 뜨기는 아래 [2] AO 뒤로 옮겼다. AO 시간 누적도 같은 사본을 읽는다)
+		}
+		// 반사가 안 돈 프레임이 끼면 이력 · 사본이 끊긴다 → 다음에 돌 때 새로 시작한다.
+		impl->historyValid = reflectionPass;
+
+		// ── [2] AO — 화면 공간 추적 + 모르는 레이만 RayQuery (AO.hlsl, 2026-10-27 렌더 8단계) ──
+		//  ① 레이(픽셀마다 1개) → ② 시간 누적(이력 두 장 번갈아) → ③ 공간 필터 → AO 텍스처(라이팅 t13).
+		//  RT 가 꺼져 있으면(R 키 · 미지원 · 인스턴스 0) «모름» 레이를 안 가려짐으로 본다 = 순수 SSAO. 바인드리스만 있으면 돈다.
+		const bool aoPass = impl->aoTracePso && impl->bindlessHeap && !impl->bindlessOverflow;
+		if (aoPass)
+		{
+			const uint32_t aoCur  = impl->aoHistoryIndex;
+			const uint32_t aoPrev = 1u - aoCur;
+			const bool aoRt = rtActive && impl->accel.InstanceCount() > 0;
+
+			AoConstants ac = {};
+			XMStoreFloat4x4(&ac.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
+			XMStoreFloat4x4(&ac.invViewProj, invViewProj);
+			XMStoreFloat4x4(&ac.prevInvViewProj, XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&prevViewProj))));
+			ac.eyePos = view.eyePosition;
+			ac.radius = Impl::kAoRadius;
+			ac.width = impl->width;
+			ac.height = impl->height;
+			ac.frameIndex = impl->frameCounter;
+			ac.rtEnabled = aoRt ? 1u : 0u;
+			ac.depthIndex = Impl::BindlessDepth;
+			ac.normalIndex = Impl::BindlessGbNormal;
+			ac.motionIndex = Impl::BindlessMotion;
+			ac.prevDepthIndex = Impl::BindlessPrevDepth;
+			ac.prevNormalIndex = Impl::BindlessPrevNormal;
+			ac.rawUav = Impl::BindlessAoRawUav;
+			ac.rawSrv = Impl::BindlessAoRawSrv;
+			ac.historyInSrv  = aoPrev == 0 ? Impl::BindlessAoHistorySrv0 : Impl::BindlessAoHistorySrv1;
+			ac.historyOutUav = aoCur == 0 ? Impl::BindlessAoHistoryUav0 : Impl::BindlessAoHistoryUav1;
+			ac.historyOutSrv = aoCur == 0 ? Impl::BindlessAoHistorySrv0 : Impl::BindlessAoHistorySrv1;
+			ac.outputUav = Impl::BindlessAoOutputUav;
+			ac.historyValid = impl->aoHistoryValid ? 1u : 0u;
+			ac.thickness = Impl::kAoThickness;
+			memcpy(impl->aoCBData, &ac, sizeof(ac));
+
+			ID3D12DescriptorHeap* bindlessHeaps[] = { impl->bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, bindlessHeaps);
+			commandList->SetComputeRootSignature(impl->computeRootSig.Get());
+			commandList->SetComputeRootConstantBufferView(0, impl->aoCB->GetGPUVirtualAddress());
+			// TLAS 루트 SRV — RT 장치면 늘 묶는다(셰이더에 RayQuery 코드가 있으면 안 돌아도 묶여 있어야 한다). 실제로 쏘는지는 rtEnabled.
+			if (impl->rtSupported)
+				commandList->SetComputeRootShaderResourceView(1, impl->accel.TlasAddress());
+
+			impl->TransitionTargets({ { &impl->aoRaw, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			commandList->SetPipelineState(impl->aoTracePso.Get());
+			commandList->Dispatch(groupsX, groupsY, 1);
+
+			impl->TransitionTargets({
+				{ &impl->aoRaw,               Impl::kSkyReadState },
+				{ &impl->aoHistory[aoCur],    D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+				{ &impl->aoHistory[aoPrev],   Impl::kSkyReadState } });
+			commandList->SetPipelineState(impl->aoTemporalPso.Get());
+			commandList->Dispatch(groupsX, groupsY, 1);
+
+			impl->TransitionTargets({
+				{ &impl->aoHistory[aoCur], Impl::kSkyReadState },
+				{ &impl->aoOutput,         D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			commandList->SetPipelineState(impl->aoSpatialPso.Get());
+			commandList->Dispatch(groupsX, groupsY, 1);
+			impl->TransitionTargets({ { &impl->aoOutput, Impl::kSkyReadState } });
+
+			impl->aoHistoryIndex = aoPrev;
+		}
+		impl->aoHistoryValid = aoPass;
+
+		// ── 이번 프레임 깊이 · 법선을 «이전 프레임 사본» 으로 떠 둔다 (5단계 [4d] · 8단계 [2] 의 시간 누적이 같이 쓴다) ──
+		//  다음 프레임 시간 누적이 «같은 표면인지» 볼 때 쓴다. 이번 시간 누적들은 위에서 이미 지난 프레임 사본을 읽었다 — 순서가 중요하다.
+		if (reflectionPass || aoPass)
+		{
 			impl->TransitionTargets({
 				{ &impl->depth,                     D3D12_RESOURCE_STATE_COPY_SOURCE },
 				{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_COPY_SOURCE },
@@ -3597,11 +3785,7 @@ namespace swc {
 				{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 				{ &impl->prevDepth,                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 				{ &impl->prevNormal,                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
-
-			impl->historyIndex = prev;   // 다음 프레임은 반대쪽에 쓴다
 		}
-		// 반사가 안 돈 프레임이 끼면 이력 · 사본이 끊긴다 → 다음에 돌 때 새로 시작한다.
-		impl->historyValid = reflectionPass;
 
 		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이 · 그림자 마스크 · 반사 텍스처를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
 		//  (5단계 — t4 = GB4 모션 벡터(디버그), t7 = [4d] 결과, t8 = 노이즈 제거 전 반사(디버그))
@@ -3620,6 +3804,7 @@ namespace swc {
 		lc.debugMode = impl->debugMode;
 		lc.shadowEnabled = shadowPass ? 1u : 0u;
 		lc.reflectionEnabled = reflectionPass ? 1u : 0u;
+		lc.aoEnabled = aoPass ? 1u : 0u;            // 8단계
 		lc.sunIlluminance = impl->sunIlluminance;   // 6단계
 		lc.skyEnabled = impl->skyValid ? 1u : 0u;   // 6단계 — 하늘 조도 텍스처가 만들어져 있으면 주변광으로 읽는다
 		lc.probeVolume = impl->probeVolume;         // 7단계 — [4c] GI 프로브 (enabled 0 이면 하늘 조도)
