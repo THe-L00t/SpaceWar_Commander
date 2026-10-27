@@ -12,6 +12,8 @@
 #include <limits>
 #include <algorithm>
 #include <array>
+#include <initializer_list>
+#include <utility>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -186,6 +188,19 @@ namespace swc {
 		float      pad2[3];
 	};
 
+	// Lighting.hlsl 의 LightingCB 와 같은 순서 · 크기 (2026-10-27 파이프라인 1단계, [5] 라이팅 합성)
+	struct LightingConstants
+	{
+		XMFLOAT4X4 invViewProj;   // viewProj 의 역행렬. FrameConstants::viewProj 처럼 전치해서 올린다
+		XMFLOAT3   eyePos;    float pad0;
+		XMFLOAT3   sunDir;    float pad1;
+		uint32_t   width;
+		uint32_t   height;
+		uint32_t   debugMode;
+		uint32_t   pad2;
+	};
+	static_assert(sizeof(LightingConstants) == 112, "LightingCB 는 112바이트");
+
 	// Forward.hlsl의 MaterialCB와 16바이트 단위로 맞춘다.
 	struct MaterialConstants
 	{
@@ -266,16 +281,62 @@ namespace swc {
 		ComPtr<ID3D12DescriptorHeap>       dsvHeap;
 		ComPtr<ID3D12DescriptorHeap>       materialHeap;
 		ComPtr<ID3D12Resource>             renderTargets[FrameCount];
-		ComPtr<ID3D12Resource>             depthStencil;
 		ComPtr<ID3D12CommandAllocator>     commandAllocator;
 		ComPtr<ID3D12GraphicsCommandList4> commandList;
 		ComPtr<ID3D12RootSignature>        rootSig;
+		// forward PSO 4종 — 2026-10-27 부터 배경 패스(먼 행성)만 쓴다. 메인 패스는 gbufferPsos.
 		ComPtr<ID3D12PipelineState>        pso;
 		ComPtr<ID3D12PipelineState>        doubleSidedPso;
 		ComPtr<ID3D12PipelineState>        mirroredPso;
 		ComPtr<ID3D12PipelineState>        mirroredDoubleSidedPso;
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
+
+		// ── 렌더 타깃 (2026-10-27 파이프라인 1단계) ──
+		//  장면은 백버퍼가 아니라 HDR 컬러에 그리고, 마지막 [8] 에서 백버퍼로 옮긴다.
+		//  메인 패스는 [1] G-buffer 에 표면 정보만 쓰고, [5] 라이팅 컴퓨트가 HDR 컬러에 조명 결과를 쓴다.
+		//  타깃마다 «지금 상태» 를 같이 들고 다닌다 — 패스가 늘어도 배리어를 한 곳(TransitionTargets)에서 맞춘다.
+		struct RenderTarget
+		{
+			ComPtr<ID3D12Resource> resource;
+			D3D12_RESOURCE_STATES  state = D3D12_RESOURCE_STATE_COMMON;
+		};
+		enum GBufferSlot : UINT { GbAlbedo, GbNormal, GbMaterial, GbEmissive, GbCount };
+		// Shaders/GBuffer.hlsli 의 표와 순서 · 형식이 같아야 한다.
+		static constexpr DXGI_FORMAT kGBufferFormats[GbCount] = {
+			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 (a 안 씀)
+			DXGI_FORMAT_R16G16_SNORM,          // GB1 월드 법선 — 팔면체 인코딩
+			DXGI_FORMAT_R8G8B8A8_UNORM,        // GB2 r 거칠기 · g 금속성
+			DXGI_FORMAT_R11G11B10_FLOAT };     // GB3 자체발광
+		static constexpr DXGI_FORMAT kHdrFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		static constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+		static constexpr float kClearColor[4] = { 0.05f, 0.08f, 0.14f, 1.0f };   // 예전 백버퍼 지우기 색 그대로
+
+		// RTV 힙: 0~1 백버퍼, 2 HDR, 3~6 G-buffer. G-buffer 4장은 붙어 있어야 OMSetRenderTargets 한 번으로 묶인다.
+		static constexpr UINT kRtvHdr = FrameCount;
+		static constexpr UINT kRtvGBuffer = FrameCount + 1;
+		static constexpr UINT kRtvCount = FrameCount + 1 + GbCount;
+
+		// 타깃 SRV·UAV 힙(셰이더 가시).
+		//  라이팅 테이블 = 슬롯 0~5 (SRV t0~t3 G-buffer, t4 깊이, UAV u0 HDR), 톤맵 테이블 = 슬롯 6 (SRV t0 HDR).
+		enum TargetSlot : UINT { SlotGBuffer = 0, SlotDepth = 4, SlotHdrUav = 5, SlotHdrSrv = 6, TargetSlotCount = 7 };
+		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤 — 라이팅 테이블 t4");
+
+		RenderTarget hdr;                  // HDR 장면 컬러: 배경 forward 가 그리고, 라이팅이 쓰고, 톤맵이 읽는다
+		RenderTarget gbuffer[GbCount];
+		RenderTarget depth;                // 자원 R32_TYPELESS — DSV 는 D32_FLOAT, 컴퓨트 SRV 는 R32_FLOAT
+		ComPtr<ID3D12DescriptorHeap> targetHeap;
+		UINT targetDescriptorSize = 0;
+
+		ComPtr<ID3D12PipelineState> gbufferPsos[4];   // Batch::pso 순서: 0 기본 · 1 양면 · 2 반전 · 3 반전 양면
+		ComPtr<ID3D12RootSignature> lightingRootSig;
+		ComPtr<ID3D12PipelineState> lightingPso;
+		ComPtr<ID3D12Resource>      lightingCB;       // UPLOAD, 영속 매핑. 프레임마다 GPU 를 기다리므로 한 벌이면 된다
+		uint8_t*                    lightingCBData = nullptr;
+		static constexpr UINT LightingGroupSize = 8;  // Lighting.hlsl 의 numthreads(8, 8, 1)
+		ComPtr<ID3D12RootSignature> tonemapRootSig;
+		ComPtr<ID3D12PipelineState> tonemapPso;
+		bool resolved = false;                        // 이번 프레임에 HDR → 백버퍼를 이미 옮겼나
 
 		// ── 인스턴싱 + GPU 컬링 (2026-10-11, 수정방향 3.2 · 멀티스레딩 명세 §2 원칙 5) ──
 		//  ① 패킷의 InstanceData(world·prevWorld)를 인스턴스 버퍼에 그대로 올린다(패킷 순서 = 인스턴스 번호).
@@ -428,6 +489,109 @@ namespace swc {
 			commandQueue->ExecuteCommandLists(1, lists);
 			return WaitForGpu();
 		}
+
+		// ── 렌더 타깃 상태 전환 (2026-10-27) ──
+		//  상태가 이미 같은 것은 건너뛰고, 바뀌는 것만 모아 ResourceBarrier 한 번으로 보낸다.
+		//  각 RenderTarget 이 «지금 상태» 를 들고 있으므로 패스는 «무슨 상태가 필요한지» 만 말하면 된다.
+		void TransitionTargets(std::initializer_list<std::pair<RenderTarget*, D3D12_RESOURCE_STATES>> wanted)
+		{
+			D3D12_RESOURCE_BARRIER barriers[8] = {};
+			UINT count = 0;
+			for (const auto& [target, after] : wanted)
+			{
+				if (target->state == after) continue;
+				if (count == _countof(barriers))
+				{
+					commandList->ResourceBarrier(count, barriers);
+					count = 0;
+				}
+				barriers[count++] = Transition(target->resource.Get(), target->state, after);
+				target->state = after;
+			}
+			if (count > 0)
+				commandList->ResourceBarrier(count, barriers);
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE Rtv(UINT index) const
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+			handle.ptr += SIZE_T(index) * rtvDescriptorSize;
+			return handle;
+		}
+		D3D12_CPU_DESCRIPTOR_HANDLE Dsv() const { return dsvHeap->GetCPUDescriptorHandleForHeapStart(); }
+		D3D12_CPU_DESCRIPTOR_HANDLE TargetCpu(UINT slot) const
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE handle = targetHeap->GetCPUDescriptorHandleForHeapStart();
+			handle.ptr += SIZE_T(slot) * targetDescriptorSize;
+			return handle;
+		}
+		D3D12_GPU_DESCRIPTOR_HANDLE TargetGpu(UINT slot) const
+		{
+			D3D12_GPU_DESCRIPTOR_HANDLE handle = targetHeap->GetGPUDescriptorHandleForHeapStart();
+			handle.ptr += UINT64(slot) * targetDescriptorSize;
+			return handle;
+		}
+
+		// ── 래스터 묶음 그리기 (2026-10-27 Render 에서 떼어 냄) ──
+		//  배경 forward 와 메인 G-buffer 가 같은 묶음 · 같은 루프를 쓰고 PSO 표만 다르다.
+		//  루트 시그니처 · 힙 · 프레임 CBV · 인스턴스 SRV 는 부르기 전에 묶어 둔다.
+		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[4])
+		{
+			ID3D12PipelineState* currentPso = nullptr;
+			MaterialHandle currentMaterial = kInvalidMaterial;
+			for (size_t b = 0; b < pass.batches.size(); ++b)
+			{
+				const Batch& batch = pass.batches[b];
+				ID3D12PipelineState* selectedPso = psoByKey[batch.pso];
+				if (currentPso != selectedPso)
+				{
+					commandList->SetPipelineState(selectedPso);
+					currentPso = selectedPso;
+				}
+				if (currentMaterial != batch.material)
+				{
+					const MaterialGpu& material = materials[batch.material];
+					commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
+					commandList->SetGraphicsRootDescriptorTable(3, material.textures);
+					currentMaterial = batch.material;
+				}
+				const MeshGpu& m = meshes[batch.mesh];
+				commandList->IASetVertexBuffers(0, 1, &m.vbv);
+				commandList->IASetIndexBuffer(&m.ibv);
+				// 그리기에 넘기는 것은 «이 묶음의 보이는 목록 시작 번호» 하나다(수정방향 3.2).
+				commandList->SetGraphicsRoot32BitConstant(0, batch.first, 0);
+				commandList->ExecuteIndirect(drawSignature.Get(), 1, pass.args.Get(),
+					UINT64(b) * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS), nullptr, 0);
+				++stats.drawCalls;
+			}
+		}
+
+		// ── [8] HDR 컬러 → 백버퍼 (2026-10-27) ──
+		//  UI(DrawSprites)는 백버퍼 위에 덮어 그리므로 UI 전에 한 번 옮겨야 한다.
+		//  UI 가 없는 프레임은 EndFrame 이 부른다. 한 프레임에 한 번만 돈다(resolved).
+		//  지금은 톤 곡선 없이 0~1 로 자르기만 한다(Tonemap.hlsl) — 예전 화면과 같게.
+		void ResolveToBackBuffer()
+		{
+			if (resolved) return;
+			resolved = true;
+
+			TransitionTargets({ { &hdr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } });
+			const D3D12_RESOURCE_BARRIER toTarget = Transition(renderTargets[frameIndex].Get(),
+				D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			commandList->ResourceBarrier(1, &toTarget);
+
+			// 깊이는 묶지 않는다 — 톤맵 · UI PSO 는 DSV 형식이 UNKNOWN 이다.
+			const D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rtv(frameIndex);
+			commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+			commandList->SetGraphicsRootSignature(tonemapRootSig.Get());
+			commandList->SetPipelineState(tonemapPso.Get());
+			ID3D12DescriptorHeap* heaps[] = { targetHeap.Get() };
+			commandList->SetDescriptorHeaps(1, heaps);
+			commandList->SetGraphicsRootDescriptorTable(0, TargetGpu(SlotHdrSrv));
+			commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			commandList->DrawInstanced(3, 1, 0, 0);   // 화면 전체 삼각형 하나
+		}
 	};
 
 	GRenderer::GRenderer()
@@ -509,7 +673,7 @@ namespace swc {
 		impl->frameIndex = impl->swapChain->GetCurrentBackBufferIndex();
 
 		D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-		rtvHeapDesc.NumDescriptors = Impl::FrameCount;
+		rtvHeapDesc.NumDescriptors = Impl::kRtvCount;   // 백버퍼 2 + HDR 1 + G-buffer 4
 		rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 		if (FAILED(impl->device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&impl->rtvHeap))))
 			return false;
@@ -525,6 +689,8 @@ namespace swc {
 		}
 
 		// Depth buffer + DSV
+		//  ★ 2026-10-27 — 자원을 R32_TYPELESS 로 만든다. 래스터는 D32_FLOAT DSV 로 쓰고,
+		//    [5] 라이팅 컴퓨트는 R32_FLOAT SRV 로 읽어 픽셀의 월드 위치를 되살린다(같은 자원, 보기만 둘).
 		{
 			D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
 			dsvHeapDesc.NumDescriptors = 1;
@@ -538,7 +704,7 @@ namespace swc {
 			depthDesc.Height = height;
 			depthDesc.DepthOrArraySize = 1;
 			depthDesc.MipLevels = 1;
-			depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+			depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
 			depthDesc.SampleDesc.Count = 1;
 			depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
@@ -548,10 +714,97 @@ namespace swc {
 
 			D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 			if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &depthDesc,
-				D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearVal, IID_PPV_ARGS(&impl->depthStencil))))
+				D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearVal, IID_PPV_ARGS(&impl->depth.resource))))
 				return false;
-			impl->device->CreateDepthStencilView(impl->depthStencil.Get(), nullptr,
+			impl->depth.state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+			D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
+			dsv.Format = DXGI_FORMAT_D32_FLOAT;
+			dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+			impl->device->CreateDepthStencilView(impl->depth.resource.Get(), &dsv,
 				impl->dsvHeap->GetCPUDescriptorHandleForHeapStart());
+		}
+
+		// ── HDR 컬러 · G-buffer · 타깃 SRV/UAV 힙 (2026-10-27 파이프라인 1단계) ──
+		//  HDR   : RTV(배경 forward) + UAV(라이팅 컴퓨트) + SRV(톤맵)
+		//  GB0~3 : RTV([1] G-buffer 패스) + SRV([5] 라이팅 컴퓨트)
+		//  최적화 지우기 값을 실제로 지우는 값과 맞춰 둔다(다르면 디버그 레이어 경고).
+		{
+			D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+			auto createTarget = [&](DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags, const float* clear,
+				D3D12_RESOURCE_STATES initial, Impl::RenderTarget& out) -> bool
+			{
+				D3D12_RESOURCE_DESC desc = {};
+				desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+				desc.Width = width;
+				desc.Height = height;
+				desc.DepthOrArraySize = 1;
+				desc.MipLevels = 1;
+				desc.Format = format;
+				desc.SampleDesc.Count = 1;
+				desc.Flags = flags;
+				D3D12_CLEAR_VALUE clearValue = {};
+				clearValue.Format = format;
+				for (int i = 0; i < 4; ++i) clearValue.Color[i] = clear[i];
+				if (FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+					initial, &clearValue, IID_PPV_ARGS(&out.resource))))
+					return false;
+				out.state = initial;
+				return true;
+			};
+
+			const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			if (!createTarget(Impl::kHdrFormat,
+					D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					Impl::kClearColor, D3D12_RESOURCE_STATE_RENDER_TARGET, impl->hdr))
+			{
+				impl->status = L"HDR 컬러 타깃 생성 실패.";
+				return false;
+			}
+			for (UINT i = 0; i < Impl::GbCount; ++i)
+			{
+				if (!createTarget(Impl::kGBufferFormats[i], D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						zero, D3D12_RESOURCE_STATE_RENDER_TARGET, impl->gbuffer[i]))
+				{
+					impl->status = L"G-buffer 타깃 생성 실패.";
+					return false;
+				}
+			}
+
+			// RTV — HDR 하나, G-buffer 4장(연속)
+			impl->device->CreateRenderTargetView(impl->hdr.resource.Get(), nullptr, impl->Rtv(Impl::kRtvHdr));
+			for (UINT i = 0; i < Impl::GbCount; ++i)
+				impl->device->CreateRenderTargetView(impl->gbuffer[i].resource.Get(), nullptr, impl->Rtv(Impl::kRtvGBuffer + i));
+
+			D3D12_DESCRIPTOR_HEAP_DESC targetHeapDesc = {};
+			targetHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			targetHeapDesc.NumDescriptors = Impl::TargetSlotCount;
+			targetHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+			if (FAILED(impl->device->CreateDescriptorHeap(&targetHeapDesc, IID_PPV_ARGS(&impl->targetHeap))))
+			{
+				impl->status = L"렌더 타깃 디스크립터 힙 생성 실패.";
+				return false;
+			}
+			impl->targetDescriptorSize = impl->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+			auto createSrv = [&](ID3D12Resource* resource, DXGI_FORMAT format, UINT slot)
+			{
+				D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+				srv.Format = format;
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+				srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				srv.Texture2D.MipLevels = 1;
+				impl->device->CreateShaderResourceView(resource, &srv, impl->TargetCpu(slot));
+			};
+			for (UINT i = 0; i < Impl::GbCount; ++i)
+				createSrv(impl->gbuffer[i].resource.Get(), Impl::kGBufferFormats[i], Impl::SlotGBuffer + i);
+			createSrv(impl->depth.resource.Get(), DXGI_FORMAT_R32_FLOAT, Impl::SlotDepth);
+			createSrv(impl->hdr.resource.Get(), Impl::kHdrFormat, Impl::SlotHdrSrv);
+
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+			uav.Format = Impl::kHdrFormat;
+			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			impl->device->CreateUnorderedAccessView(impl->hdr.resource.Get(), nullptr, &uav, impl->TargetCpu(Impl::SlotHdrUav));
 		}
 
 		if (FAILED(impl->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&impl->commandAllocator))))
@@ -570,6 +823,20 @@ namespace swc {
 			D3D12_RANGE noRead = { 0, 0 };
 			if (FAILED(impl->frameCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->frameCBData))))
 				return false;
+		}
+
+		// [5] 라이팅 상수 버퍼 (UPLOAD, 영속 매핑, 2026-10-27) — CBV 는 256바이트 정렬
+		{
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(256);
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->lightingCB))) ||
+				FAILED(impl->lightingCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->lightingCBData))))
+			{
+				impl->status = L"라이팅 상수 버퍼 생성 실패.";
+				return false;
+			}
 		}
 
 		// 인스턴싱·GPU 컬링 패스 자원 — (프레임 슬롯 × 패스)마다
@@ -734,6 +1001,14 @@ namespace swc {
 				impl->status = L"픽셀 셰이더 컴파일 실패 (출력창 참고).";
 				return false;
 			}
+			// [1] G-buffer 진입점 (2026-10-27) — 같은 파일 · 같은 정점 셰이더, 픽셀 진입점만 다르다.
+			std::vector<uint8_t> gbufferPs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSGBuffer", psTarget, &defineRt, 1, log);
+			if (gbufferPs.empty())
+			{
+				OutputDebugStringA(("[PS GBuffer] " + log + "\n").c_str());
+				impl->status = L"G-buffer 픽셀 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
 
 			D3D12_INPUT_ELEMENT_DESC layout[] = {
 				{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, position)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -758,31 +1033,161 @@ namespace swc {
 			psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 			psoDesc.SampleMask = UINT_MAX;
 			psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-			psoDesc.NumRenderTargets = 1;
-			psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 			psoDesc.SampleDesc.Count = 1;
-			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->pso))))
+
+			// 묶음 키(Batch::pso) 순서대로 4종을 만든다: 0 기본 · 1 양면 · 2 반전 · 3 반전 양면.
+			//  반전 배율은 와인딩만 뒤집는다. SV_IsFrontFace도 실제 앞면을 가리켜야 한다.
+			//  (2026-10-27 forward 와 G-buffer 가 같은 4종을 만들게 되어 순서를 한 곳으로 모았다)
+			auto createVariants = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC desc,
+				ComPtr<ID3D12PipelineState>* const (&out)[4]) -> bool
 			{
-				impl->status = L"PSO 생성 실패.";
+				for (UINT key = 0; key < 4; ++key)
+				{
+					desc.RasterizerState.CullMode = (key & 1u) ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+					desc.RasterizerState.FrontCounterClockwise = (key & 2u) ? TRUE : FALSE;
+					if (FAILED(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(out[key]->ReleaseAndGetAddressOf()))))
+						return false;
+				}
+				return true;
+			};
+
+			// 배경 패스 forward — 백버퍼가 아니라 HDR 컬러에 그린다(2026-10-27)
+			psoDesc.NumRenderTargets = 1;
+			psoDesc.RTVFormats[0] = Impl::kHdrFormat;
+			ComPtr<ID3D12PipelineState>* const forwardOut[4] = {
+				&impl->pso, &impl->doubleSidedPso, &impl->mirroredPso, &impl->mirroredDoubleSidedPso };
+			if (!createVariants(psoDesc, forwardOut))
+			{
+				impl->status = L"forward PSO 생성 실패.";
 				return false;
 			}
+
+			// [1] G-buffer — 렌더 타깃 4장, 형식은 kGBufferFormats
+			psoDesc.PS = { gbufferPs.data(), gbufferPs.size() };
+			psoDesc.NumRenderTargets = Impl::GbCount;
+			for (UINT i = 0; i < Impl::GbCount; ++i)
+			{
+				psoDesc.RTVFormats[i] = Impl::kGBufferFormats[i];
+				psoDesc.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+			}
+			ComPtr<ID3D12PipelineState>* const gbufferOut[4] = {
+				&impl->gbufferPsos[0], &impl->gbufferPsos[1], &impl->gbufferPsos[2], &impl->gbufferPsos[3] };
+			if (!createVariants(psoDesc, gbufferOut))
+			{
+				impl->status = L"G-buffer PSO 생성 실패.";
+				return false;
+			}
+		}
+
+		// ── [5] 라이팅 합성 파이프라인 (Lighting.hlsl, 2026-10-27) ──
+		//   b0 = LightingCB(루트 CBV), 테이블 = targetHeap 슬롯 0~5 (SRV t0~t4 G-buffer · 깊이, UAV u0 HDR).
+		{
+			D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			ranges[0].NumDescriptors = Impl::GbCount + 1;   // G-buffer 4 + 깊이
+			ranges[0].BaseShaderRegister = 0;
+			ranges[0].OffsetInDescriptorsFromTableStart = Impl::SlotGBuffer;
+			ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+			ranges[1].NumDescriptors = 1;
+			ranges[1].BaseShaderRegister = 0;
+			ranges[1].OffsetInDescriptorsFromTableStart = Impl::SlotHdrUav;
+
+			D3D12_ROOT_PARAMETER params[2] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+			params[0].Descriptor.ShaderRegister = 0;
+			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			params[1].DescriptorTable.NumDescriptorRanges = 2;
+			params[1].DescriptorTable.pDescriptorRanges = ranges;
+			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 2;
+			rsDesc.pParameters = params;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->lightingRootSig))))
+			{
+				impl->status = L"라이팅 루트 시그니처 생성 실패.";
+				return false;
+			}
+
+			const std::wstring path = ShaderPath(L"Lighting.hlsl");
+			std::string log;
+			std::vector<uint8_t> cs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"CSMain", L"cs_6_0", nullptr, 0, log);
+			if (cs.empty())
+			{
+				OutputDebugStringA(("[Lighting CS] " + log + "\n").c_str());
+				impl->status = L"라이팅 컴퓨트 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+			D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+			psoDesc.pRootSignature = impl->lightingRootSig.Get();
+			psoDesc.CS = { cs.data(), cs.size() };
+			if (FAILED(impl->device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&impl->lightingPso))))
+			{
+				impl->status = L"라이팅 PSO 생성 실패.";
+				return false;
+			}
+		}
+
+		// ── [8] HDR → 백버퍼 파이프라인 (Tonemap.hlsl, 2026-10-27) ──
+		//   테이블 = targetHeap 슬롯 6 (SRV t0 HDR). 정점 버퍼 · 깊이 없음.
+		{
+			D3D12_DESCRIPTOR_RANGE range = {};
+			range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			range.NumDescriptors = 1;
+			range.BaseShaderRegister = 0;
+			range.OffsetInDescriptorsFromTableStart = 0;
+
+			D3D12_ROOT_PARAMETER param = {};
+			param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			param.DescriptorTable.NumDescriptorRanges = 1;
+			param.DescriptorTable.pDescriptorRanges = &range;
+			param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 1;
+			rsDesc.pParameters = &param;
+			ComPtr<ID3DBlob> sig, err;
+			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
+				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->tonemapRootSig))))
+			{
+				impl->status = L"톤맵 루트 시그니처 생성 실패.";
+				return false;
+			}
+
+			const std::wstring path = ShaderPath(L"Tonemap.hlsl");
+			std::string log;
+			std::vector<uint8_t> vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", L"vs_6_0", nullptr, 0, log);
+			std::vector<uint8_t> ps = vs.empty() ? std::vector<uint8_t>()
+				: impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", L"ps_6_0", nullptr, 0, log);
+			if (vs.empty() || ps.empty())
+			{
+				OutputDebugStringA(("[Tonemap] " + log + "\n").c_str());
+				impl->status = L"톤맵 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
+
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+			psoDesc.pRootSignature = impl->tonemapRootSig.Get();
+			psoDesc.VS = { vs.data(), vs.size() };
+			psoDesc.PS = { ps.data(), ps.size() };
+			psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
 			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->doubleSidedPso))))
+			psoDesc.RasterizerState.DepthClipEnable = TRUE;
+			psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+			psoDesc.DepthStencilState.DepthEnable = FALSE;
+			psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+			psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+			psoDesc.SampleMask = UINT_MAX;
+			psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+			psoDesc.NumRenderTargets = 1;
+			psoDesc.RTVFormats[0] = Impl::kBackBufferFormat;
+			psoDesc.SampleDesc.Count = 1;
+			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->tonemapPso))))
 			{
-				impl->status = L"양면 재질 PSO 생성 실패.";
-				return false;
-			}
-			// 반전 배율은 와인딩만 뒤집는다. SV_IsFrontFace도 실제 앞면을 가리켜야 한다.
-			psoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->mirroredDoubleSidedPso))))
-			{
-				impl->status = L"반전 양면 재질 PSO 생성 실패.";
-				return false;
-			}
-			psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->mirroredPso))))
-			{
-				impl->status = L"반전 메시 PSO 생성 실패.";
+				impl->status = L"톤맵 PSO 생성 실패.";
 				return false;
 			}
 		}
@@ -933,14 +1338,15 @@ namespace swc {
 			blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
 			blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-			// 깊이는 쓰지도 읽지도 않는다. 바인딩된 DSV 와 형식만 맞춘다.
+			// 깊이는 쓰지도 읽지도 않는다.
+			//  ★ 2026-10-27 — UI 는 [8] 에서 HDR 을 옮긴 백버퍼 위에 그린다. 그때 DSV 를 묶지 않으므로 형식도 UNKNOWN.
 			psoDesc.DepthStencilState.DepthEnable = FALSE;
 			psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-			psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+			psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 			psoDesc.SampleMask = UINT_MAX;
 			psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 			psoDesc.NumRenderTargets = 1;
-			psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+			psoDesc.RTVFormats[0] = Impl::kBackBufferFormat;
 			psoDesc.SampleDesc.Count = 1;
 			if (FAILED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->uiPso))))
 			{
@@ -1301,22 +1707,18 @@ namespace swc {
 		++impl->frameCounter;   // 배경/메인 패스가 같은 프레임의 룰렛 패턴을 사용한다.
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
+		impl->resolved = false;
 
-		D3D12_RESOURCE_BARRIER barrier = {};
-		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		barrier.Transition.pResource = impl->renderTargets[impl->frameIndex].Get();
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		impl->commandList->ResourceBarrier(1, &barrier);
-
-		D3D12_CPU_DESCRIPTOR_HANDLE rtv = impl->rtvHeap->GetCPUDescriptorHandleForHeapStart();
-		rtv.ptr += SIZE_T(impl->frameIndex) * impl->rtvDescriptorSize;
-		D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+		// ── 장면은 HDR 컬러에 그린다 (2026-10-27 파이프라인 1단계) ──
+		//  백버퍼는 여기서 건드리지 않는다. [8](ResolveToBackBuffer)에서 HDR 을 옮길 때 처음 쓴다.
+		impl->TransitionTargets({
+			{ &impl->hdr,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_WRITE } });
+		const D3D12_CPU_DESCRIPTOR_HANDLE rtv = impl->Rtv(Impl::kRtvHdr);
+		const D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->Dsv();
 		impl->commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-		const float clearColor[4] = { 0.05f, 0.08f, 0.14f, 1.0f };
-		impl->commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+		impl->commandList->ClearRenderTargetView(rtv, Impl::kClearColor, 0, nullptr);
 		impl->commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
 		D3D12_VIEWPORT vp = { 0.0f, 0.0f, float(impl->width), float(impl->height), 0.0f, 1.0f };
@@ -1506,65 +1908,105 @@ namespace swc {
 			commandList->CopyBufferRegion(pass.readback.Get(), 0, pass.args.Get(), 0, argsBytes);
 		}
 
-		// ── 래스터 패스 ──
-		commandList->SetGraphicsRootSignature(impl->rootSig.Get());
-		commandList->SetPipelineState(impl->pso.Get());
-		ID3D12DescriptorHeap* heaps[] = { impl->materialHeap.Get() };
-		commandList->SetDescriptorHeaps(1, heaps);
-		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress() + frameOffset);
-		commandList->SetGraphicsRootShaderResourceView(4, pass.instances->GetGPUVirtualAddress());
-		commandList->SetGraphicsRootShaderResourceView(5, pass.visible->GetGPUVirtualAddress());
-		if (impl->rtSupported)
+		// ── 래스터 공통 바인딩 — 배경 forward 와 메인 G-buffer 가 같은 루트 시그니처를 쓴다 ──
+		//  (렌더 타깃을 묶은 뒤 부른다. PSO 는 DrawBatches 가 묶음마다 고른다)
+		auto bindRasterRoot = [&]()
 		{
-			// DXR의 null acceleration structure는 GPU 주소 0이다. 루트 슬롯을 미설정으로 두지 않는다.
-			const D3D12_GPU_VIRTUAL_ADDRESS tlas = rtActive && impl->accel.InstanceCount() > 0
-				? impl->accel.TlasAddress() : 0;
-			commandList->SetGraphicsRootShaderResourceView(6, tlas);
-		}
+			commandList->SetGraphicsRootSignature(impl->rootSig.Get());
+			ID3D12DescriptorHeap* heaps[] = { impl->materialHeap.Get() };
+			commandList->SetDescriptorHeaps(1, heaps);
+			commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			commandList->SetGraphicsRootConstantBufferView(1, impl->frameCB->GetGPUVirtualAddress() + frameOffset);
+			commandList->SetGraphicsRootShaderResourceView(4, pass.instances->GetGPUVirtualAddress());
+			commandList->SetGraphicsRootShaderResourceView(5, pass.visible->GetGPUVirtualAddress());
+			if (impl->rtSupported)
+			{
+				// DXR의 null acceleration structure는 GPU 주소 0이다. 루트 슬롯을 미설정으로 두지 않는다.
+				const D3D12_GPU_VIRTUAL_ADDRESS tlas = rtActive && impl->accel.InstanceCount() > 0
+					? impl->accel.TlasAddress() : 0;
+				commandList->SetGraphicsRootShaderResourceView(6, tlas);
+			}
+		};
+		const D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->Dsv();
+		const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = impl->Rtv(Impl::kRtvHdr);
 
-		// ── ④ 묶음마다 ExecuteIndirect 한 번 — 인스턴스 수는 컬링 셰이더가 채웠다 ──
-		ID3D12PipelineState* const psoByKey[4] = {
-			impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get() };
-		ID3D12PipelineState* currentPso = impl->pso.Get();
-		MaterialHandle currentMaterial = kInvalidMaterial;
-		for (UINT b = 0; b < batchCount; ++b)
-		{
-			const Impl::Batch& batch = pass.batches[b];
-			ID3D12PipelineState* selectedPso = psoByKey[batch.pso];
-			if (currentPso != selectedPso)
-			{
-				commandList->SetPipelineState(selectedPso);
-				currentPso = selectedPso;
-			}
-			if (currentMaterial != batch.material)
-			{
-				const Impl::MaterialGpu& material = impl->materials[batch.material];
-				commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
-				commandList->SetGraphicsRootDescriptorTable(3, material.textures);
-				currentMaterial = batch.material;
-			}
-			const Impl::MeshGpu& m = impl->meshes[batch.mesh];
-			commandList->IASetVertexBuffers(0, 1, &m.vbv);
-			commandList->IASetIndexBuffer(&m.ibv);
-			// 그리기에 넘기는 것은 «이 묶음의 보이는 목록 시작 번호» 하나다(수정방향 3.2).
-			commandList->SetGraphicsRoot32BitConstant(0, batch.first, 0);
-			commandList->ExecuteIndirect(impl->drawSignature.Get(), 1, pass.args.Get(),
-				UINT64(b) * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS), nullptr, 0);
-			++impl->stats.drawCalls;
-		}
 		if (view.background)
 		{
+			// ── 배경 패스 — forward 로 HDR 컬러에 바로 그린다 ──
+			//  자기 투영(넓은 near/far)을 쓰고 끝나면 깊이를 지우므로 메인 G-buffer 와 섞지 않는다.
+			impl->TransitionTargets({
+				{ &impl->hdr,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+				{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_WRITE } });
+			commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
+			bindRasterRoot();
+			// ④ 묶음마다 ExecuteIndirect 한 번 — 인스턴스 수는 컬링 셰이더가 채웠다
+			ID3D12PipelineState* const forwardPsos[4] = {
+				impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get() };
+			impl->DrawBatches(pass, forwardPsos);
+
 			// 먼 행성 내부의 깊이 비교는 유지하고 이후 맵/캐릭터가 항상 앞에 놓이게 한다.
 			// 배경 패스의 넓은 near/far 범위를 메인 맵의 깊이 범위와 섞지 않는다.
-			const D3D12_CPU_DESCRIPTOR_HANDLE dsv = impl->dsvHeap->GetCPUDescriptorHandleForHeapStart();
-			impl->commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+			commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+			return;
 		}
+
+		// ── [1] G-buffer — 메인 패스는 조명 없이 표면 정보만 4장에 쓴다 (Forward.hlsl PSGBuffer) ──
+		//  G-buffer 는 지우지 않는다. 깊이가 1 인 픽셀(물체 없음)은 뒤 단계가 읽지 않기 때문이다.
+		impl->TransitionTargets({
+			{ &impl->gbuffer[Impl::GbAlbedo],   D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->gbuffer[Impl::GbMaterial], D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->gbuffer[Impl::GbEmissive], D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->depth,                     D3D12_RESOURCE_STATE_DEPTH_WRITE } });
+		const D3D12_CPU_DESCRIPTOR_HANDLE gbufferRtv = impl->Rtv(Impl::kRtvGBuffer);
+		commandList->OMSetRenderTargets(Impl::GbCount, &gbufferRtv, TRUE, &dsv);   // 연속 4장을 한 번에
+		bindRasterRoot();
+		ID3D12PipelineState* const gbufferPsos[4] = {
+			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get() };
+		impl->DrawBatches(pass, gbufferPsos);
+
+		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
+		//  깊이는 DEPTH_READ 와 셰이더 읽기를 같이 켠다(둘 다 읽기 상태라 함께 둘 수 있다).
+		impl->TransitionTargets({
+			{ &impl->gbuffer[Impl::GbAlbedo],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->gbuffer[Impl::GbMaterial], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->gbuffer[Impl::GbEmissive], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->hdr,   D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+
+		LightingConstants lc = {};
+		XMStoreFloat4x4(&lc.invViewProj,
+			XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj))));
+		lc.eyePos = view.eyePosition;
+		lc.sunDir = impl->sunDir;
+		lc.width = impl->width;
+		lc.height = impl->height;
+		lc.debugMode = impl->debugMode;
+		memcpy(impl->lightingCBData, &lc, sizeof(lc));
+
+		ID3D12DescriptorHeap* targetHeaps[] = { impl->targetHeap.Get() };
+		commandList->SetDescriptorHeaps(1, targetHeaps);
+		commandList->SetComputeRootSignature(impl->lightingRootSig.Get());
+		commandList->SetPipelineState(impl->lightingPso.Get());
+		commandList->SetComputeRootConstantBufferView(0, impl->lightingCB->GetGPUVirtualAddress());
+		commandList->SetComputeRootDescriptorTable(1, impl->TargetGpu(Impl::SlotGBuffer));
+		commandList->Dispatch((impl->width + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize,
+			(impl->height + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize, 1);
+
+		// 뒤에 붙을 래스터 패스(반투명 등)가 이어 그릴 수 있게 HDR · 깊이를 다시 그리기 상태로 묶어 둔다.
+		impl->TransitionTargets({
+			{ &impl->hdr,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_WRITE } });
+		commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
 	}
 
 	void GRenderer::DrawSprites(const std::vector<UISprite>& sprites)
 	{
 		if (sprites.empty() || !impl->uiPso) return;
+
+		// UI 는 백버퍼 위에 덮어 그린다 — 그 전에 [8] HDR → 백버퍼를 끝내 둔다(프레임에 한 번).
+		impl->ResolveToBackBuffer();
 
 		impl->commandList->SetGraphicsRootSignature(impl->uiRootSig.Get());
 		impl->commandList->SetPipelineState(impl->uiPso.Get());
@@ -1599,6 +2041,9 @@ namespace swc {
 
 	void GRenderer::EndFrame()
 	{
+		// UI 가 없던 프레임이면 여기서 [8] HDR → 백버퍼를 한다(있었으면 이미 끝나 있다).
+		impl->ResolveToBackBuffer();
+
 		D3D12_RESOURCE_BARRIER barrier = {};
 		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		barrier.Transition.pResource = impl->renderTargets[impl->frameIndex].Get();

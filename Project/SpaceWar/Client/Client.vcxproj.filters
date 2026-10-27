@@ -372,6 +372,18 @@
     <None Include="Shaders\UI.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\Lighting.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Tonemap.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Shading.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\GBuffer.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">

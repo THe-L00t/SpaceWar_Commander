@@ -58,10 +58,19 @@ namespace swc {
 		ComPtr<IDxcIncludeHandler> includeHandler;
 		utils->CreateDefaultIncludeHandler(&includeHandler);
 
+		// ── #include 경로 (2026-10-27, 파이프라인 1단계) ──
+		//  소스를 파일 이름 없이 버퍼로 넘기므로, DXC 는 따옴표 include 를 «작업 디렉터리» 기준으로 찾는다.
+		//  VS 에서 F5 로 띄우면 작업 디렉터리가 exe 옆이 아니라서 공용 .hlsli 를 못 찾는다.
+		//  → 셰이더 파일이 있는 폴더(exe 옆 Shaders\)를 -I 로 넘겨, 어디서 실행해도 같은 폴더에서 찾게 한다.
+		std::wstring includeDir(path);
+		const size_t slash = includeDir.find_last_of(L"\\/");
+		includeDir = (slash == std::wstring::npos) ? std::wstring(L".") : includeDir.substr(0, slash);
+
 		// 행렬은 DXC 기본(열 우선)을 유지한다 — CPU 에서 전치해 올리는 기존 규약과 맞춘다.
 		std::vector<LPCWSTR> args;
 		args.push_back(L"-E"); args.push_back(entry);
 		args.push_back(L"-T"); args.push_back(target);
+		args.push_back(L"-I"); args.push_back(includeDir.c_str());
 		for (size_t i = 0; i < defineCount; ++i)
 		{
 			args.push_back(L"-D");

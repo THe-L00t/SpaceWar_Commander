@@ -67,6 +67,7 @@
       <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
 xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
 xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsli" "$(OutDir)Shaders\"
 xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -93,6 +94,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
 xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
 xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsli" "$(OutDir)Shaders\"
 xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -143,6 +145,10 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <None Include="..\..\assets\model\cube_test.obj" />
     <None Include="..\..\assets\model\cube_test.mtl" />
     <None Include="Shaders\UI.hlsl" />
+    <None Include="Shaders\Lighting.hlsl" />
+    <None Include="Shaders\Tonemap.hlsl" />
+    <None Include="Shaders\Shading.hlsli" />
+    <None Include="Shaders\GBuffer.hlsli" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
