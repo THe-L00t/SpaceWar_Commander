@@ -38,6 +38,9 @@ namespace swc {
 	struct RenderView {
 		DirectX::XMFLOAT4X4 viewProj{ };
 		DirectX::XMFLOAT3   eyePosition{ };   // 프레넬의 시선 벡터(V) 계산용
+		// 카메라 자리의 «위» (행성 중심 → 카메라, 단위 벡터) — 2026-10-27 렌더 6단계 [6] 하늘.
+		//  하늘과 해의 높이를 이 방향 기준으로 계산한다. 배경 · 메인 패스에 같은 값을 넣는다.
+		DirectX::XMFLOAT3   up{ 0.0f, 1.0f, 0.0f };
 		bool background = false;             // 배경 패스 뒤 깊이만 초기화한다.
 	};
 

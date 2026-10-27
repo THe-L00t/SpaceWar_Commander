@@ -18,12 +18,19 @@
 //  ★ 2026-10-27 렌더 5단계 — 반사는 [4d] 노이즈 제거 후 것. 디버그용으로 제거 전 반사 · GB4 모션 벡터를 더 읽는다.
 //    후속 — GB4 를 G-buffer 묶음(t0~t4)에 넣었다. 그래서 깊이 t4 → t5, 그림자 t5 → t6, 반사 t6 → t7, 제거 전 반사 t7 → t8.
 //    (GRenderer.cpp 의 라이팅 테이블: t0~t5 · u0 · t6~t8 세 범위)
+//
+//  ★ 2026-10-27 렌더 6단계 — 하늘 · 조명 단위
+//    · 태양은 렌더러가 넘긴 조도(gSunIlluminance — 대기 투과로 색이 붙고, 해가 지면 0). 확산은 알베도/π (Shading.hlsli).
+//    · 주변광 = 하늘 조도 텍스처(t9, 법선 방향별 «조도/π»). 하늘을 못 만든 장치(gSkyEnabled 0)는 예전 상수 kAmbient.
+//      [4c] GI 프로브가 들어오면 그 자리를 GI 가 맡는다.
+//    · 물체가 없는 픽셀(깊이 1)은 [6] Sky.hlsl CSDrawSky 가 이미 하늘을 그려 두었다 — 여기서는 건드리지 않는다.
 // ============================================================
 
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
+#include "Sky.hlsli"
 
-// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(128바이트 — 4단계에서 112 → 128)
+// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(144바이트 — 4단계에서 112 → 128, 6단계에서 → 144)
 cbuffer LightingCB : register(b0)
 {
 	float4x4 gInvViewProj;   // 깊이 → 월드 위치 (행벡터 규약: mul(v, M))
@@ -34,6 +41,8 @@ cbuffer LightingCB : register(b0)
 	uint     gShadowEnabled;       // 1 = 이번 프레임에 [4a] RT 그림자가 돌았다
 	uint     gReflectionEnabled;   // 1 = 이번 프레임에 [4b] RT 반사가 돌았다 (4단계)
 	uint3    _pad2;
+	float3   gSunIlluminance;      // 6단계 — 땅에 닿는 태양 조도(RGB)
+	uint     gSkyEnabled;          // 6단계 — 1 = 하늘 조도 텍스처가 이번 프레임 값이다
 };
 
 Texture2D<float4>   gAlbedo   : register(t0);   // GB0
@@ -45,7 +54,9 @@ Texture2D<float>    gDepth    : register(t5);
 Texture2D<float4>   gShadow   : register(t6);   // [4a] 그림자 마스크 — rgb = 태양 가시도(투과 물체면 연하게)
 Texture2D<float4>   gReflection : register(t7); // [4b]→[4d] 반사 색 (노이즈 제거 후, F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
 Texture2D<float4>   gReflectionRaw : register(t8); // 5단계 — 노이즈 제거 전 반사 (디버그 뷰 7 전용)
+Texture2D<float4>   gSkyIrradiance : register(t9); // 6단계 — [6] 하늘 조도 / π (법선 방향 등장방형 32×16)
 RWTexture2D<float4> gHdr      : register(u0);
+SamplerState        gSkySampler : register(s1);    // 6단계 — 선형 · U 반복 · V 고정 (등장방형)
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
@@ -65,7 +76,10 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	const float3 emissive = gEmissive[pixel];
 
 	const float3 V = normalize(gEyePos - P);
-	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir);
+	// 6단계 — 주변 조도/π: 하늘 조도 텍스처 (못 만든 장치는 예전 상수)
+	const float3 ambientEOverPi = (gSkyEnabled != 0) ? SampleSkyIrradiance(gSkyIrradiance, gSkySampler, N)
+	                                                 : float3(kAmbient, kAmbient, kAmbient);
+	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir, gSunIlluminance, ambientEOverPi);
 
 	// [4a] RT 그림자 — 돌지 않은 프레임이면 1 (그림자 없음)
 	const float3 shadow = (gShadowEnabled != 0) ? gShadow[pixel].rgb : float3(1.0, 1.0, 1.0);
@@ -98,6 +112,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	case 8:  color = lit.specular;                   break;
 	case 9:  color = lit.F_env * reflection;         break;   // 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
 	case 10: color = float3(rough, metallic, 0.0);   break;
+	case 11: color = ambientEOverPi;                 break;   // 6단계 — 주변 조도 / π (하늘 조도, 나중에 GI)
 	}
 
 	gHdr[pixel] = float4(color, 1.0);
