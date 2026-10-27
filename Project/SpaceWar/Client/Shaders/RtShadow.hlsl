@@ -26,10 +26,11 @@ cbuffer ShadowCB : register(b0)
 	uint2    gSize;       uint2 _pad1;
 };
 
+// 5단계 후속 — GB4 모션 벡터가 G-buffer 묶음(t0~t4)에 들어오면서 깊이 t4 → t5, TLAS t5 → t6, 재질 표 t6 → t7.
 Texture2D<float2>               gNormal      : register(t1);   // GB1 (팔면체 법선)
-Texture2D<float>                gDepth       : register(t4);
-RaytracingAccelerationStructure gScene       : register(t5);   // TLAS (루트 SRV)
-StructuredBuffer<RtMaterial>    gRtMaterials : register(t6);   // 재질 표 (4단계에서 float4 → RtMaterial 96바이트로 넓어짐)
+Texture2D<float>                gDepth       : register(t5);
+RaytracingAccelerationStructure gScene       : register(t6);   // TLAS (루트 SRV)
+StructuredBuffer<RtMaterial>    gRtMaterials : register(t7);   // 재질 표 (4단계에서 float4 → RtMaterial 96바이트로 넓어짐)
 RWTexture2D<float4>             gShadow      : register(u0);   // 그림자 마스크 — rgb = 가시도
 
 [numthreads(8, 8, 1)]

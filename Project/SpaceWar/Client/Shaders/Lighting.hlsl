@@ -11,11 +11,13 @@
 //          + F_env × reflection                    ← [4b] 반사 (아직 없음 → 0)
 //          + 자체발광
 //
-//  ★ 2026-10-27 렌더 2단계 — shadow 를 그림자 마스크(t5)에서 읽는다.
+//  ★ 2026-10-27 렌더 2단계 — shadow 를 그림자 마스크(지금 t6)에서 읽는다.
 //    gShadowEnabled = 0 (RT 미지원 · R 키로 끔 · TLAS 비어 있음)이면 마스크를 읽지 않고 1 로 둔다 → 1단계 화면과 같다.
 //    월드 위치 되살리기는 GBuffer.hlsli 의 ReconstructWorldPosition 으로 옮겼다(그림자 셰이더와 같이 쓴다).
 //
-//  ★ 2026-10-27 렌더 5단계 — t6 은 [4d] 노이즈 제거 후 반사. 디버그용으로 t7(제거 전 반사) · t8(모션 벡터)을 더 읽는다.
+//  ★ 2026-10-27 렌더 5단계 — 반사는 [4d] 노이즈 제거 후 것. 디버그용으로 제거 전 반사 · GB4 모션 벡터를 더 읽는다.
+//    후속 — GB4 를 G-buffer 묶음(t0~t4)에 넣었다. 그래서 깊이 t4 → t5, 그림자 t5 → t6, 반사 t6 → t7, 제거 전 반사 t7 → t8.
+//    (GRenderer.cpp 의 라이팅 테이블: t0~t5 · u0 · t6~t8 세 범위)
 // ============================================================
 
 #include "Shading.hlsli"
@@ -38,11 +40,11 @@ Texture2D<float4>   gAlbedo   : register(t0);   // GB0
 Texture2D<float2>   gNormal   : register(t1);   // GB1 (팔면체)
 Texture2D<float4>   gMaterial : register(t2);   // GB2
 Texture2D<float3>   gEmissive : register(t3);   // GB3
-Texture2D<float>    gDepth    : register(t4);
-Texture2D<float4>   gShadow   : register(t5);   // [4a] 그림자 마스크 — rgb = 태양 가시도(투과 물체면 연하게)
-Texture2D<float4>   gReflection : register(t6); // [4b]→[4d] 반사 색 (노이즈 제거 후, F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
-Texture2D<float4>   gReflectionRaw : register(t7); // 5단계 — 노이즈 제거 전 반사 (디버그 뷰 7 전용)
-Texture2D<float2>   gMotion   : register(t8);   // 5단계 — GB4 모션 벡터 (디버그 뷰 6 전용)
+Texture2D<float2>   gMotion   : register(t4);   // GB4 모션 벡터 (5단계 — 디버그 뷰 6 전용)
+Texture2D<float>    gDepth    : register(t5);
+Texture2D<float4>   gShadow   : register(t6);   // [4a] 그림자 마스크 — rgb = 태양 가시도(투과 물체면 연하게)
+Texture2D<float4>   gReflection : register(t7); // [4b]→[4d] 반사 색 (노이즈 제거 후, F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
+Texture2D<float4>   gReflectionRaw : register(t8); // 5단계 — 노이즈 제거 전 반사 (디버그 뷰 7 전용)
 RWTexture2D<float4> gHdr      : register(u0);
 
 [numthreads(8, 8, 1)]
