@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 #include "../MeshData.h"
@@ -33,6 +34,16 @@ namespace swc {
 		float roughness = 0.65f;
 		float metallic = 0.0f;
 		bool doubleSided = false;
+
+		// ── 투과 (2026-10-27 렌더 2단계) ──
+		//  glTF KHR_materials_transmission · KHR_materials_volume 과 이름 · 뜻 · 기본값을 맞췄다(로더가 그대로 옮겨 담게).
+		//  지금은 [4a] RT 그림자만 읽는다 — 그림자 레이가 이 재질의 물체 하나를 지나면 빛이 이만큼 남는다:
+		//    남는 빛 = transmission × baseColor.rgb × attenuationColor ^ (thickness / attenuationDistance)
+		//  기본값(transmission 0)이면 예전처럼 빛을 완전히 막는다.
+		float transmission = 0.0f;                                              // transmissionFactor — 0 불투명 ~ 1 다 통과
+		float thickness = 0.0f;                                                 // thicknessFactor — 부피 두께(메시 좌표 단위)
+		float attenuationDistance = std::numeric_limits<float>::infinity();     // 빛이 attenuationColor 가 되는 거리
+		DirectX::XMFLOAT3 attenuationColor{ 1.0f, 1.0f, 1.0f };                // 흰빛이 그 거리를 지나 남는 색
 		std::array<uint32_t, kMaterialTextureCount> textures{
 			kInvalidModelIndex, kInvalidModelIndex, kInvalidModelIndex,
 			kInvalidModelIndex, kInvalidModelIndex };

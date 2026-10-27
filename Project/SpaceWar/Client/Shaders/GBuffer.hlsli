@@ -49,6 +49,17 @@ float3 DecodeNormalOct(float2 e)
 	return normalize(n);
 }
 
+// 픽셀 중심 + 깊이 → 월드 위치. 래스터와 같은 D3D 클립 규약(y 위가 +, z 0~1)을 거꾸로 푼다.
+//  invViewProj 는 viewProj 의 역행렬(행벡터 규약: mul(v, M)).
+//  (2026-10-27 렌더 2단계 — Lighting.hlsl 에서 옮겨 왔다. [4a] RtShadow.hlsl 도 쓴다)
+float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 size, float4x4 invViewProj)
+{
+	const float2 uv  = (float2(pixel) + 0.5) / float2(size);
+	const float4 ndc = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+	const float4 w   = mul(ndc, invViewProj);
+	return w.xyz / w.w;
+}
+
 GBufferOut PackGBuffer(float3 albedo, float3 N, float rough, float metallic, float3 emissive)
 {
 	GBufferOut o;

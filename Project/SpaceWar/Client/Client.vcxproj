@@ -112,6 +112,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <None Include="Shaders\UI.hlsl" />
     <None Include="Shaders\Lighting.hlsl" />
     <None Include="Shaders\Tonemap.hlsl" />
+    <None Include="Shaders\RtShadow.hlsl" />
     <None Include="Shaders\Shading.hlsli" />
     <None Include="Shaders\GBuffer.hlsli" />
   </ItemGroup>

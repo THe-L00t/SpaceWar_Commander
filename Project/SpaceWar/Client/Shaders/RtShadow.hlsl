@@ -1,0 +1,100 @@
+// ============================================================
+//  RtShadow.hlsl — [4a] RT 그림자 (컴퓨트 · 인라인 RayQuery, 2026-10-27 렌더 파이프라인 2단계)
+//
+//  G-buffer 픽셀마다 태양 쪽으로 그림자 레이 1개를 쏘고, 남는 빛(RGB 가시도)을 그림자 마스크(u0)에 쓴다.
+//  [5] Lighting.hlsl 이 태양 확산 · 정반사에 이 값을 곱한다.
+//
+//  ★ 불투명 물체: BLAS 가 OPAQUE 라 시스템이 바로 확정하고 탐색을 끝낸다(ACCEPT_FIRST_HIT_AND_END_SEARCH) → 가시도 0.
+//  ★ 투과 물체(재질 transmission > 0): TLAS 인스턴스가 FORCE_NON_OPAQUE 라 «통과 후보» 로 이 루프에 온다.
+//    확정하지 않고 재질 표의 «남는 빛» 을 곱한 뒤 계속 간다 → 연한 그림자(정해진 사항: 빛이 투과되어 연한 그림자).
+//    · 물체 하나는 한 번만 곱한다 — 레이가 들어가는 면 · 나오는 면에서 같은 물체가 두 번 오고,
+//      DXR 사양은 any-hit 중복 호출을 허용한다(RayQuery 후보에도 같은지는 사양에 없음). 그래서 인스턴스 번호로 걸러낸다.
+//    · 곱셈은 순서와 상관없다 — 후보가 오는 순서는 정해져 있지 않다.
+//    · 남는 빛이 1 % 밑이면 불투명처럼 확정하고 끝낸다.
+//  ★ 이 파일만 RayQuery 를 쓴다 → cs_6_5 (DXR Tier 1.1). RT 미지원 장치에서는 만들지 않는다.
+// ============================================================
+
+#include "GBuffer.hlsli"
+
+// GRenderer.cpp 의 ShadowConstants 와 같은 배치 (112바이트)
+cbuffer ShadowCB : register(b0)
+{
+	float4x4 gInvViewProj;
+	float3   gEyePos;     float gMaxDistance;   // 레이 길이 상한(m)
+	float3   gSunDir;     float _pad0;          // 빛이 나아가는 방향 — 레이는 그 반대(-gSunDir)로 쏜다
+	uint2    gSize;       uint2 _pad1;
+};
+
+Texture2D<float2>               gNormal   : register(t1);   // GB1 (팔면체 법선)
+Texture2D<float>                gDepth    : register(t4);
+RaytracingAccelerationStructure gScene    : register(t5);   // TLAS (루트 SRV)
+StructuredBuffer<float4>        gMaterialTransmittance : register(t6);   // 재질 번호 → 물체 하나를 지나고 남는 빛 (rgb)
+RWTexture2D<float4>             gShadow   : register(u0);   // 그림자 마스크 — rgb = 가시도
+
+static const uint  kMaxTrackedObjects = 4;     // 한 번만 곱하려고 기억해 두는 투과 물체 수(넘으면 그다음부턴 중복을 못 거른다)
+static const float kOpaqueCutoff      = 0.01;  // 남는 빛이 이보다 작으면 불투명처럼 끝낸다
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+	const uint2 pixel = id.xy;
+	if (pixel.x >= gSize.x || pixel.y >= gSize.y) return;
+
+	const float depth = gDepth[pixel];
+	if (depth >= 1.0)
+	{
+		gShadow[pixel] = float4(1.0, 1.0, 1.0, 1.0);   // 메인 패스 물체 없음 — 라이팅도 이 픽셀을 건너뛴다
+		return;
+	}
+
+	const float3 P = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj);
+	const float3 N = DecodeNormalOct(gNormal[pixel]);
+	const float3 L = normalize(-gSunDir);
+	if (dot(N, L) <= 0.0)
+	{
+		gShadow[pixel] = float4(0.0, 0.0, 0.0, 1.0);   // 해를 등진 면 — 직접광이 어차피 0 이라 레이를 아낀다
+		return;
+	}
+
+	// 깊이에서 되살린 위치는 멀수록 오차가 커서(D32 · near 0.1 m 에서 거리² 에 비례, 1 km 에서 약 0.6 m)
+	// 레이 시작점을 법선 쪽으로 거리에 맞춰 띄운다. 안 띄우면 자기 표면에 맞아 줄무늬 그림자가 생긴다.
+	const float viewDistance = length(P - gEyePos);
+	const float bias = 0.02 + viewDistance * viewDistance * 1.0e-6;
+
+	RayDesc ray;
+	ray.Origin    = P + N * bias;
+	ray.Direction = L;
+	ray.TMin      = 0.0;
+	ray.TMax      = gMaxDistance;
+
+	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+	q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
+
+	float3 transmittance = float3(1.0, 1.0, 1.0);
+	uint   counted[kMaxTrackedObjects];
+	uint   countedCount = 0;
+
+	while (q.Proceed())
+	{
+		// 여기 오는 후보는 FORCE_NON_OPAQUE 로 넣은 투과 물체의 삼각형뿐이다.
+		if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
+			continue;
+
+		const uint instance = q.CandidateInstanceIndex();   // TLAS 안 순번 — 같은 물체인지 가리는 데 쓴다
+		bool already = false;
+		for (uint k = 0; k < countedCount; ++k)
+			already = already || (counted[k] == instance);
+		if (already)
+			continue;
+		if (countedCount < kMaxTrackedObjects)
+			counted[countedCount++] = instance;
+
+		transmittance *= gMaterialTransmittance[q.CandidateInstanceID()].rgb;   // InstanceID = 재질 번호
+		if (max(transmittance.r, max(transmittance.g, transmittance.b)) < kOpaqueCutoff)
+			q.CommitNonOpaqueTriangleHit();   // 거의 다 막혔다 — 불투명처럼 확정 → 탐색 끝
+	}
+
+	// 확정된 히트가 있으면(불투명이거나 거의 다 막힘) 그림자, 없으면 투과 물체를 지나고 남은 빛.
+	const float3 visibility = (q.CommittedStatus() == COMMITTED_NOTHING) ? transmittance : float3(0.0, 0.0, 0.0);
+	gShadow[pixel] = float4(visibility, 1.0);
+}
