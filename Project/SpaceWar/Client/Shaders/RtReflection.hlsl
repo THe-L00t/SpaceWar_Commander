@@ -6,10 +6,13 @@
 //    Miss        아무것도 안 맞으면 하늘색
 //    ClosestHit  맞은 물체를 그 자리에서 셰이딩 — 정점 · 재질 · 텍스처를 SM 6.6 바인드리스로 읽는다
 //                (태양 직접광 × 태양 가시도(RayQuery) + 앰비언트 + 자체발광, 재귀 반사 없음)
-//  [5] Lighting.hlsl 이 F_env × 반사 색으로 더한다.
+//  [4d] RtReflectionDenoise.hlsl 이 노이즈를 지우고, [5] Lighting.hlsl 이 F_env × 반사 색으로 더한다.
 //
-//  ★ 반사 레이 방향(ReflectionDirection)은 «첫 판 범위» 결정을 기다린다.
-//    지금은 두 방식에 공통인 경우(거울 방향)만 넣어 기반을 검증한다 — 노션 4단계 기록 참고.
+//  ★ 2026-10-27 렌더 5단계 — 반사 레이 방향을 B 방식으로 (사용자 결정 10-27)
+//    거울 방향 하나가 아니라, 거칠기 분포(GGX 의 «보이는 법선», Heitz 2018)에서 픽셀 · 프레임마다 방향을 하나 뽑는다.
+//    한 프레임만 보면 점박이 노이즈 → [4d] 가 이웃 픽셀 · 이전 프레임과 섞어 거칠기만큼 흐린 반사로 만든다.
+//    출력 a 채널 = 레이가 맞은 거리(미스면 gMaxDistance) — 나중에 NRD · DLSS RR 이 요구하는 «반사 히트 거리» 자리.
+//    원문 추정식의 가중치 F·G2/G1 중 F 는 라이팅의 F_env 가 맡고, G2/G1(≤ 1, 매끈할수록 1)은 지금 생략한다.
 //  ★ 반사 레이는 RAY_FLAG_FORCE_OPAQUE — 투과 재질 물체도 반사에서는 불투명 표면으로 보인다(얼음 패스 [7] 전까지).
 //  ★ 바인드리스: 루트 시그니처에 CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, 힙은 GRenderer 의 bindlessHeap.
 //    히트 셰이더 안 번호는 레이마다 다를 수 있어 NonUniformResourceIndex 로 감싼다(사양 요구).
@@ -26,7 +29,7 @@ cbuffer ReflectionCB : register(b0)
 	float3   gEyePos;        float gMaxDistance;     // 레이 길이 상한(m)
 	float3   gSunDir;        float gMaxRoughness;    // 이 거칠기 이상은 반사 레이를 쏘지 않는다
 	uint2    gSize;          uint  gNormalIndex;     uint gMaterialIndex;   // ↓ 바인드리스 힙 번호
-	uint     gDepthIndex;    uint  gOutputIndex;     uint2 _pad0;
+	uint     gDepthIndex;    uint  gOutputIndex;     uint  gFrameIndex;   uint _pad0;   // 5단계 — 난수 씨앗용 프레임 번호
 	float3   gSkyColor;      float _pad1;            // 미스 색 — 지금 하늘([6] 미정)은 지우기 색이라 같은 값
 };
 
@@ -41,10 +44,19 @@ struct ReflectionPayload
 	float  hitT;   // 맞은 거리 (미스면 -1) — 나중에 디노이즈 · 흐림 정도에 쓸 자리
 };
 
-// 반사 레이 방향 — «첫 판 범위» 결정 전이라 거울 방향(두 방식에 공통인 경우)만 둔다.
-float3 ReflectionDirection(float3 N, float3 V, float rough)
+// 반사 레이 방향 — B 방식 (5단계).
+//  ① 법선 N 기준 접선 공간을 만들고 ② 시선을 그 공간으로 옮겨 ③ GGX 보이는 법선(미세면) H 를 하나 뽑고
+//  ④ 시선을 H 에 대해 반사한다(원문 식 16: L = reflect(V, N_i)).
+//  뽑힌 방향이 표면 아래로 가면(노멀맵 · 비스듬한 시선에서 생긴다) 거울 방향으로 대신한다.
+float3 ReflectionDirection(float3 N, float3 V, float rough, float2 u)
 {
-	return reflect(-V, N);
+	float3 T, B;
+	BuildOrthonormalBasis(N, T, B);
+	const float3 Ve = float3(dot(V, T), dot(V, B), dot(V, N));
+	const float3 He = SampleGgxVndf(Ve, rough * rough, u);
+	const float3 H  = He.x * T + He.y * B + He.z * N;
+	const float3 L  = reflect(-V, H);
+	return (dot(L, N) > 0.0) ? L : reflect(-V, N);
 }
 
 [shader("raygeneration")]
@@ -72,7 +84,7 @@ void RayGen()
 	const float3 P   = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj);
 	const float3 N   = DecodeNormalOct(normalTex[pixel]);
 	const float3 V   = normalize(gEyePos - P);
-	const float3 dir = ReflectionDirection(N, V, rough);
+	const float3 dir = ReflectionDirection(N, V, rough, Random2(pixel, gFrameIndex));
 	if (dot(dir, N) <= 0.0)
 	{
 		output[pixel] = float4(0.0, 0.0, 0.0, 0.0);   // 노멀맵 때문에 반사 방향이 표면 아래로 — 쏘지 않는다
@@ -91,7 +103,8 @@ void RayGen()
 	// 히트 그룹 0 번 하나, 미스 0 번 하나. 기하 기여 배수 1(BLAS 마다 기하 1개).
 	TraceRay(gScene, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, ray, payload);
 
-	output[pixel] = float4(payload.color, 1.0);
+	// a = 맞은 거리 (5단계 — 미스는 레이 길이 상한으로)
+	output[pixel] = float4(payload.color, payload.hitT >= 0.0 ? payload.hitT : gMaxDistance);
 }
 
 [shader("miss")]

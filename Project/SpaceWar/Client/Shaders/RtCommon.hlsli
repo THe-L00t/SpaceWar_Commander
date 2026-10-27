@@ -6,6 +6,7 @@
 //    · RtInstance  : TLAS 인스턴스 표 한 칸 — GRenderer.cpp 의 RtInstanceGpu 와 같은 배치(16바이트)
 //    · TraceSunVisibility : 태양 가시도(RGB). 2단계 RtShadow.hlsl 의 루프를 옮겨 왔다 —
 //                           반사 히트 지점의 그림자도 같은 규칙(투과 물체는 한 번씩 곱함)으로 구하려고.
+//    · (5단계) PcgHash · Random2 · BuildOrthonormalBasis · SampleGgxVndf : B 방식 반사 레이 방향 뽑기
 // ============================================================
 #ifndef RT_COMMON_HLSLI
 #define RT_COMMON_HLSLI
@@ -81,6 +82,64 @@ float3 TraceSunVisibility(RaytracingAccelerationStructure scene, StructuredBuffe
 			q.CommitNonOpaqueTriangleHit();
 	}
 	return (q.CommittedStatus() == COMMITTED_NOTHING) ? transmittance : float3(0.0, 0.0, 0.0);
+}
+
+// ============================================================
+//  무작위 수 · GGX 방향 샘플링 (2026-10-27 렌더 5단계 — [4b] B 방식)
+// ============================================================
+
+static const float kTwoPi = 6.28318531;
+
+// PCG 해시 — 정수 하나를 잘 섞인 정수로. (Jarzynski · Olano, «Hash Functions for GPU Rendering», JCGT 2020)
+uint PcgHash(uint v)
+{
+	const uint state = v * 747796405u + 2891336453u;
+	const uint word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+// 픽셀 · 프레임마다 다른 [0,1) 균등 난수 두 개. 프레임이 바뀌면 같은 픽셀도 다른 값 → 시간 누적이 평균을 낸다.
+float2 Random2(uint2 pixel, uint frame)
+{
+	const uint h1 = PcgHash(pixel.x + PcgHash(pixel.y + PcgHash(frame)));
+	const uint h2 = PcgHash(h1);
+	return float2(h1 >> 8, h2 >> 8) * (1.0 / 16777216.0);   // 위 24비트 → float 가 정확히 담는 범위
+}
+
+// 법선 n 에 수직인 두 축(접선 공간). (Duff 외, «Building an Orthonormal Basis, Revisited», JCGT 2017)
+void BuildOrthonormalBasis(float3 n, out float3 b1, out float3 b2)
+{
+	const float s = n.z >= 0.0 ? 1.0 : -1.0;
+	const float a = -1.0 / (s + n.z);
+	const float b = n.x * n.y * a;
+	b1 = float3(1.0 + s * n.x * n.x * a, s * b, -s * n.x);
+	b2 = float3(b, s + n.y * n.y * a, -n.y);
+}
+
+// GGX «보이는 법선» 분포에서 미세면 법선 하나를 뽑는다 — 접선 공간(z = 표면 법선).
+//  (Heitz, «Sampling the GGX Distribution of Visible Normals», JCGT 2018, Listing 1 — 등방성 alpha 로 줄임)
+//  Ve = 접선 공간 시선(표면 → 눈), alpha = 거칠기² (Shading.hlsli SpecularGGX 와 같은 규약), u = 균등 난수 2개.
+//  눈에 보이는 미세면만 뽑으므로 일반 GGX 샘플링보다 버려지는 방향이 적다.
+float3 SampleGgxVndf(float3 Ve, float alpha, float2 u)
+{
+	// 시선을 «반구» 배치로 늘린다
+	const float3 Vh = normalize(float3(alpha * Ve.x, alpha * Ve.y, Ve.z));
+	// 정규 직교 축 (외적이 0 인 경우 따로)
+	const float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+	float3 T1 = float3(1.0, 0.0, 0.0);
+	if (lensq > 0.0)
+		T1 = float3(-Vh.y, Vh.x, 0.0) * rsqrt(lensq);
+	const float3 T2 = cross(Vh, T1);
+	// 투영 면적 위의 점
+	const float r   = sqrt(u.x);
+	const float phi = kTwoPi * u.y;
+	const float t1  = r * cos(phi);
+	float       t2  = r * sin(phi);
+	const float s   = 0.5 * (1.0 + Vh.z);
+	t2 = (1.0 - s) * sqrt(1.0 - t1 * t1) + s * t2;
+	// 반구로 되돌리고, 늘렸던 배치를 원래 타원체로
+	const float3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+	return normalize(float3(alpha * Nh.x, alpha * Nh.y, max(0.0, Nh.z)));
 }
 
 #endif

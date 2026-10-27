@@ -11,8 +11,13 @@
 //  ★ 2026-10-27 파이프라인 2단계 — RT 코드를 뺐다
 //    예전 PSMain 은 «픽셀 셰이더 안 인라인 RayQuery 반사 1개 + 러시안 룰렛(FGPS)» 을 했다.
 //    1단계 뒤로 메인 패스는 PSGBuffer 를 쓰고 배경 패스는 RT 를 쓰지 않아서, 그 코드는 한 번도 돌지 않았다.
-//    RT 는 이제 G-buffer 뒤 컴퓨트 단계가 맡는다 — [4a] 그림자는 RtShadow.hlsl, [4b] 반사는 미정.
+//    RT 는 이제 G-buffer 뒤 단계가 맡는다 — [4a] 그림자는 RtShadow.hlsl, [4b] 반사는 RtReflection.hlsl(4단계).
 //    그래서 이 파일에는 RayQuery · TLAS · RT_SUPPORTED 가 없고 항상 SM 6.0 으로 컴파일한다.
+//
+//  ★ 2026-10-27 렌더 5단계 — 모션 벡터
+//    VSMain 이 같은 정점의 «이전 프레임 클립 좌표»(prevWorld × gPrevViewProj)를 같이 넘기고,
+//    PSGBuffer 가 두 클립 좌표의 화면 UV 차이를 GB4 에 쓴다. [4d] 반사 노이즈 제거의 시간 누적이 이걸로 이전 프레임 결과를 찾는다.
+//    배경 패스(PSMain)는 G-buffer 를 안 쓰므로 모션 벡터도 없다.
 //
 //  ★ 2026-09-26 재질 도입 (client2 `46567fd` 이식)
 //    roughness/metallic 이 더 이상 자리표시자 상수가 아니다. 재질 상수(b2)와
@@ -25,12 +30,13 @@
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
 
-// GRenderer.cpp 의 FrameConstants 와 같은 배치 (96바이트)
+// GRenderer.cpp 의 FrameConstants 와 같은 배치 (160바이트 — 5단계에서 96 → 160)
 cbuffer FrameCB : register(b0)
 {
 	float4x4 gViewProj;
 	float3   gEyePos;        float _pad0;
 	float3   gSunDir;        uint  gDebugMode;
+	float4x4 gPrevViewProj;  // 5단계 — 이전 프레임 viewProj (모션 벡터용). 첫 프레임 · 배경 패스는 gViewProj 와 같다
 };
 
 // ── 인스턴스 (수정방향 3.2, 2026-10-11) ──
@@ -46,7 +52,7 @@ cbuffer DrawCB : register(b1)
 struct InstanceGpu           // GRenderer 의 Impl::InstanceGpu 와 같은 128바이트
 {
 	row_major float4x4 world;
-	row_major float4x4 prevWorld;   // 모션 벡터용 — 아직 읽지 않는다
+	row_major float4x4 prevWorld;   // 이전 프레임 world — 5단계부터 VSMain 이 모션 벡터에 쓴다
 };
 StructuredBuffer<InstanceGpu> gInstances : register(t6);
 StructuredBuffer<uint>        gVisible   : register(t7);
@@ -85,15 +91,22 @@ struct VOut
 	float3 col   : COLOR;
 	float2 uv    : TEXCOORD;
 	float4 tan   : TANGENT;
+	// 5단계 — 모션 벡터용 클립 좌표 두 개. 나누기(w)는 픽셀 셰이더에서 한다(보간 뒤에 나눠야 원근이 맞다).
+	float4 curClip  : CURCLIP;
+	float4 prevClip : PREVCLIP;
 };
 
 VOut VSMain(VIn i, uint instance : SV_InstanceID)
 {
-	const float4x4 world = gInstances[gVisible[gInstanceBase + instance]].world;
+	const InstanceGpu inst = gInstances[gVisible[gInstanceBase + instance]];
+	const float4x4 world = inst.world;
 	VOut o;
 	float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
 	o.pos   = mul(wp, gViewProj);
+	// ★ 5단계 — 같은 정점의 이전 프레임 위치: 이전 world(물체 움직임) × 이전 viewProj(카메라 움직임)
+	o.curClip  = o.pos;
+	o.prevClip = mul(mul(float4(i.pos, 1.0), inst.prevWorld), gPrevViewProj);
 	o.nrm   = mul(float4(i.nrm, 0.0), world).xyz;
 	o.col   = i.col;
 	o.uv    = i.uv;
@@ -160,7 +173,9 @@ Surface SampleSurface(VOut i, bool frontFace)
 GBufferOut PSGBuffer(VOut i, bool frontFace : SV_IsFrontFace)
 {
 	const Surface s = SampleSurface(i, frontFace);
-	return PackGBuffer(s.albedo, s.N, s.rough, s.metallic, s.emissive);
+	// 5단계 — GB4 모션 벡터 = 이전 UV − 지금 UV (카메라 · 물체 움직임 둘 다 들어 있다)
+	const float2 motion = ClipToUv(i.prevClip) - ClipToUv(i.curClip);
+	return PackGBuffer(s.albedo, s.N, s.rough, s.metallic, s.emissive, motion);
 }
 
 // ── 배경 패스 (forward) ──
@@ -184,7 +199,7 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	case 8:  color = lit.specular;                     break;   // 태양 하이라이트만
 	case 10: color = float3(s.rough, s.metallic, 0.0); break;   // 거칠기(R) · 금속성(G)
 	case 5: case 6: case 7: case 9:
-		color = float3(0.0, 0.0, 0.0);                          // 5 · 9 는 메인 패스의 [4b] 반사(배경은 반사 없음), 6 · 7 은 비어 있음
+		color = float3(0.0, 0.0, 0.0);                          // 5 · 7 · 9 는 메인 패스의 [4b] 반사, 6 은 메인 패스 모션 벡터(배경은 둘 다 없음)
 		break;
 	}
 
