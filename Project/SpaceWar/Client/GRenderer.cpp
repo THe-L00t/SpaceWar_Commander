@@ -453,6 +453,18 @@ namespace swc {
 
 		bool rtSupported = false;
 		RayTracingParams rtParams;
+
+		// ── [0] 가속 구조 갱신 — 비동기 컴퓨트 큐 (2026-10-27 렌더 3단계) ──
+		//  TLAS 빌드를 그래픽(직접) 큐가 아니라 따로 둔 컴퓨트 큐에 보내, 직접 큐의 컬링 · G-buffer 와 GPU 에서 겹쳐 돌린다.
+		//  직접 큐는 [4a] RT 그림자 직전에 asFence 를 GPU 쪽에서 기다린다(JoinAsyncTlasBuild). CPU 는 기다리지 않는다.
+		//  큐를 못 만들면 asyncAs = false — 예전처럼 직접 커맨드 리스트에서 빌드한다.
+		bool                               asyncAs = false;
+		ComPtr<ID3D12CommandQueue>         computeQueue;
+		ComPtr<ID3D12CommandAllocator>     computeAllocator;
+		ComPtr<ID3D12GraphicsCommandList4> computeList;
+		ComPtr<ID3D12Fence>                asFence;
+		UINT64                             asFenceValue = 0;
+		bool                               asPending = false;   // 컴퓨트 큐로 보냈고, 직접 큐가 아직 기다리지 않았다
 		// 정규화 필수 — GGX 의 H = normalize(L+V) 계산에 들어간다
 		XMFLOAT3 sunDir{ 0.3563f, -0.8144f, 0.4581f };
 		uint32_t debugMode = 0;
@@ -599,6 +611,65 @@ namespace swc {
 			}
 		}
 
+		// ── [0] TLAS 빌드를 비동기 컴퓨트 큐로 보낸다 (2026-10-27 렌더 3단계) ──
+		//  인스턴스 디스크립터(UPLOAD)는 부르기 전에 이번 프레임 값으로 채워 둔다(ResetInstances · AddInstance).
+		//  실패하면 false — 부른 쪽이 직접 커맨드 리스트에서 빌드한다.
+		bool SubmitTlasBuildAsync()
+		{
+			// 지난 프레임의 컴퓨트 작업은 끝나 있어야 할당자를 Reset 할 수 있다.
+			//  직접 큐가 그 펜스를 기다렸고 프레임 끝에서 직접 큐를 기다렸으므로 보통은 바로 통과한다(안전장치).
+			if (asFence->GetCompletedValue() < asFenceValue)
+			{
+				if (FAILED(asFence->SetEventOnCompletion(asFenceValue, fenceEvent)) ||
+					WaitForSingleObject(fenceEvent, INFINITE) != WAIT_OBJECT_0)
+					return false;
+			}
+			if (FAILED(computeAllocator->Reset()) ||
+				FAILED(computeList->Reset(computeAllocator.Get(), nullptr)))
+				return false;
+			accel.BuildTlas(computeList.Get());   // 빌드 + UAV 배리어(같은 컴퓨트 리스트 안)
+			if (FAILED(computeList->Close()))
+				return false;
+			ID3D12CommandList* lists[] = { computeList.Get() };
+			computeQueue->ExecuteCommandLists(1, lists);
+			if (FAILED(computeQueue->Signal(asFence.Get(), ++asFenceValue)))
+				return false;
+			asPending = true;
+			return true;
+		}
+
+		// ── [0] 의 짝 — 직접 큐를 여기서 한 번 끊는다 (2026-10-27 렌더 3단계) ──
+		//  앞부분(프레임 시작 · 컬링 · G-buffer)을 지금 GPU 에 보내 컴퓨트 큐의 TLAS 빌드와 같이 돌게 하고,
+		//  뒷부분(TLAS 를 읽는 [4a] RT 그림자부터)은 asFence 를 GPU 쪽에서 기다린 뒤 돌게 한다.
+		//  ★ 커맨드 리스트는 실행 중에도 Reset 할 수 있고 같은 할당자를 다시 써도 된다(MS 문서). 할당자 Reset 은 프레임 시작에서만.
+		//  ★ Reset 은 묶어 둔 상태(루트 · 힙 · 타깃 · 뷰포트)를 다 푼다. 뒤 패스는 루트 · 힙 · 타깃을 각자 묶으므로 뷰포트 · 가위만 다시 건다.
+		//  ★ 버퍼는 ExecuteCommandLists 가 끝나면 COMMON 으로 돌아가지만, 명시적으로 상태를 바꾼 텍스처는 그대로다
+		//    → RenderTarget 들의 상태 추적은 끊긴 뒤에도 그대로 맞다.
+		void JoinAsyncTlasBuild()
+		{
+			if (!asPending) return;
+			asPending = false;
+
+			commandList->Close();
+			ID3D12CommandList* lists[] = { commandList.Get() };
+			commandQueue->ExecuteCommandLists(1, lists);
+			commandQueue->Wait(asFence.Get(), asFenceValue);   // GPU 쪽 대기 — CPU 는 멈추지 않는다
+			commandList->Reset(commandAllocator.Get(), nullptr);
+
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f };
+			const D3D12_RECT scissor = { 0, 0, LONG(width), LONG(height) };
+			commandList->RSSetViewports(1, &vp);
+			commandList->RSSetScissorRects(1, &scissor);
+		}
+
+		// 컴퓨트 큐에 보낸 마지막 TLAS 빌드가 끝날 때까지 CPU 가 기다린다(종료할 때).
+		void WaitForCompute()
+		{
+			if (!asFence || asFence->GetCompletedValue() >= asFenceValue) return;
+			if (SUCCEEDED(asFence->SetEventOnCompletion(asFenceValue, fenceEvent)))
+				WaitForSingleObject(fenceEvent, INFINITE);
+		}
+
 		// ── [8] HDR 컬러 → 백버퍼 (2026-10-27) ──
 		//  UI(DrawSprites)는 백버퍼 위에 덮어 그리므로 UI 전에 한 번 옮겨야 한다.
 		//  UI 가 없는 프레임은 EndFrame 이 부른다. 한 프레임에 한 번만 돈다(resolved).
@@ -636,6 +707,8 @@ namespace swc {
 	{
 		if (impl->device && impl->swapChain && impl->commandQueue && impl->fence && impl->fenceEvent)
 			impl->WaitForGpu();
+		if (impl->fenceEvent)
+			impl->WaitForCompute();   // [0] 컴퓨트 큐에 남은 TLAS 빌드 (보통은 이미 끝나 있다)
 		if (impl->fenceEvent)
 			CloseHandle(impl->fenceEvent);
 	}
@@ -979,6 +1052,32 @@ namespace swc {
 		{
 			impl->rtSupported = false;
 			impl->status += L"  (가속 구조 초기화 실패 — RT 비활성)";
+		}
+
+		// ── [0] 비동기 컴퓨트 큐 (2026-10-27 렌더 3단계) — TLAS 빌드 전용 ──
+		//  컴퓨트 커맨드 리스트도 BuildRaytracingAccelerationStructure 를 기록할 수 있다.
+		//  하나라도 실패하면 asyncAs = false 로 두고 예전처럼 직접 커맨드 리스트에서 빌드한다(화면은 같다).
+		if (impl->rtSupported)
+		{
+			D3D12_COMMAND_QUEUE_DESC computeDesc = {};
+			computeDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+			impl->asyncAs =
+				SUCCEEDED(impl->device->CreateCommandQueue(&computeDesc, IID_PPV_ARGS(&impl->computeQueue))) &&
+				SUCCEEDED(impl->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&impl->computeAllocator))) &&
+				SUCCEEDED(impl->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, impl->computeAllocator.Get(), nullptr, IID_PPV_ARGS(&impl->computeList))) &&
+				SUCCEEDED(impl->computeList->Close()) &&
+				SUCCEEDED(impl->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&impl->asFence)));
+			if (impl->asyncAs)
+			{
+				// PIX 등 GPU 도구에서 큐를 알아보게 이름을 붙인다.
+				impl->commandQueue->SetName(L"직접 큐 (래스터 · RT · 라이팅)");
+				impl->computeQueue->SetName(L"[0] 비동기 컴퓨트 큐 (TLAS 빌드)");
+				OutputDebugStringW(L"[GRenderer] [0] TLAS 를 비동기 컴퓨트 큐에서 빌드한다\n");
+			}
+			else
+			{
+				impl->status += L"  (비동기 컴퓨트 큐 생성 실패 — TLAS 를 직접 큐에서 빌드)";
+			}
 		}
 
 		// Root signature (래스터 — 배경 forward · 메인 G-buffer 가 같이 쓴다)
@@ -1931,7 +2030,10 @@ namespace swc {
 				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
 				impl->accel.AddInstance(blasIndex, it.world, material, impl->materials[material].transmissive);
 			}
-			impl->accel.BuildTlas(commandList);
+			// ★ 2026-10-27 렌더 3단계 — [0] 빌드는 비동기 컴퓨트 큐로. 직접 큐는 G-buffer 뒤(JoinAsyncTlasBuild)에서 기다린다.
+			//   컴퓨트 큐가 없거나 제출에 실패하면 예전처럼 이 직접 리스트에서 빌드한다.
+			if (!impl->asyncAs || !impl->SubmitTlasBuildAsync())
+				impl->accel.BuildTlas(commandList);
 		}
 
 		// ── 프레임 상수 ──
@@ -2136,6 +2238,10 @@ namespace swc {
 		ID3D12PipelineState* const gbufferPsos[4] = {
 			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get() };
 		impl->DrawBatches(pass, gbufferPsos);
+
+		// ── [0] 의 짝 — 여기까지(프레임 시작 · 컬링 · G-buffer)를 먼저 GPU 에 보내 컴퓨트 큐의 TLAS 빌드와 겹치게 하고,
+		//    여기부터(TLAS 를 읽는 [4a])는 그 빌드가 끝난 뒤 돌게 한다. 비동기로 안 보냈으면 아무것도 안 한다.
+		impl->JoinAsyncTlasBuild();
 
 		// G-buffer · 깊이를 컴퓨트가 읽는 상태로. 깊이는 DEPTH_READ 와 셰이더 읽기를 같이 켠다(둘 다 읽기 상태라 함께 둘 수 있다).
 		impl->TransitionTargets({
