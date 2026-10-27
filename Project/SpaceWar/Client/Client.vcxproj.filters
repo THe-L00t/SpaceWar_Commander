@@ -246,5 +246,11 @@
     <None Include="Shaders\PostProcess.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\ReflectionTiles.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ReflectionClassify.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
 </Project>

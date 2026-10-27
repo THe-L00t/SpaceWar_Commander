@@ -294,9 +294,20 @@ namespace swc {
 		XMFLOAT3   sunIlluminance;            // 6단계 — 태양 조도(RGB) — 맞은 점 조명
 		uint32_t   skyIrradianceIndex;        // 6단계 — 하늘 조도 텍스처(바인드리스) — 맞은 점 주변광
 		ProbeVolumeGpu probeVolume;           // 7단계 — [4c] GI 프로브 격자 — 맞은 점 주변광
-		uint32_t   probeIrradianceIndex, probeDistanceIndex, probeStateIndex, pad7;   // 7단계 — 바인드리스 번호
+		uint32_t   probeIrradianceIndex, probeDistanceIndex, probeStateIndex;   // 7단계 — 바인드리스 번호
+		uint32_t   tileListIndex;   // 11단계 — [3] 분류 타일 목록 SRV (0xFFFFFFFF 면 화면 전체 DispatchRays)
 	};
 	static_assert(sizeof(ReflectionConstants) == 224, "ReflectionCB 는 224바이트");
+
+	// ReflectionClassify.hlsl 의 ClassifyCB 와 같은 순서 · 크기 (2026-10-27 렌더 11단계, [3] 분류)
+	struct ClassifyConstants
+	{
+		uint32_t width, height; float maxRoughness; uint32_t depthIndex;   // ↓ 바인드리스 번호
+		uint32_t materialIndex, reflectionUav, tileListUav, argsUav;
+		uint32_t argsWidthOffset;   // offsetof(D3D12_DISPATCH_RAYS_DESC, Width) — 분류가 여기에 64 씩 더한다
+		uint32_t pad[3];
+	};
+	static_assert(sizeof(ClassifyConstants) == 48, "ClassifyCB 는 48바이트");
 
 	// ProbeGI.hlsl 의 GiCB 와 같은 순서 · 크기 (2026-10-27 렌더 7단계, [4c] GI 프로브) — 세 진입점이 같은 상수를 쓴다
 	struct GiConstants
@@ -528,6 +539,9 @@ namespace swc {
 			BindlessBloomUpSrv0 = 64, BindlessBloomUpUav0 = 70,                // 블룸 올리기 밉마다 SRV 64~69 · UAV 70~75
 			BindlessHistogramUav = 76,                                          // 휘도 히스토그램 (raw, uint × 256)
 			BindlessExposureSrv = 77, BindlessExposureUav = 78,                // 노출 버퍼 (float4 하나)
+			// 11단계 — [3] 분류
+			BindlessReflectionTileSrv = 79, BindlessReflectionTileUav = 80,    // 반사 타일 목록 (uint × 화면 타일 수)
+			BindlessReflectionArgsUav = 81,                                     // DispatchRays 간접 인자 (raw — Width 에 원자 더하기)
 			// 앞 128칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64, 10단계에서 → 128).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
 			BindlessReserved = 128 };
@@ -570,6 +584,35 @@ namespace swc {
 		//  TLAS 인스턴스 표: 인스턴스 순번 → 정점 · 인덱스 버퍼 번호 · 재질. 프레임 슬롯마다 한 벌(AccelStructure 와 같은 규칙).
 		ComPtr<ID3D12Resource>      rtInstances;
 		uint8_t*                    rtInstanceData = nullptr;
+
+		// ── [3] 분류 — 반사 레이가 필요한 타일만 DispatchRays (2026-10-27 렌더 11단계, ReflectionClassify.hlsl) ──
+		//  분류 컴퓨트가 8×8 타일 목록과 D3D12_DISPATCH_RAYS_DESC(Width = 타일 수 × 64)를 GPU 에서 채우고,
+		//  ExecuteIndirect(DISPATCH_RAYS 명령 시그니처)가 그 인자로 RayGen 을 띄운다. 하나라도 못 만들면 예전 DispatchRays(화면 크기).
+		//  타일 목록 · 인자는 RenderTarget 과 같은 «자원 + 지금 상태» 로 들고 TransitionTargets 로 배리어를 맞춘다(정의는 아래).
+		static constexpr UINT kReflectionTileSize = 8;              // ReflectionTiles.hlsli 의 REFLECTION_TILE_SIZE 와 같아야 한다
+		ComPtr<ID3D12PipelineState>    classifyPso;                 // CSClassifyTiles (바인드리스 컴퓨트 공용 루트)
+		ComPtr<ID3D12CommandSignature> dispatchRaysSignature;       // DISPATCH_RAYS 하나, 루트 시그니처 없음(바인딩을 안 바꾼다)
+		ComPtr<ID3D12Resource>         reflectionArgsTemplate;      // UPLOAD — 셰이더 테이블 주소 · Width 0 · Height 1 · Depth 1
+		ComPtr<ID3D12Resource>         classifyCB;                  // UPLOAD, 영속 매핑
+		uint8_t*                       classifyCBData = nullptr;
+		UINT                           reflectionTilesX = 0, reflectionTilesY = 0;
+
+		// [4b] 셰이더 테이블(초기화 때 써 둔 raygen 0 · miss 64 · hit group 128 바이트 자리, 레코드 32 B)로 DispatchRays 인자를 만든다.
+		//  분류가 꺼졌을 때의 직접 DispatchRays(화면 크기)와 [3] 분류 인자 원본(Width 0)이 같이 쓴다 — 표 배치를 한 곳에만 둔다.
+		D3D12_DISPATCH_RAYS_DESC ReflectionDispatchDesc(UINT gridWidth, UINT gridHeight) const
+		{
+			const D3D12_GPU_VIRTUAL_ADDRESS table = rtShaderTable->GetGPUVirtualAddress();
+			const UINT64 align = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+			const UINT64 record = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+			D3D12_DISPATCH_RAYS_DESC rays = {};
+			rays.RayGenerationShaderRecord = { table, record };
+			rays.MissShaderTable = { table + align, record, record };
+			rays.HitGroupTable = { table + 2 * align, record, record };
+			rays.Width = gridWidth;
+			rays.Height = gridHeight;
+			rays.Depth = 1;
+			return rays;
+		}
 
 		// ── [4d] 반사 노이즈 제거 — 임시 구현 (2026-10-27 렌더 5단계, RtReflectionDenoise.hlsl) ──
 		//  B 방식 반사(레이 1개라 점박이)를 시간 누적 + 공간 필터로 지운다. NRD · DLSS RR 이 정해지면 바뀌는 자리.
@@ -803,6 +846,10 @@ namespace swc {
 		ComPtr<ID3D12PipelineState> tonemapBindlessPso;
 		LARGE_INTEGER               lastFrameCounter{};   // 자동 노출 적응(스톱/초)에 쓰는 프레임 시간
 		float                       frameDeltaSeconds = 1.0f / 60.0f;
+
+		// ── [3] 분류 버퍼 (2026-10-27 렌더 11단계 — 파이프라인 · 인자 원본은 [4b] 옆 «[3] 분류» 주석) ──
+		RenderTarget                reflectionTiles;     // 버퍼 uint × 화면 타일 수 — 고른 타일 (x | y << 16)
+		RenderTarget                reflectionArgs;      // 버퍼 D3D12_DISPATCH_RAYS_DESC 하나 — ExecuteIndirect 인자
 
 		D3D12_CPU_DESCRIPTOR_HANDLE ReadOnlyDsv() const   // DSV 힙 1번 — 깊이 테스트만, 쓰지 않음(셰이더가 같은 깊이를 SRV 로 읽는다)
 		{
@@ -2991,6 +3038,110 @@ namespace swc {
 						: L"[GRenderer] [2] AO 파이프라인 준비 (RT 없음 — 화면 공간만)\n");
 				}
 			}
+
+			// [3] 분류 — 한 진입점 (ReflectionClassify.hlsl) + 타일 목록 · 인자 버퍼 · 인자 원본 · 명령 시그니처 (2026-10-27 렌더 11단계)
+			//  [4b] 반사 파이프라인 · 셰이더 테이블이 있어야 만든다(인자 원본에 셰이더 테이블 주소가 들어간다).
+			//  하나라도 실패하면 분류만 끄고 예전 DispatchRays(화면 크기)로 돈다 — 화면은 같다.
+			//  (RT 장치 = 레이트레이싱 티어 1.1 이상(장치 고를 때 확인) — ExecuteIndirect 의 DispatchRays 도 1.1 부터라 따로 볼 것이 없다)
+			if (ok && impl->rtReflectionPso)
+			{
+				impl->reflectionTilesX = (impl->width + Impl::kReflectionTileSize - 1) / Impl::kReflectionTileSize;
+				impl->reflectionTilesY = (impl->height + Impl::kReflectionTileSize - 1) / Impl::kReflectionTileSize;
+				const UINT tileCount = impl->reflectionTilesX * impl->reflectionTilesY;
+
+				// 버퍼 둘은 COMMON 으로 만든다(버퍼는 처음 상태를 무시한다 — #1328). 인자 원본 · 상수는 UPLOAD.
+				const D3D12_HEAP_PROPERTIES defaultHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+				const D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				D3D12_RESOURCE_DESC tilesDesc = BufferDesc(UINT64(tileCount) * sizeof(uint32_t));
+				tilesDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+				D3D12_RESOURCE_DESC argsDesc = BufferDesc(sizeof(D3D12_DISPATCH_RAYS_DESC));
+				argsDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+				const D3D12_RESOURCE_DESC templateDesc = BufferDesc(sizeof(D3D12_DISPATCH_RAYS_DESC));
+				const D3D12_RESOURCE_DESC cbDesc = BufferDesc(256);
+				D3D12_RANGE noRead = { 0, 0 };
+				bool classifyOk =
+					createCompute(L"ReflectionClassify.hlsl", L"CSClassifyTiles", impl->classifyPso) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &tilesDesc,
+						D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&impl->reflectionTiles.resource))) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &argsDesc,
+						D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&impl->reflectionArgs.resource))) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &templateDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->reflectionArgsTemplate))) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->classifyCB))) &&
+					SUCCEEDED(impl->classifyCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->classifyCBData)));
+				impl->reflectionTiles.state = impl->reflectionArgs.state = D3D12_RESOURCE_STATE_COMMON;
+
+				// 인자 원본 — 셰이더 테이블 주소 + Width 0 · Height 1 · Depth 1. 프레임마다 인자 버퍼로 복사한 뒤 분류가 Width 를 채운다.
+				//  (사양: ExecuteIndirect 가 쓰는 셰이더 테이블을 그 호출이 바꾸면 안 된다 — 표는 초기화 때 한 번 쓰고 끝이라 해당 없음)
+				if (classifyOk)
+				{
+					const D3D12_DISPATCH_RAYS_DESC rays = impl->ReflectionDispatchDesc(0, 1);
+					void* mapped = nullptr;
+					classifyOk = SUCCEEDED(impl->reflectionArgsTemplate->Map(0, &noRead, &mapped));
+					if (classifyOk)
+					{
+						memcpy(mapped, &rays, sizeof(rays));
+						impl->reflectionArgsTemplate->Unmap(0, nullptr);
+					}
+				}
+
+				// 명령 시그니처 — DISPATCH_RAYS 인자 하나. 루트 인자를 바꾸지 않으므로 루트 시그니처는 nullptr
+				//  (CreateCommandSignature 문서: 바인딩을 바꾸는 명령이 있을 때만 루트 시그니처가 필요하다).
+				if (classifyOk)
+				{
+					D3D12_INDIRECT_ARGUMENT_DESC argument = {};
+					argument.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+					D3D12_COMMAND_SIGNATURE_DESC signature = {};
+					signature.ByteStride = sizeof(D3D12_DISPATCH_RAYS_DESC);
+					signature.NumArgumentDescs = 1;
+					signature.pArgumentDescs = &argument;
+					classifyOk = SUCCEEDED(impl->device->CreateCommandSignature(&signature, nullptr,
+						IID_PPV_ARGS(&impl->dispatchRaysSignature)));
+				}
+
+				// 바인드리스 79 ~ 81 — 타일 목록 SRV · UAV (uint 구조 버퍼), 인자 UAV (raw — 바이트 위치로 Width 에 더한다)
+				if (classifyOk)
+				{
+					D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+					srv.Format = DXGI_FORMAT_UNKNOWN;
+					srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+					srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+					srv.Buffer.NumElements = tileCount;
+					srv.Buffer.StructureByteStride = sizeof(uint32_t);
+					impl->device->CreateShaderResourceView(impl->reflectionTiles.resource.Get(), &srv,
+						impl->BindlessCpu(Impl::BindlessReflectionTileSrv));
+					D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+					uav.Format = DXGI_FORMAT_UNKNOWN;
+					uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+					uav.Buffer.NumElements = tileCount;
+					uav.Buffer.StructureByteStride = sizeof(uint32_t);
+					impl->device->CreateUnorderedAccessView(impl->reflectionTiles.resource.Get(), nullptr, &uav,
+						impl->BindlessCpu(Impl::BindlessReflectionTileUav));
+					D3D12_UNORDERED_ACCESS_VIEW_DESC rawUav = {};
+					rawUav.Format = DXGI_FORMAT_R32_TYPELESS;
+					rawUav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+					rawUav.Buffer.NumElements = sizeof(D3D12_DISPATCH_RAYS_DESC) / 4;
+					rawUav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+					impl->device->CreateUnorderedAccessView(impl->reflectionArgs.resource.Get(), nullptr, &rawUav,
+						impl->BindlessCpu(Impl::BindlessReflectionArgsUav));
+				}
+
+				if (!classifyOk)
+				{
+					impl->classifyPso.Reset();
+					impl->dispatchRaysSignature.Reset();
+					impl->status += L"  ([3] 분류 생성 실패 — 반사를 화면 전체로)";
+					OutputDebugStringW(L"[GRenderer] [3] 분류 생성 실패 — 반사 DispatchRays 를 화면 전체로\n");
+				}
+				else
+				{
+					wchar_t line[160];
+					swprintf_s(line, L"[GRenderer] [3] 분류 준비 (반사 8x8 타일 %u x %u → ExecuteIndirect DispatchRays)\n",
+						impl->reflectionTilesX, impl->reflectionTilesY);
+					OutputDebugStringW(line);
+				}
+			}
 		}
 
 		// ── [7] 반투명 파이프라인 (Transparent.hlsl, 2026-10-27 렌더 9단계) ──
@@ -4193,6 +4344,44 @@ namespace swc {
 		{
 			impl->TransitionTargets({ { &impl->reflection, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
 
+			// ── [3] 분류 — 반사 레이가 필요한 8×8 타일 목록 + DispatchRays 간접 인자 (ReflectionClassify.hlsl, 2026-10-27 렌더 11단계) ──
+			//  ① 인자 원본(Width 0)을 인자 버퍼로 복사 → ② 타일마다 판정: 고르면 Width += 64 · 목록에 적고, 안 고르면 그 64 픽셀 반사에 0
+			//  → ③ 아래 [4b] 가 ExecuteIndirect 로 «고른 타일 수 × 64» 만큼만 RayGen 을 띄운다.
+			//  분류가 쓰는 0 과 RayGen 이 쓰는 값은 서로 다른 픽셀이라 둘 사이에 반사 텍스처 UAV 배리어가 필요 없다.
+			const bool classifyPass = impl->classifyPso && impl->dispatchRaysSignature;
+			if (classifyPass)
+			{
+				impl->TransitionTargets({ { &impl->reflectionArgs, D3D12_RESOURCE_STATE_COPY_DEST } });
+				commandList->CopyBufferRegion(impl->reflectionArgs.resource.Get(), 0, impl->reflectionArgsTemplate.Get(), 0,
+					sizeof(D3D12_DISPATCH_RAYS_DESC));
+				impl->TransitionTargets({
+					{ &impl->reflectionArgs,  D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+					{ &impl->reflectionTiles, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+
+				ClassifyConstants cc = {};
+				cc.width = impl->width;
+				cc.height = impl->height;
+				cc.maxRoughness = Impl::kReflectionMaxRoughness;   // RayGen 과 같은 문턱
+				cc.depthIndex = Impl::BindlessDepth;
+				cc.materialIndex = Impl::BindlessGbMaterial;
+				cc.reflectionUav = Impl::BindlessReflectionUav;
+				cc.tileListUav = Impl::BindlessReflectionTileUav;
+				cc.argsUav = Impl::BindlessReflectionArgsUav;
+				cc.argsWidthOffset = uint32_t(offsetof(D3D12_DISPATCH_RAYS_DESC, Width));
+				memcpy(impl->classifyCBData, &cc, sizeof(cc));
+
+				ID3D12DescriptorHeap* classifyHeaps[] = { impl->bindlessHeap.Get() };
+				commandList->SetDescriptorHeaps(1, classifyHeaps);
+				commandList->SetComputeRootSignature(impl->computeRootSig.Get());
+				commandList->SetComputeRootConstantBufferView(0, impl->classifyCB->GetGPUVirtualAddress());
+				commandList->SetPipelineState(impl->classifyPso.Get());
+				commandList->Dispatch(impl->reflectionTilesX, impl->reflectionTilesY, 1);   // 그룹 하나 = 타일 하나
+
+				impl->TransitionTargets({
+					{ &impl->reflectionArgs,  D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+					{ &impl->reflectionTiles, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
+			}
+
 			ReflectionConstants rc = {};
 			XMStoreFloat4x4(&rc.invViewProj, invViewProj);
 			rc.eyePos = view.eyePosition;
@@ -4213,6 +4402,7 @@ namespace swc {
 			rc.probeIrradianceIndex = Impl::BindlessProbeIrradianceSrv;
 			rc.probeDistanceIndex = Impl::BindlessProbeDistanceSrv;
 			rc.probeStateIndex = Impl::BindlessProbeStateSrv;
+			rc.tileListIndex = classifyPass ? uint32_t(Impl::BindlessReflectionTileSrv) : Impl::kNoDescriptor;   // 11단계
 			memcpy(impl->reflectionCBData, &rc, sizeof(rc));
 
 			// ★ 순서: 힙을 먼저 묶고 루트 시그니처를 묶는다 — CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED 루트 시그니처는
@@ -4227,18 +4417,17 @@ namespace swc {
 			commandList->SetComputeRootShaderResourceView(3, impl->rtInstances->GetGPUVirtualAddress() +
 				UINT64(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu));
 
-			// 셰이더 테이블 — 초기화 때 써 둔 raygen 0 · miss 64 · hit group 128 바이트 자리(레코드 32 B)
-			const D3D12_GPU_VIRTUAL_ADDRESS table = impl->rtShaderTable->GetGPUVirtualAddress();
-			const UINT64 align = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
-			const UINT64 record = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-			D3D12_DISPATCH_RAYS_DESC rays = {};
-			rays.RayGenerationShaderRecord = { table, record };
-			rays.MissShaderTable = { table + align, record, record };
-			rays.HitGroupTable = { table + 2 * align, record, record };
-			rays.Width = impl->width;
-			rays.Height = impl->height;
-			rays.Depth = 1;
-			commandList->DispatchRays(&rays);
+			// 11단계 — 분류가 돌았으면 GPU 가 채운 인자로(레이트레이싱 PSO 를 위에서 묶어 둔 상태여야 한다 — 사양),
+			//  아니면 예전처럼 화면 크기 그대로. 셰이더 테이블 배치는 ReflectionDispatchDesc 한 곳.
+			if (classifyPass)
+			{
+				commandList->ExecuteIndirect(impl->dispatchRaysSignature.Get(), 1, impl->reflectionArgs.resource.Get(), 0, nullptr, 0);
+			}
+			else
+			{
+				const D3D12_DISPATCH_RAYS_DESC rays = impl->ReflectionDispatchDesc(impl->width, impl->height);
+				commandList->DispatchRays(&rays);
+			}
 
 			// ── [4d] 반사 노이즈 제거 — 임시 구현 (RtReflectionDenoise.hlsl, 2026-10-27 렌더 5단계) ──
 			//  ① 시간 누적: 반사(노이즈 제거 전) + 지난 이력 → 이번 이력   ② 공간 필터: 이번 이력 → 결과(라이팅 t7)
