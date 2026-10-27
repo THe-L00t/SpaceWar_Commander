@@ -2,7 +2,7 @@
 //  RtCommon.hlsli — RT 단계 공용 (2026-10-27 렌더 4단계)
 //
 //  [4a] RtShadow.hlsl (그림자, 컴퓨트 RayQuery) 와 [4b] RtReflection.hlsl (반사, DispatchRays) 가 같이 쓴다.
-//    · RtMaterial  : 재질 표 한 칸 — GRenderer.cpp 의 RtMaterialGpu 와 같은 배치(96바이트)
+//    · RtMaterial  : 재질 표 한 칸 — GRenderer.cpp 의 RtMaterialGpu 와 같은 배치(96바이트 → 9단계에서 128바이트)
 //    · RtInstance  : TLAS 인스턴스 표 한 칸 — GRenderer.cpp 의 RtInstanceGpu 와 같은 배치(16바이트)
 //    · TraceSunVisibility : 태양 가시도(RGB). 2단계 RtShadow.hlsl 의 루프를 옮겨 왔다 —
 //                           반사 히트 지점의 그림자도 같은 규칙(투과 물체는 한 번씩 곱함)으로 구하려고.
@@ -21,6 +21,9 @@ struct RtMaterial
 	uint4  textures;          // x = BaseColor  y = Normal  z = Roughness  w = Metallic
 	uint   emissiveTexture;   uint3 _pad1;
 	float3 transmittance;     uint  transmissive;     // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2단계)
+	// 9단계 — [7] 반투명 패스가 읽는 투과 · 부피 값 (glTF KHR_materials_transmission · volume · ior 그대로)
+	float  transmission;      float ior;              float thickness;     float attenuationDistance;
+	float3 attenuationColor;  uint  _pad2;
 };
 
 // TLAS 인스턴스 표 — 인스턴스 순번(InstanceIndex / CandidateInstanceIndex)으로 찾는다. 프레임마다 다시 채운다.

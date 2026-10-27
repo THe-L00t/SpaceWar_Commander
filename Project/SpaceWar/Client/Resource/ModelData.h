@@ -44,6 +44,9 @@ namespace swc {
 		float thickness = 0.0f;                                                 // thicknessFactor — 부피 두께(메시 좌표 단위)
 		float attenuationDistance = std::numeric_limits<float>::infinity();     // 빛이 attenuationColor 가 되는 거리
 		DirectX::XMFLOAT3 attenuationColor{ 1.0f, 1.0f, 1.0f };                // 흰빛이 그 거리를 지나 남는 색
+		// ── 굴절률 (2026-10-27 렌더 9단계) — glTF KHR_materials_ior 의 ior, 기본값 1.5 도 같다. 얼음 1.31.
+		//  [7] 반투명 패스가 굴절 방향(HDRP 상자 모델)과 표면 반사율 F0 = ((ior−1)/(ior+1))² 에 쓴다.
+		float ior = 1.5f;
 		std::array<uint32_t, kMaterialTextureCount> textures{
 			kInvalidModelIndex, kInvalidModelIndex, kInvalidModelIndex,
 			kInvalidModelIndex, kInvalidModelIndex };

@@ -186,6 +186,48 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	swc::NodeHandle nose = scene.AddNode(player, noseMesh, 0);
 	scene.SetLocalTransform(nose, XMMatrixTranslation(0.0f, 0.0f, 1.3f));
 
+	// ── 2026-10-27 렌더 9단계 — [7] 반투명 시험용 얼음 물체 (lab 하네스) ──
+	//  얼음 행성 후보의 «반투명 얼음 물체(뒤가 흐리게 보임)» 를 렌더러에서 확인하려고 스폰 앞에 둘 놓는다.
+	//  값: 얼음 굴절률 1.31, 두께 = 물체 두께, 흡수는 3 m 에서 옅은 하늘색이 남게(시험용 — 실제 얼음은 2 m 넘어야 푸르다).
+	{
+		std::array<swc::TextureHandle, swc::kMaterialTextureCount> noTextures;
+		noTextures.fill(swc::kInvalidTexture);
+		swc::MaterialData ice;
+		ice.name = "LabIce";
+		ice.baseColor = { 0.92f, 0.97f, 1.0f, 1.0f };
+		ice.roughness = 0.08f;
+		ice.transmission = 1.0f;
+		ice.thickness = 2.0f;
+		ice.attenuationColor = { 0.45f, 0.78f, 0.92f };
+		ice.attenuationDistance = 3.0f;
+		ice.ior = 1.31f;
+		const swc::MaterialHandle clearIce = renderer.CreateMaterial(ice, noTextures);
+		swc::MaterialData frost = ice;
+		frost.name = "LabFrostIce";
+		frost.roughness = 0.45f;   // 서리 낀 얼음 — 굴절이 흐리다
+		frost.thickness = 1.0f;
+		const swc::MaterialHandle frostIce = renderer.CreateMaterial(frost, noTextures);
+
+		swc::MeshData blockData = swc::MakeBox(2.0f, 3.0f, 2.0f, { 1.0f, 1.0f, 1.0f });
+		swc::MeshData slabData = swc::MakeBox(3.0f, 2.0f, 1.0f, { 1.0f, 1.0f, 1.0f });
+		const swc::MeshHandle blockMesh = renderer.CreateMesh(blockData.vertices.data(), blockData.vertices.size(),
+			blockData.indices.data(), blockData.indices.size());
+		const swc::MeshHandle slabMesh = renderer.CreateMesh(slabData.vertices.data(), slabData.vertices.size(),
+			slabData.indices.data(), slabData.indices.size());
+
+		// 행성 위 (x, z) 자리의 땅 위에 세운다 — 높이의 절반만큼 올리고 0.3 m 묻는다.
+		auto placeOnGround = [&](double x, double z, double halfHeight) -> XMMATRIX
+		{
+			const swc::Vec3d up = swc::Normalize(swc::Vec3d{ x, planet.radius, z });
+			const swc::Vec3d p = planet.PositionAt(up, planet.SurfaceHeight(up) + halfHeight - 0.3);
+			return XMMatrixTranslation(float(p.x), float(p.y), float(p.z));
+		};
+		if (clearIce != swc::kInvalidMaterial && blockMesh != swc::kInvalidMesh)
+			scene.SetLocalTransform(scene.AddNode(swc::kInvalidNode, blockMesh, clearIce), placeOnGround(3.0, 7.0, 1.5));
+		if (frostIce != swc::kInvalidMaterial && slabMesh != swc::kInvalidMesh)
+			scene.SetLocalTransform(scene.AddNode(swc::kInvalidNode, slabMesh, frostIce), placeOnGround(-2.5, 5.0, 1.0));
+	}
+
 	// ── 원격 플레이어 ───────────────────────────────────────
 	//  ★ 노드를 지우지 않고 재사용한다
 	//    Scene 에 노드 삭제 API 가 없다. 나갈 때마다 새로 만들면
