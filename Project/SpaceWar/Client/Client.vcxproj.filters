@@ -402,6 +402,15 @@
     <None Include="Shaders\Sky.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\RtSurface.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Probes.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ProbeGI.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\assets\model\map\future_ruins_planet_separated.glb">

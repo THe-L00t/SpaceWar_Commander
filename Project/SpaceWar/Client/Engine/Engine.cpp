@@ -561,7 +561,7 @@ namespace swc {
 		//  (2026-10-27 렌더 2단계 — 룰렛 무릎점 [ ] 키는 RayTracingParams 에서 룰렛이 빠져 없앴다)
 		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
-			renderer.SetDebugMode((renderer.DebugMode() + 1) % 12);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~11 (6단계: 11 주변광)
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 13);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~12 (6단계: 11 주변광, 7단계: 12 GI 프로브 사용)
 		if (input.WasPressed('R'))
 		{
 			RayTracingParams p = renderer.GetRayTracingParams();

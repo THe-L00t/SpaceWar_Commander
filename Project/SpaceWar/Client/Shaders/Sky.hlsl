@@ -134,9 +134,15 @@ float3 MultipleScattering(float r, float muS)
 
 // 방향 dir(월드)으로 본 하늘 휘도 — 단일 산란 + 다중 산란 근사.
 //  시선을 kViewSamples 칸으로 나눠, 칸마다 «여기까지 시선 투과율 × (해에서 여기까지 투과율 × 산란 × 위상 + 산란 × Ψms)» 를 더한다.
+//  ★ 7단계에서 고침 — 지평선 아래는 «지평선 색» 을 이어 쓴다.
+//    대기 계산 속 땅(지구 크기)은 지평선 바로 아래부터 시선을 막지만, 실제 행성(반지름 1.6 km · 게임 650 m)은 지평선이
+//    2~3° 더 내려간다. 그 틈으로 가짜 땅 색(갈색 띠)이 하늘에 보였다. 지평선 아래 진짜 땅은 장면의 지형 메시가 그린다.
 float3 SkyRadiance(float3 dir)
 {
 	const float r0   = kBottomRadius + gObserverHeight;
+	const float below = dot(dir, gUp);
+	if (below < 1.0e-3)
+		dir = normalize(dir + gUp * (1.0e-3 - below));   // 수평면 바로 위로 올린다(방위는 그대로)
 	const float mu   = dot(dir, gUp);
 	const float nu   = dot(dir, gToSun);
 	const float muS0 = dot(gUp, gToSun);
@@ -168,13 +174,16 @@ float3 SkyRadiance(float3 dir)
 	float3 L = gSunIlluminanceTop *
 		(kRayleighScattering * sumRayleigh * RayleighPhase(nu) + kMieScattering * sumMie * MiePhase(nu) + sumMultiple);
 
-	if (ground)   // 지평선 아래 — 대기 속 지면이 해를 받아 되돌리는 빛(람베르트)
-	{
-		const float muSGround = (r0 * muS0 + tEnd * nu) / kBottomRadius;
-		L += exp(-depth) * kGroundAlbedo / kSkyPi * gSunIlluminanceTop *
-			SunTransmittance(kBottomRadius + 1.0, muSGround) * saturate(muSGround);
-	}
-	return L;
+	return L;   // (지평선 위로 올렸으므로 시선이 대기 속 땅에 닿는 경우는 없다)
+}
+
+// 지평선 아래에서 오는 빛 — 하늘 조도(주변광 대체값)를 계산할 때만 쓴다.
+//  땅(알베도 0.3)이 받는 태양 직접광의 람베르트 반사. 진짜 지형 색은 GI 프로브([4c])가 가져온다 — 이건 GI 가 없을 때의 대체값.
+float3 GroundRadiance()
+{
+	const float muS0 = dot(gUp, gToSun);
+	return kGroundAlbedo / kSkyPi * gSunIlluminanceTop *
+		SunTransmittance(kBottomRadius + gObserverHeight, muS0) * saturate(muS0);
 }
 
 // ── ⓪ 다중 산란 LUT (Hillaire 2020 §5.5 — 원문 NewMultiScattCS 와 같은 계산) ──
@@ -271,6 +280,7 @@ void CSSkyIrradiance(uint3 id : SV_DispatchThreadID)
 	RWTexture2D<float4> irradiance = ResourceDescriptorHeap[gIrradianceUav];
 
 	const float3 N = SkyUvToDirection((float2(id.xy) + 0.5) / float2(gIrradianceSize));
+	const float3 ground = GroundRadiance();   // 지평선 아래 방향은 하늘 텍스처(지평선 색) 대신 땅 반사광
 	float3 sum = float3(0.0, 0.0, 0.0);
 	for (uint v = 0; v < kIrradianceStepsV; ++v)
 	{
@@ -278,9 +288,10 @@ void CSSkyIrradiance(uint3 id : SV_DispatchThreadID)
 		for (uint u = 0; u < kIrradianceStepsU; ++u)
 		{
 			const float2 uv = float2((u + 0.5) / kIrradianceStepsU, (v + 0.5) / kIrradianceStepsV);
-			const float  c  = dot(N, SkyUvToDirection(uv));
+			const float3 d  = SkyUvToDirection(uv);
+			const float  c  = dot(N, d);
 			if (c > 0.0)
-				sum += sky.SampleLevel(gSkySampler, uv, 0).rgb * (c * sinTheta);
+				sum += (dot(d, gUp) < 0.0 ? ground : sky.SampleLevel(gSkySampler, uv, 0).rgb) * (c * sinTheta);
 		}
 	}
 	const float dOmega = (2.0 * kSkyPi / kIrradianceStepsU) * (kSkyPi / kIrradianceStepsV);
