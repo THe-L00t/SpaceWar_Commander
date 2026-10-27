@@ -9,9 +9,12 @@
 //  GB1   R16G16_SNORM           월드 법선 — 팔면체 인코딩(3성분을 2성분으로)
 //  GB2   R8G8B8A8_UNORM         r = 거칠기  g = 금속성  ba = 안 씀(0)
 //  GB3   R11G11B10_FLOAT        자체발광 (1 을 넘을 수 있다)
+//  GB4   R16G16_FLOAT           모션 벡터 — 이 픽셀 표면이 이전 프레임 화면에서 있던 UV − 지금 UV
+//                               («이전 UV = 지금 UV + MV», NRD IN_MV 와 같은 방향). 2026-10-27 렌더 5단계
 //  깊이  D32_FLOAT (자원은 R32_TYPELESS)  — 컴퓨트는 R32_FLOAT SRV 로 읽어 월드 위치를 되살린다
 //
-//  ★ GRenderer.cpp 의 Impl::kGBufferFormats 와 순서·형식이 같아야 한다.
+//  ★ GRenderer.cpp 의 Impl::kGBufferFormats(GB0~3) · Impl::kMotionFormat(GB4) 와 순서·형식이 같아야 한다.
+//    GB4 는 셰이더 레지스터 번호(t0~t4 = GB0~3 + 깊이)를 밀지 않으려고 렌더러에서 따로 든다 — 패스는 같다.
 //  ★ 깊이 1.0 = 이 픽셀에 메인 패스 물체가 없다. 뒤 단계는 이 픽셀을 건너뛴다
 //    (그래서 G-buffer 는 매 프레임 지우지 않는다 — 깊이가 «유효한 픽셀» 표시를 겸한다).
 // ============================================================
@@ -24,7 +27,15 @@ struct GBufferOut
 	float2 normal   : SV_Target1;
 	float4 material : SV_Target2;
 	float3 emissive : SV_Target3;
+	float2 motion   : SV_Target4;   // 5단계 — GB4 모션 벡터 (UV 차이)
 };
+
+// 클립 좌표 → 화면 UV (0~1, y 아래로). ReconstructWorldPosition 의 반대 방향 규약.
+float2 ClipToUv(float4 clip)
+{
+	const float2 ndc = clip.xy / clip.w;
+	return float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+}
 
 // 팔면체 인코딩 — 단위 벡터를 팔면체에 펴서 [-1,1]² 에 담는다.
 //  (Cigolle 외, «A Survey of Efficient Representations for Independent Unit Vectors», JCGT 2014)
@@ -60,13 +71,14 @@ float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 size, float4x4 i
 	return w.xyz / w.w;
 }
 
-GBufferOut PackGBuffer(float3 albedo, float3 N, float rough, float metallic, float3 emissive)
+GBufferOut PackGBuffer(float3 albedo, float3 N, float rough, float metallic, float3 emissive, float2 motion)
 {
 	GBufferOut o;
 	o.albedo   = float4(albedo, 1.0);
 	o.normal   = EncodeNormalOct(N);
 	o.material = float4(rough, metallic, 0.0, 0.0);
 	o.emissive = emissive;
+	o.motion   = motion;
 	return o;
 }
 

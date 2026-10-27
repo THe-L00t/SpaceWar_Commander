@@ -216,5 +216,8 @@
     <None Include="Shaders\RtReflection.hlsl">
       <Filter>셰이더</Filter>
     </None>
+    <None Include="Shaders\RtReflectionDenoise.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
   </ItemGroup>
 </Project>

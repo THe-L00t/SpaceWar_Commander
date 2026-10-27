@@ -176,13 +176,15 @@ namespace swc {
 
 	// 셰이더(Forward.hlsl)의 FrameCB 와 레이아웃이 반드시 일치해야 한다.
 	//  ★ 2026-10-27 2단계 — 옛 인라인 반사용 rtEnabled · rouletteKnee · fresnelBoost · frameIndex 를 뺐다(96바이트).
+	//  ★ 2026-10-27 5단계 — prevViewProj(모션 벡터용) 추가 → 160바이트. 패스마다 256바이트 칸이라 그대로 들어간다.
 	struct FrameConstants
 	{
 		XMFLOAT4X4 viewProj;
 		XMFLOAT3   eyePos;    float pad0;
 		XMFLOAT3   sunDir;    uint32_t debugMode;
+		XMFLOAT4X4 prevViewProj;   // 이전 프레임 viewProj(전치해서 올림). 첫 프레임 · 배경 패스는 viewProj 와 같다
 	};
-	static_assert(sizeof(FrameConstants) == 96, "FrameCB 는 96바이트");
+	static_assert(sizeof(FrameConstants) == 160, "FrameCB 는 160바이트");
 
 	// Lighting.hlsl 의 LightingCB 와 같은 순서 · 크기 (2026-10-27 파이프라인 1단계, [5] 라이팅 합성)
 	struct LightingConstants
@@ -230,10 +232,27 @@ namespace swc {
 		uint32_t   width, height;
 		uint32_t   normalIndex, materialIndex;   // 바인드리스 힙 번호
 		uint32_t   depthIndex, outputIndex;
-		uint32_t   pad0[2];
+		uint32_t   frameIndex;   // 5단계 — B 방식 난수 씨앗(프레임마다 다른 방향)
+		uint32_t   pad0;
 		XMFLOAT3   skyColor;  float pad1;
 	};
 	static_assert(sizeof(ReflectionConstants) == 144, "ReflectionCB 는 144바이트");
+
+	// RtReflectionDenoise.hlsl 의 DenoiseCB 와 같은 순서 · 크기 (2026-10-27 렌더 5단계, [4d] 임시 노이즈 제거)
+	//  번호는 전부 바인드리스 힙 번호. 시간 누적 · 공간 필터 두 패스가 같은 상수를 쓴다.
+	struct DenoiseConstants
+	{
+		XMFLOAT4X4 invViewProj;       // 이번 프레임 (전치해서 올림)
+		XMFLOAT4X4 prevInvViewProj;   // 이전 프레임 — 이전 깊이에서 이전 위치를 되살린다
+		XMFLOAT3   eyePos;    float maxRoughness;
+		uint32_t   width, height;
+		uint32_t   historyValid;      // 0 = 이력 없이 새로 시작(첫 프레임 · 지난 프레임에 반사가 안 돌았음)
+		uint32_t   pad0;
+		uint32_t   rawIndex, motionIndex, depthIndex, normalIndex;
+		uint32_t   materialIndex, prevDepthIndex, prevNormalIndex, historyInIndex;
+		uint32_t   historyOutUav, historyOutSrv, outputUav, pad1;
+	};
+	static_assert(sizeof(DenoiseConstants) == 208, "DenoiseCB 는 208바이트");
 
 	// RtShadow.hlsl 의 ShadowCB 와 같은 순서 · 크기 (2026-10-27 렌더 2단계, [4a] RT 그림자)
 	struct ShadowConstants
@@ -324,8 +343,15 @@ namespace swc {
 		//  장치가 SM 6.6 + 바인딩 티어 3 이 아니면 만들지 않는다 → [4b] 반사만 꺼진다.
 		static constexpr uint32_t kNoDescriptor = 0xFFFFFFFFu;
 		static constexpr UINT kBindlessCapacity = 65536;
+		//  (5단계에서 4 ~ 12 를 더 씀 — [4d] 노이즈 제거가 읽고 쓰는 프레임 자원)
 		enum BindlessSlot : uint32_t {
 			BindlessGbNormal = 0, BindlessGbMaterial = 1, BindlessDepth = 2, BindlessReflectionUav = 3,
+			BindlessReflectionSrv = 4,                         // [4b] 반사(노이즈 제거 전) SRV
+			BindlessMotion = 5,                                // GB4 모션 벡터 SRV
+			BindlessPrevDepth = 6, BindlessPrevNormal = 7,     // 이전 프레임 깊이 · 법선 사본 SRV
+			BindlessHistorySrv0 = 8, BindlessHistoryUav0 = 9,  // 반사 이력 0번 (프레임마다 0 · 1 을 번갈아 읽고 쓴다)
+			BindlessHistorySrv1 = 10, BindlessHistoryUav1 = 11,
+			BindlessDenoisedUav = 12,                          // [4d] 결과(라이팅 t6 이 읽는 텍스처)
 			BindlessReserved = 16 };
 		bool                         bindlessSupported = false;
 		ComPtr<ID3D12DescriptorHeap> bindlessHeap;
@@ -366,6 +392,21 @@ namespace swc {
 		//  TLAS 인스턴스 표: 인스턴스 순번 → 정점 · 인덱스 버퍼 번호 · 재질. 프레임 슬롯마다 한 벌(AccelStructure 와 같은 규칙).
 		ComPtr<ID3D12Resource>      rtInstances;
 		uint8_t*                    rtInstanceData = nullptr;
+
+		// ── [4d] 반사 노이즈 제거 — 임시 구현 (2026-10-27 렌더 5단계, RtReflectionDenoise.hlsl) ──
+		//  B 방식 반사(레이 1개라 점박이)를 시간 누적 + 공간 필터로 지운다. NRD · DLSS RR 이 정해지면 바뀌는 자리.
+		//  텍스처(이력 2장 · 결과 · 이전 깊이/법선 사본)는 RenderTarget 정의 뒤, reflection 옆에 있다.
+		ComPtr<ID3D12RootSignature> denoiseRootSig;         // b0 + CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+		ComPtr<ID3D12PipelineState> denoiseTemporalPso;     // cs_6_6 CSTemporal
+		ComPtr<ID3D12PipelineState> denoiseSpatialPso;      // cs_6_6 CSSpatial
+		ComPtr<ID3D12Resource>      denoiseCB;              // UPLOAD, 영속 매핑
+		uint8_t*                    denoiseCBData = nullptr;
+		uint32_t                    historyIndex = 0;       // 이번 프레임에 쓸 이력 번호 (지난 프레임 것 = 1 - historyIndex)
+		bool                        historyValid = false;   // 지난 프레임에 반사 · 노이즈 제거가 돌아 이력 · 사본이 유효한가
+
+		// ── 이전 프레임 카메라 (2026-10-27 렌더 5단계 — 모션 벡터 · 이력 위치 되살리기용) ──
+		XMFLOAT4X4                  prevMainViewProj{};     // 지난 프레임 메인 패스 viewProj (전치 전, 패킷 그대로)
+		bool                        hasPrevMainView = false;
 
 		struct MaterialGpu
 		{
@@ -418,14 +459,20 @@ namespace swc {
 			DXGI_FORMAT_R16G16_SNORM,          // GB1 월드 법선 — 팔면체 인코딩
 			DXGI_FORMAT_R8G8B8A8_UNORM,        // GB2 r 거칠기 · g 금속성
 			DXGI_FORMAT_R11G11B10_FLOAT };     // GB3 자체발광
+		// GB4 모션 벡터 (2026-10-27 렌더 5단계) — GBuffer.hlsli 표의 GB4.
+		//  G-buffer 패스가 5번째 렌더 타깃으로 같이 쓴다. gbuffer[] 배열에 넣지 않은 이유:
+		//  넣으면 «GB0~3 + 깊이 = 라이팅 · 그림자 셰이더 t0~t4» 레지스터 번호가 전부 밀린다.
+		static constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
 		static constexpr DXGI_FORMAT kHdrFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		static constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		static constexpr float kClearColor[4] = { 0.05f, 0.08f, 0.14f, 1.0f };   // 예전 백버퍼 지우기 색 그대로
 
-		// RTV 힙: 0~1 백버퍼, 2 HDR, 3~6 G-buffer. G-buffer 4장은 붙어 있어야 OMSetRenderTargets 한 번으로 묶인다.
+		// RTV 힙: 0~1 백버퍼, 2 HDR, 3~6 G-buffer, 7 GB4 모션 벡터.
+		//  G-buffer 4장 + GB4 는 붙어 있어야 OMSetRenderTargets 한 번(연속 범위)으로 묶인다.
 		static constexpr UINT kRtvHdr = FrameCount;
 		static constexpr UINT kRtvGBuffer = FrameCount + 1;
-		static constexpr UINT kRtvCount = FrameCount + 1 + GbCount;
+		static constexpr UINT kRtvMotion = kRtvGBuffer + GbCount;
+		static constexpr UINT kRtvCount = kRtvMotion + 1;
 
 		// 타깃 SRV·UAV 힙(셰이더 가시).
 		//  라이팅 테이블 = 슬롯 0 시작 (SRV t0~t3 G-buffer, t4 깊이 / UAV u0 HDR 슬롯 5 / SRV t5 그림자 마스크 슬롯 8)
@@ -434,8 +481,10 @@ namespace swc {
 		enum TargetSlot : UINT {
 			SlotGBuffer = 0, SlotDepth = 4, SlotHdrUav = 5, SlotHdrSrv = 6,
 			SlotShadowUav = 7, SlotShadowSrv = 8,
-			SlotReflectionSrv = 9,   // 4단계 — 라이팅 테이블 SRV t6 (반사 텍스처)
-			TargetSlotCount = 10 };
+			SlotReflectionSrv = 9,   // 4단계 — 라이팅 테이블 SRV t6 (5단계부터 [4d] 노이즈 제거 후 반사)
+			SlotMotionSrv = 10,      // 5단계 — 라이팅 t8 (GB4 모션 벡터, 디버그 뷰 6)
+			SlotReflectionRawSrv = 11, // 5단계 — 라이팅 t7 (노이즈 제거 전 반사, 디버그 뷰 7)
+			TargetSlotCount = 12 };
 		// static_assert 메시지는 좁은 문자열(CP949)이라 «—» 같은 문자를 쓰면 C4566 경고가 난다 — 쓰지 않는다.
 		static_assert(SlotDepth == GbCount, "깊이 SRV 는 G-buffer SRV 바로 뒤: 라이팅 테이블 t4");
 
@@ -445,7 +494,13 @@ namespace swc {
 		static constexpr DXGI_FORMAT kShadowFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		static constexpr float kShadowMaxDistance = 5000.0f;   // 그림자 레이 길이(m) — 행성 지름 3.2 km 를 넘는다
 		RenderTarget                shadowMask;
-		RenderTarget                reflection;   // 4단계 [4b] — 반사 색 (R16G16B16A16_FLOAT, UAV + SRV)
+		RenderTarget                reflection;   // 4단계 [4b] — 반사 색 (R16G16B16A16_FLOAT, UAV + SRV). 5단계부터 «노이즈 제거 전», a = 맞은 거리
+		// [4d] 노이즈 제거 텍스처 (5단계). 이력 두 장을 프레임마다 번갈아 «지난 프레임 것(읽기) / 이번 프레임 것(쓰기)» 으로 쓴다.
+		//  이전 프레임 깊이 · 법선은 프레임 끝에 사본을 떠 둔다 — 이력을 «같은 표면» 에서만 가져오려고.
+		RenderTarget                reflectionHistory[2];   // R16G16B16A16_FLOAT — rgb 누적 반사, a 누적 수
+		RenderTarget                reflectionDenoised;     // R16G16B16A16_FLOAT — [5] 라이팅 t6
+		RenderTarget                prevDepth;              // R32_TYPELESS — 깊이 사본 (SRV R32_FLOAT)
+		RenderTarget                prevNormal;             // R16G16_SNORM — GB1 사본
 		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
 		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
 		ComPtr<ID3D12Resource>      shadowCB;           // UPLOAD, 영속 매핑
@@ -453,6 +508,7 @@ namespace swc {
 
 		RenderTarget hdr;                  // HDR 장면 컬러: 배경 forward 가 그리고, 라이팅이 쓰고, 톤맵이 읽는다
 		RenderTarget gbuffer[GbCount];
+		RenderTarget motion;               // 5단계 — GB4 모션 벡터 (kMotionFormat, RTV kRtvMotion)
 		RenderTarget depth;                // 자원 R32_TYPELESS — DSV 는 D32_FLOAT, 컴퓨트 SRV 는 R32_FLOAT
 		ComPtr<ID3D12DescriptorHeap> targetHeap;
 		UINT targetDescriptorSize = 0;
@@ -895,7 +951,7 @@ namespace swc {
 		impl->frameIndex = impl->swapChain->GetCurrentBackBufferIndex();
 
 		D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-		rtvHeapDesc.NumDescriptors = Impl::kRtvCount;   // 백버퍼 2 + HDR 1 + G-buffer 4
+		rtvHeapDesc.NumDescriptors = Impl::kRtvCount;   // 백버퍼 2 + HDR 1 + G-buffer 4 + GB4 모션 벡터 1 (5단계)
 		rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 		if (FAILED(impl->device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&impl->rtvHeap))))
 			return false;
@@ -996,10 +1052,20 @@ namespace swc {
 				}
 			}
 
-			// RTV — HDR 하나, G-buffer 4장(연속)
+			// GB4 모션 벡터 (2026-10-27 렌더 5단계) — G-buffer 패스의 5번째 렌더 타깃.
+			//  지우지 않는다(다른 G-buffer 와 같다 — 깊이 1 인 픽셀은 뒤 단계가 읽지 않는다).
+			if (!createTarget(Impl::kMotionFormat, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+					zero, D3D12_RESOURCE_STATE_RENDER_TARGET, impl->motion))
+			{
+				impl->status = L"모션 벡터 타깃 생성 실패.";
+				return false;
+			}
+
+			// RTV — HDR 하나, G-buffer 4장 + GB4 (연속)
 			impl->device->CreateRenderTargetView(impl->hdr.resource.Get(), nullptr, impl->Rtv(Impl::kRtvHdr));
 			for (UINT i = 0; i < Impl::GbCount; ++i)
 				impl->device->CreateRenderTargetView(impl->gbuffer[i].resource.Get(), nullptr, impl->Rtv(Impl::kRtvGBuffer + i));
+			impl->device->CreateRenderTargetView(impl->motion.resource.Get(), nullptr, impl->Rtv(Impl::kRtvMotion));
 
 			D3D12_DESCRIPTOR_HEAP_DESC targetHeapDesc = {};
 			targetHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -1053,7 +1119,33 @@ namespace swc {
 				impl->status = L"반사 텍스처 생성 실패.";
 				return false;
 			}
-			createSrv(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::SlotReflectionSrv);
+			// 5단계 — 라이팅 t6(슬롯 9)은 아래 [4d] 결과를 가리키고, 이 «노이즈 제거 전» 반사는 디버그용 t7(슬롯 11)로 옮겼다.
+			createSrv(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::SlotReflectionRawSrv);
+			createSrv(impl->motion.resource.Get(), Impl::kMotionFormat, Impl::SlotMotionSrv);
+
+			// [4d] 노이즈 제거 텍스처 (2026-10-27 렌더 5단계) — 전부 처음 상태 «읽기».
+			//  이력 2장 · 결과: UAV(노이즈 제거 컴퓨트가 씀) + SRV. 결과는 라이팅 t6(슬롯 9).
+			//  이전 깊이 · 법선 사본: 복사 대상이라 플래그 없음. 형식은 원본과 같아야 CopyResource 가 된다.
+			for (Impl::RenderTarget& history : impl->reflectionHistory)
+			{
+				if (!createTarget(Impl::kReflectionFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+						zero, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, history))
+				{
+					impl->status = L"반사 이력 텍스처 생성 실패.";
+					return false;
+				}
+			}
+			if (!createTarget(Impl::kReflectionFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+					zero, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, impl->reflectionDenoised) ||
+				!createTarget(DXGI_FORMAT_R32_TYPELESS, D3D12_RESOURCE_FLAG_NONE,
+					zero, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, impl->prevDepth) ||
+				!createTarget(Impl::kGBufferFormats[Impl::GbNormal], D3D12_RESOURCE_FLAG_NONE,
+					zero, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, impl->prevNormal))
+			{
+				impl->status = L"반사 노이즈 제거 텍스처 생성 실패.";
+				return false;
+			}
+			createSrv(impl->reflectionDenoised.resource.Get(), Impl::kReflectionFormat, Impl::SlotReflectionSrv);
 
 			// ── SM 6.6 바인드리스 힙 (2026-10-27 렌더 4단계) ──
 			//  텍스처 · 메시가 만들어질 때(CreateTexture · CreateMesh) 칸을 받으므로 그보다 먼저 만든다.
@@ -1084,11 +1176,25 @@ namespace swc {
 					bindlessSrv(impl->gbuffer[Impl::GbNormal].resource.Get(), Impl::kGBufferFormats[Impl::GbNormal], Impl::BindlessGbNormal);
 					bindlessSrv(impl->gbuffer[Impl::GbMaterial].resource.Get(), Impl::kGBufferFormats[Impl::GbMaterial], Impl::BindlessGbMaterial);
 					bindlessSrv(impl->depth.resource.Get(), DXGI_FORMAT_R32_FLOAT, Impl::BindlessDepth);
-					D3D12_UNORDERED_ACCESS_VIEW_DESC reflectionUav = {};
-					reflectionUav.Format = Impl::kReflectionFormat;
-					reflectionUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-					impl->device->CreateUnorderedAccessView(impl->reflection.resource.Get(), nullptr, &reflectionUav,
-						impl->BindlessCpu(Impl::BindlessReflectionUav));
+					auto bindlessUav = [&](ID3D12Resource* resource, DXGI_FORMAT format, uint32_t slot)
+					{
+						D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+						uavDesc.Format = format;
+						uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+						impl->device->CreateUnorderedAccessView(resource, nullptr, &uavDesc, impl->BindlessCpu(slot));
+					};
+					bindlessUav(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::BindlessReflectionUav);
+
+					// 5단계 — [4d] 노이즈 제거가 읽고 쓰는 프레임 자원 (BindlessSlot 4 ~ 12)
+					bindlessSrv(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::BindlessReflectionSrv);
+					bindlessSrv(impl->motion.resource.Get(), Impl::kMotionFormat, Impl::BindlessMotion);
+					bindlessSrv(impl->prevDepth.resource.Get(), DXGI_FORMAT_R32_FLOAT, Impl::BindlessPrevDepth);
+					bindlessSrv(impl->prevNormal.resource.Get(), Impl::kGBufferFormats[Impl::GbNormal], Impl::BindlessPrevNormal);
+					bindlessSrv(impl->reflectionHistory[0].resource.Get(), Impl::kReflectionFormat, Impl::BindlessHistorySrv0);
+					bindlessUav(impl->reflectionHistory[0].resource.Get(), Impl::kReflectionFormat, Impl::BindlessHistoryUav0);
+					bindlessSrv(impl->reflectionHistory[1].resource.Get(), Impl::kReflectionFormat, Impl::BindlessHistorySrv1);
+					bindlessUav(impl->reflectionHistory[1].resource.Get(), Impl::kReflectionFormat, Impl::BindlessHistoryUav1);
+					bindlessUav(impl->reflectionDenoised.resource.Get(), Impl::kReflectionFormat, Impl::BindlessDenoisedUav);
 				}
 			}
 		}
@@ -1167,9 +1273,13 @@ namespace swc {
 				FAILED(impl->rtInstances->Map(0, &noRead, reinterpret_cast<void**>(&impl->rtInstanceData))) ||
 				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->reflectionCB))) ||
-				FAILED(impl->reflectionCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->reflectionCBData))))
+				FAILED(impl->reflectionCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->reflectionCBData))) ||
+				// 5단계 — [4d] 노이즈 제거 상수 버퍼(208 B → 256 B 칸)
+				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->denoiseCB))) ||
+				FAILED(impl->denoiseCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->denoiseCBData))))
 			{
-				impl->status = L"RT 인스턴스 표 · 반사 상수 버퍼 생성 실패.";
+				impl->status = L"RT 인스턴스 표 · 반사 · 노이즈 제거 상수 버퍼 생성 실패.";
 				return false;
 			}
 		}
@@ -1422,12 +1532,15 @@ namespace swc {
 
 			// [1] G-buffer — 렌더 타깃 4장, 형식은 kGBufferFormats
 			psoDesc.PS = { gbufferPs.data(), gbufferPs.size() };
-			psoDesc.NumRenderTargets = Impl::GbCount;
+			//  (5단계 — 5번째 렌더 타깃 GB4 모션 벡터, PSGBuffer 의 SV_Target4)
+			psoDesc.NumRenderTargets = Impl::GbCount + 1;
 			for (UINT i = 0; i < Impl::GbCount; ++i)
 			{
 				psoDesc.RTVFormats[i] = Impl::kGBufferFormats[i];
 				psoDesc.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 			}
+			psoDesc.RTVFormats[Impl::GbCount] = Impl::kMotionFormat;
+			psoDesc.BlendState.RenderTarget[Impl::GbCount].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 			ComPtr<ID3D12PipelineState>* const gbufferOut[4] = {
 				&impl->gbufferPsos[0], &impl->gbufferPsos[1], &impl->gbufferPsos[2], &impl->gbufferPsos[3] };
 			if (!createVariants(psoDesc, gbufferOut))
@@ -1441,7 +1554,7 @@ namespace swc {
 		//   b0 = LightingCB(루트 CBV), 테이블 = targetHeap 슬롯 0 부터
 		//   (SRV t0~t4 G-buffer · 깊이 = 슬롯 0~4, UAV u0 HDR = 슬롯 5, SRV t5 그림자 마스크 = 슬롯 8 ← 2단계)
 		{
-			D3D12_DESCRIPTOR_RANGE ranges[4] = {};
+			D3D12_DESCRIPTOR_RANGE ranges[6] = {};
 			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 			ranges[0].NumDescriptors = Impl::GbCount + 1;   // G-buffer 4 + 깊이
 			ranges[0].BaseShaderRegister = 0;
@@ -1454,17 +1567,25 @@ namespace swc {
 			ranges[2].NumDescriptors = 1;
 			ranges[2].BaseShaderRegister = 5;
 			ranges[2].OffsetInDescriptorsFromTableStart = Impl::SlotShadowSrv;
-			ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 4단계 — 반사 텍스처 t6
+			ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 4단계 — 반사 텍스처 t6 (5단계부터 [4d] 노이즈 제거 후)
 			ranges[3].NumDescriptors = 1;
 			ranges[3].BaseShaderRegister = 6;
 			ranges[3].OffsetInDescriptorsFromTableStart = Impl::SlotReflectionSrv;
+			ranges[4].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 5단계 — 노이즈 제거 전 반사 t7 (디버그 뷰 7)
+			ranges[4].NumDescriptors = 1;
+			ranges[4].BaseShaderRegister = 7;
+			ranges[4].OffsetInDescriptorsFromTableStart = Impl::SlotReflectionRawSrv;
+			ranges[5].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;   // 5단계 — GB4 모션 벡터 t8 (디버그 뷰 6)
+			ranges[5].NumDescriptors = 1;
+			ranges[5].BaseShaderRegister = 8;
+			ranges[5].OffsetInDescriptorsFromTableStart = Impl::SlotMotionSrv;
 
 			D3D12_ROOT_PARAMETER params[2] = {};
 			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 			params[0].Descriptor.ShaderRegister = 0;
 			params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-			params[1].DescriptorTable.NumDescriptorRanges = 4;
+			params[1].DescriptorTable.NumDescriptorRanges = 6;
 			params[1].DescriptorTable.pDescriptorRanges = ranges;
 			params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
@@ -1694,6 +1815,50 @@ namespace swc {
 				}
 			}
 
+			// ── [4d] 반사 노이즈 제거 파이프라인 (RtReflectionDenoise.hlsl, 2026-10-27 렌더 5단계) ──
+			//  B 방식 반사는 레이 1개라 노이즈 제거 없이는 점박이다 → 여기서 실패하면 반사째로 끈다.
+			//  루트 시그니처: b0 상수 하나 + CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED (텍스처는 전부 바인드리스 번호로 읽고 쓴다).
+			//  두 진입점(시간 누적 · 공간 필터)이 같은 루트 시그니처 · 같은 상수를 쓴다.
+			if (ok)
+			{
+				D3D12_ROOT_PARAMETER1 param = {};
+				param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+				param.Descriptor.ShaderRegister = 0;
+				param.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+				D3D12_VERSIONED_ROOT_SIGNATURE_DESC denoiseRs = {};
+				denoiseRs.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+				denoiseRs.Desc_1_1.NumParameters = 1;
+				denoiseRs.Desc_1_1.pParameters = &param;
+				denoiseRs.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+				ComPtr<ID3DBlob> denoiseSig, denoiseErr;
+				if (FAILED(D3D12SerializeVersionedRootSignature(&denoiseRs, &denoiseSig, &denoiseErr)) ||
+					FAILED(impl->device->CreateRootSignature(0, denoiseSig->GetBufferPointer(), denoiseSig->GetBufferSize(),
+						IID_PPV_ARGS(&impl->denoiseRootSig))))
+				{
+					if (denoiseErr) OutputDebugStringA(("[RtReflectionDenoise 루트] " + std::string(static_cast<const char*>(denoiseErr->GetBufferPointer()), denoiseErr->GetBufferSize()) + "\n").c_str());
+					ok = false;
+				}
+
+				auto createDenoisePso = [&](const wchar_t* entry, ComPtr<ID3D12PipelineState>& out) -> bool
+				{
+					std::string log;
+					const std::vector<uint8_t> cs = impl->shaderCompiler.CompileFromFile(
+						ShaderPath(L"RtReflectionDenoise.hlsl").c_str(), entry, L"cs_6_6", nullptr, 0, log);
+					if (cs.empty())
+					{
+						OutputDebugStringA(("[RtReflectionDenoise] " + log + "\n").c_str());
+						return false;
+					}
+					D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+					desc.pRootSignature = impl->denoiseRootSig.Get();
+					desc.CS = { cs.data(), cs.size() };
+					return SUCCEEDED(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&out)));
+				};
+				ok = ok && createDenoisePso(L"CSTemporal", impl->denoiseTemporalPso) &&
+					createDenoisePso(L"CSSpatial", impl->denoiseSpatialPso);
+			}
+
 			if (!ok)
 			{
 				impl->rtReflectionPso.Reset();
@@ -1702,7 +1867,7 @@ namespace swc {
 			}
 			else
 			{
-				OutputDebugStringW(L"[GRenderer] [4b] RT 반사 파이프라인 준비 (DispatchRays · SM 6.6 바인드리스)\n");
+				OutputDebugStringW(L"[GRenderer] [4b] RT 반사 파이프라인 준비 (DispatchRays · SM 6.6 바인드리스, B 방식 + [4d] 임시 노이즈 제거)\n");
 			}
 		}
 
@@ -2450,6 +2615,10 @@ namespace swc {
 		fc.eyePos = view.eyePosition;
 		fc.sunDir = impl->sunDir;
 		fc.debugMode = impl->debugMode;
+		// ★ 5단계 — 이전 프레임 viewProj (모션 벡터). 메인 패스만 지난 프레임 값을 쓰고,
+		//   첫 프레임 · 배경 패스(G-buffer 를 안 씀)는 이번 값과 같게 둔다 → 카메라 몫 모션 벡터 0.
+		const XMFLOAT4X4 prevViewProj = (!view.background && impl->hasPrevMainView) ? impl->prevMainViewProj : view.viewProj;
+		XMStoreFloat4x4(&fc.prevViewProj, XMMatrixTranspose(XMLoadFloat4x4(&prevViewProj)));
 		// 한 커맨드 리스트에 두 패스를 기록하므로 서로 다른 256바이트 CBV를 사용한다.
 		// 같은 CPU 메모리를 덮어쓰면 GPU가 배경에서도 마지막 메인 행렬을 읽는다.
 		const UINT frameOffset = view.background ? 0 : Impl::FrameCBSize;
@@ -2632,16 +2801,18 @@ namespace swc {
 			return;
 		}
 
-		// ── [1] G-buffer — 메인 패스는 조명 없이 표면 정보만 4장에 쓴다 (Forward.hlsl PSGBuffer) ──
+		// ── [1] G-buffer — 메인 패스는 조명 없이 표면 정보만 쓴다 (Forward.hlsl PSGBuffer) ──
 		//  G-buffer 는 지우지 않는다. 깊이가 1 인 픽셀(물체 없음)은 뒤 단계가 읽지 않기 때문이다.
+		//  ★ 5단계 — 5번째 렌더 타깃 GB4 모션 벡터를 같이 쓴다(RTV 가 GB0~3 바로 뒤라 연속 범위 한 번으로 묶인다).
 		impl->TransitionTargets({
 			{ &impl->gbuffer[Impl::GbAlbedo],   D3D12_RESOURCE_STATE_RENDER_TARGET },
 			{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_RENDER_TARGET },
 			{ &impl->gbuffer[Impl::GbMaterial], D3D12_RESOURCE_STATE_RENDER_TARGET },
 			{ &impl->gbuffer[Impl::GbEmissive], D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ &impl->motion,                    D3D12_RESOURCE_STATE_RENDER_TARGET },
 			{ &impl->depth,                     D3D12_RESOURCE_STATE_DEPTH_WRITE } });
 		const D3D12_CPU_DESCRIPTOR_HANDLE gbufferRtv = impl->Rtv(Impl::kRtvGBuffer);
-		commandList->OMSetRenderTargets(Impl::GbCount, &gbufferRtv, TRUE, &dsv);   // 연속 4장을 한 번에
+		commandList->OMSetRenderTargets(Impl::GbCount + 1, &gbufferRtv, TRUE, &dsv);   // 연속 5장(GB0~3 + GB4)을 한 번에
 		bindRasterRoot();
 		ID3D12PipelineState* const gbufferPsos[4] = {
 			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get() };
@@ -2657,6 +2828,7 @@ namespace swc {
 			{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->gbuffer[Impl::GbMaterial], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->gbuffer[Impl::GbEmissive], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->motion,                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
 
 		const XMMATRIX invViewProj = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj)));
@@ -2713,6 +2885,7 @@ namespace swc {
 			rc.materialIndex = Impl::BindlessGbMaterial;
 			rc.depthIndex = Impl::BindlessDepth;
 			rc.outputIndex = Impl::BindlessReflectionUav;
+			rc.frameIndex = impl->frameCounter;   // 5단계 — B 방식 난수 씨앗 (프레임마다 다른 방향)
 			rc.skyColor = XMFLOAT3(Impl::kClearColor[0], Impl::kClearColor[1], Impl::kClearColor[2]);   // 하늘([6])이 아직 지우기 색
 			memcpy(impl->reflectionCBData, &rc, sizeof(rc));
 
@@ -2740,13 +2913,77 @@ namespace swc {
 			rays.Height = impl->height;
 			rays.Depth = 1;
 			commandList->DispatchRays(&rays);
+
+			// ── [4d] 반사 노이즈 제거 — 임시 구현 (RtReflectionDenoise.hlsl, 2026-10-27 렌더 5단계) ──
+			//  ① 시간 누적: 반사(노이즈 제거 전) + 지난 이력 → 이번 이력   ② 공간 필터: 이번 이력 → 결과(라이팅 t6)
+			//  이력 두 장은 프레임마다 번갈아 쓴다: 이번에 쓰는 것 = historyIndex, 지난 프레임 것 = 1 - historyIndex.
+			const uint32_t cur  = impl->historyIndex;
+			const uint32_t prev = 1u - cur;
+			impl->TransitionTargets({
+				{ &impl->reflection,              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },   // 레이 결과 → 읽기
+				{ &impl->reflectionHistory[cur],  D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+				{ &impl->reflectionHistory[prev], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
+
+			DenoiseConstants dc = {};
+			XMStoreFloat4x4(&dc.invViewProj, invViewProj);
+			XMStoreFloat4x4(&dc.prevInvViewProj, XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&prevViewProj))));
+			dc.eyePos = view.eyePosition;
+			dc.maxRoughness = Impl::kReflectionMaxRoughness;
+			dc.width = impl->width;
+			dc.height = impl->height;
+			dc.historyValid = impl->historyValid ? 1u : 0u;
+			dc.rawIndex = Impl::BindlessReflectionSrv;
+			dc.motionIndex = Impl::BindlessMotion;
+			dc.depthIndex = Impl::BindlessDepth;
+			dc.normalIndex = Impl::BindlessGbNormal;
+			dc.materialIndex = Impl::BindlessGbMaterial;
+			dc.prevDepthIndex = Impl::BindlessPrevDepth;
+			dc.prevNormalIndex = Impl::BindlessPrevNormal;
+			dc.historyInIndex = prev == 0 ? Impl::BindlessHistorySrv0 : Impl::BindlessHistorySrv1;
+			dc.historyOutUav  = cur == 0 ? Impl::BindlessHistoryUav0 : Impl::BindlessHistoryUav1;
+			dc.historyOutSrv  = cur == 0 ? Impl::BindlessHistorySrv0 : Impl::BindlessHistorySrv1;
+			dc.outputUav = Impl::BindlessDenoisedUav;
+			memcpy(impl->denoiseCBData, &dc, sizeof(dc));
+
+			// 바인드리스 힙은 위에서 묶은 그대로 — 루트 시그니처만 바꾼다(힙이 먼저 묶여 있어야 한다는 순서는 지켜진다).
+			commandList->SetComputeRootSignature(impl->denoiseRootSig.Get());
+			commandList->SetComputeRootConstantBufferView(0, impl->denoiseCB->GetGPUVirtualAddress());
+			commandList->SetPipelineState(impl->denoiseTemporalPso.Get());
+			commandList->Dispatch(groupsX, groupsY, 1);
+
+			impl->TransitionTargets({
+				{ &impl->reflectionHistory[cur], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+				{ &impl->reflectionDenoised,     D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			commandList->SetPipelineState(impl->denoiseSpatialPso.Get());
+			commandList->Dispatch(groupsX, groupsY, 1);
+
+			// 이번 프레임 깊이 · 법선을 «이전 프레임 사본» 으로 떠 둔다 — 다음 프레임 시간 누적이 같은 표면인지 볼 때 쓴다.
+			//  (이번 시간 누적은 위에서 이미 지난 프레임 사본을 읽었다 — 순서가 중요하다)
+			impl->TransitionTargets({
+				{ &impl->depth,                     D3D12_RESOURCE_STATE_COPY_SOURCE },
+				{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_COPY_SOURCE },
+				{ &impl->prevDepth,                 D3D12_RESOURCE_STATE_COPY_DEST },
+				{ &impl->prevNormal,                D3D12_RESOURCE_STATE_COPY_DEST } });
+			commandList->CopyResource(impl->prevDepth.resource.Get(), impl->depth.resource.Get());
+			commandList->CopyResource(impl->prevNormal.resource.Get(), impl->gbuffer[Impl::GbNormal].resource.Get());
+			impl->TransitionTargets({
+				{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+				{ &impl->gbuffer[Impl::GbNormal],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+				{ &impl->prevDepth,                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+				{ &impl->prevNormal,                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
+
+			impl->historyIndex = prev;   // 다음 프레임은 반대쪽에 쓴다
 		}
+		// 반사가 안 돈 프레임이 끼면 이력 · 사본이 끊긴다 → 다음에 돌 때 새로 시작한다.
+		impl->historyValid = reflectionPass;
 
 		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이 · 그림자 마스크 · 반사 텍스처를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
+		//  (5단계 — t6 = [4d] 결과, t7 = 노이즈 제거 전 반사(디버그), t8 = 모션 벡터(디버그))
 		impl->TransitionTargets({
-			{ &impl->shadowMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-			{ &impl->reflection, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-			{ &impl->hdr,        D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+			{ &impl->shadowMask,         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->reflection,         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->reflectionDenoised, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+			{ &impl->hdr,                D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
 
 		LightingConstants lc = {};
 		XMStoreFloat4x4(&lc.invViewProj, invViewProj);
@@ -2771,6 +3008,10 @@ namespace swc {
 			{ &impl->hdr,   D3D12_RESOURCE_STATE_RENDER_TARGET },
 			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_WRITE } });
 		commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
+
+		// ★ 5단계 — 다음 프레임의 «이전 프레임 viewProj» (모션 벡터 · 이력 위치 되살리기)
+		impl->prevMainViewProj = view.viewProj;
+		impl->hasPrevMainView = true;
 	}
 
 	void GRenderer::DrawSprites(const std::vector<UISprite>& sprites)

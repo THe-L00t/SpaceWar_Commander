@@ -117,6 +117,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\terrain\pool\Realistic_Mountain_v00__R
     <None Include="Shaders\GBuffer.hlsli" />
     <None Include="Shaders\RtCommon.hlsli" />
     <None Include="Shaders\RtReflection.hlsl" />
+    <None Include="Shaders\RtReflectionDenoise.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">

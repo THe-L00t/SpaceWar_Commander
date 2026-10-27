@@ -14,6 +14,8 @@
 //  ★ 2026-10-27 렌더 2단계 — shadow 를 그림자 마스크(t5)에서 읽는다.
 //    gShadowEnabled = 0 (RT 미지원 · R 키로 끔 · TLAS 비어 있음)이면 마스크를 읽지 않고 1 로 둔다 → 1단계 화면과 같다.
 //    월드 위치 되살리기는 GBuffer.hlsli 의 ReconstructWorldPosition 으로 옮겼다(그림자 셰이더와 같이 쓴다).
+//
+//  ★ 2026-10-27 렌더 5단계 — t6 은 [4d] 노이즈 제거 후 반사. 디버그용으로 t7(제거 전 반사) · t8(모션 벡터)을 더 읽는다.
 // ============================================================
 
 #include "Shading.hlsli"
@@ -38,7 +40,9 @@ Texture2D<float4>   gMaterial : register(t2);   // GB2
 Texture2D<float3>   gEmissive : register(t3);   // GB3
 Texture2D<float>    gDepth    : register(t4);
 Texture2D<float4>   gShadow   : register(t5);   // [4a] 그림자 마스크 — rgb = 태양 가시도(투과 물체면 연하게)
-Texture2D<float4>   gReflection : register(t6); // [4b] 반사 색 (F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
+Texture2D<float4>   gReflection : register(t6); // [4b]→[4d] 반사 색 (노이즈 제거 후, F 곱하기 전, HDR) — 레이를 안 쏜 픽셀은 0
+Texture2D<float4>   gReflectionRaw : register(t7); // 5단계 — 노이즈 제거 전 반사 (디버그 뷰 7 전용)
+Texture2D<float2>   gMotion   : register(t8);   // 5단계 — GB4 모션 벡터 (디버그 뷰 6 전용)
 RWTexture2D<float4> gHdr      : register(u0);
 
 [numthreads(8, 8, 1)]
@@ -75,20 +79,23 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	             + lit.F_env * reflection
 	             + emissive;
 
-	// 디버그 뷰 — 번호는 Forward.hlsl PSMain 과 같다. 6 · 7 은 비어 있다(검정).
+	// 디버그 뷰 — 번호는 Forward.hlsl PSMain 과 같다.
 	switch (gDebugMode)
 	{
 	case 1:  color = albedo;                         break;
 	case 2:  color = N * 0.5 + 0.5;                  break;
 	case 3:  color = shadow;                         break;   // [4a] 태양 가시도 (흰 = 빛 받음, 검정 = 그림자)
 	case 4:  color = lit.F_env;                      break;
-	case 5:  color = reflection;                     break;   // [4b] 반사 색 (F 곱하기 전)
-	case 8:  color = lit.specular;                   break;
-	case 9:  color = lit.F_env * reflection;         break;   // [4b] 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
-	case 10: color = float3(rough, metallic, 0.0);   break;
-	case 6: case 7:
-		color = float3(0.0, 0.0, 0.0);
+	case 5:  color = reflection;                     break;   // [4d] 노이즈 제거 후 반사 색 (F 곱하기 전)
+	case 6:                                                   // 5단계 — 모션 벡터: 픽셀 단위 |x| → R, |y| → G, 8 픽셀 = 1
+		color = float3(abs(gMotion[pixel] * float2(gSize)) / 8.0, 0.0);
 		break;
+	case 7:                                                   // 5단계 — [4b] 노이즈 제거 전 반사 (B 방식 레이 1개 그대로)
+		color = (gReflectionEnabled != 0) ? gReflectionRaw[pixel].rgb : float3(0.0, 0.0, 0.0);
+		break;
+	case 8:  color = lit.specular;                   break;
+	case 9:  color = lit.F_env * reflection;         break;   // 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
+	case 10: color = float3(rough, metallic, 0.0);   break;
 	}
 
 	gHdr[pixel] = float4(color, 1.0);
