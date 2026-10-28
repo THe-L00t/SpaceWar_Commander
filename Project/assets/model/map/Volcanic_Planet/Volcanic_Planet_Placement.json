@@ -6239,7 +6239,7 @@
  },
  "lights": {
   "file": "Volcanic_Planet_Lights.txt",
-  "per_instance": "id 12 (Light_FireVent_A, 땅에서 타오르는 가스 불구멍) 배치 하나마다 glb 안의 점광원 1개 — 인스턴스 변환을 그대로 적용",
+  "per_instance": "id 12 (Light_FireVent_A, 땅에서 가스가 타오르는 불구멍 — 10-28 부터 메시는 구덩이 · 잉걸 바닥만, 불꽃은 이펙트로 얹을 자리) 배치 하나마다 glb 안의 점광원 1개 — 인스턴스 변환을 그대로 적용",
   "lamp_light": {
    "node": "Light_FireVent_A_Light",
    "type": "point",
@@ -6254,7 +6254,7 @@
   "count": 70,
   "note": "렌더러 1단계 상한(광원 64 · 그림자 슬롯 3)을 넘는다 — 거리 · 화면 기준으로 고르는 컬링이 필요"
  },
- "emissive": "발광 재질: Lava_Lake · Lava_Flow(맵, 세기 5) · Light_FireVent_A(9) · Fumarole_A(6) · Hornito_A(6) · Ember_Log_A(4) · Lava_Crust_Slab_A(0.7) — KHR_materials_emissive_strength. 지금 GltfReader 는 이 확장을 읽지 않아 빛이 1 로 잘린다 — 렌더러 11.4 목록에 더할 일",
+ "emissive": "발광 재질: Lava_Lake · Lava_Flow(맵, 세기 5) · Light_FireVent_A(4, 구덩이 바닥 잉걸) · Fumarole_A(6) · Hornito_A(6) · Ember_Log_A(4) · Lava_Crust_Slab_A(0.7) — KHR_materials_emissive_strength. 지금 GltfReader 는 이 확장을 읽지 않아 빛이 1 로 잘린다 — 렌더러 11.4 목록에 더할 일",
  "objects": [
   {
    "id": 1,
