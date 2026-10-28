@@ -261,7 +261,10 @@ namespace swc {
 	{
 		XMFLOAT4 baseColor;
 		XMFLOAT3 emissive;      float    roughness;
-		float    metallic;      uint32_t hasNormalMap;   uint32_t doubleSided;   uint32_t pad0;   // 7단계 — 양면(GI 레이가 뒷면을 맞아도 «벽 속» 아님)
+		float    metallic;      uint32_t hasNormalMap;   uint32_t doubleSided;   uint32_t terrain;   // 7단계 — 양면(GI 레이가 뒷면을 맞아도 «벽 속» 아님)
+		//  ★ terrain(2026-10-28, 예전 pad0) = 지형 레이어 재질. 이때 칸 몇 개를 다른 뜻으로 쓴다(CreateTerrainMaterial):
+		//    baseColor = 레이어별 높이 계수 · roughness = 경계 폭 · metallic = 노멀 세기 · textures = 배열 4개 · emissiveTexture = 마스크
+		//    · emissive.xy = 4단계 색 흔들림 세기 · 바탕
 		uint32_t textures[4];   // BaseColor · Normal · Roughness · Metallic
 		uint32_t emissiveTexture; uint32_t pad1[3];
 		XMFLOAT3 transmittance; uint32_t transmissive;
@@ -442,6 +445,31 @@ namespace swc {
 	};
 	static_assert(sizeof(MaterialConstants) == 12 * sizeof(uint32_t));
 
+	// 지형 레이어 재질의 루트 상수 (2026-10-28) — Forward.hlsl TERRAIN_LAYERS 판의 TerrainCB 와 같은 배치.
+	//  MaterialConstants 와 같은 자리(루트 파라미터 2)를 다른 뜻으로 쓴다. 4단계 값 5개가 늘어 12 → 20 DWORD —
+	//  루트 파라미터 2 를 20 DWORD 로 넓혔다(kMaterialRootConstants). 일반 재질은 앞 12 DWORD 만 채운다.
+	struct TerrainConstants
+	{
+		XMFLOAT4 heightBlend;                     // 레이어(마스크 R G B A)마다 Height 에 곱하는 값
+		float    triplanarTileA;                  // 3단계 — 세 방향 투영 크기 A(m)
+		float    triplanarTileB;                  //          크기 B(m)
+		float    warpScale;                       //          좌표 비틀기 노이즈 규모(m), 0 = 안 함
+		float    blendDepth;                      // 경계 폭
+		float    normalStrength;
+		uint32_t triplanarLayers;                 //          비트 = 레이어(R 1 · G 2 · B 4 · A 8)
+		float    warpAmount;                      //          좌표 비틀기 최대 거리(m)
+		float    triplanarOffsetB;                //          1 = 크기 B 좌표에 (3.7, 1.9, 5.3) 을 더한다
+		float    macroAmount;                     // 4단계 — 큰 규모 색 흔들림: 노이즈 × amount + bias
+		float    macroBias;
+		float    bumpDistance;                    //          범프 1(섞은 높이맵) Distance(m)
+		float    reliefDistance;                  //          범프 2(지면 요철) Distance(m)
+		float    reliefStrength;                  //          범프 2 Strength
+		float    pad[3];
+	};
+	constexpr UINT kMaterialRootConstants = 20;   // 루트 파라미터 2 의 DWORD 수 = 두 상수 중 큰 쪽
+	static_assert(sizeof(TerrainConstants) == kMaterialRootConstants * sizeof(uint32_t), "지형 상수 = 재질 루트 상수 20 DWORD");
+	static_assert(sizeof(MaterialConstants) <= sizeof(TerrainConstants), "일반 재질 상수는 루트 상수 자리 안에 들어가야 한다");
+
 	// Cull.hlsl 의 CullCB 와 같은 순서. 루트 상수 26개.
 	struct CullConstants
 	{
@@ -501,7 +529,29 @@ namespace swc {
 			ComPtr<ID3D12Resource> resource;
 			DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
 			uint32_t bindless = 0xFFFFFFFFu;   // 4단계 — 바인드리스 힙 번호(SRV). 바인드리스를 못 쓰면 kNoDescriptor
+			uint32_t mipLevels = 1;            // 2026-10-28 지형 레이어 — 밉맵 DDS 는 1×1 까지 다 있다
+			uint32_t arraySize = 1;            // 1 = Texture2D, 2 이상 = Texture2DArray (지형 레이어 4장 묶음)
 		};
+
+		// 텍스처의 SRV — 밉 전부 · 배열이면 배열 SRV. 재질 테이블 · 바인드리스 칸 · UI 칸이 같은 설명을 쓴다(2026-10-28).
+		static D3D12_SHADER_RESOURCE_VIEW_DESC TextureSrvDesc(const TextureGpu& texture)
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+			srv.Format = texture.format;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			if (texture.arraySize > 1)
+			{
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+				srv.Texture2DArray.MipLevels = texture.mipLevels;
+				srv.Texture2DArray.ArraySize = texture.arraySize;
+			}
+			else
+			{
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+				srv.Texture2D.MipLevels = texture.mipLevels;
+			}
+			return srv;
+		}
 
 		// ── SM 6.6 바인드리스 힙 (2026-10-27 렌더 4단계) ──
 		//  셰이더가 ResourceDescriptorHeap[번호] 로 자원을 꺼내는 셰이더 가시 힙 하나.
@@ -656,7 +706,17 @@ namespace swc {
 			//  래스터: 묶음 키에 4 를 더해 discard 가 있는 PSO 로 그린다(마스크 아닌 물체는 discard 없는 PSO 그대로).
 			//  RT: TLAS 인스턴스를 FORCE_NON_OPAQUE 로 넣어 레이가 후보로 받아 빈 곳을 거른다.
 			bool alphaMask = false;
+			// ── 지형 레이어 (2026-10-28) — CreateTerrainMaterial 이 만든 재질 ──
+			//  묶음 키 kTerrainPsoKey(+1 반전)의 PSO(Forward.hlsl TERRAIN_LAYERS=1 판)로 그린다.
+			//  루트 상수는 terrainConstants(20 DWORD, 4단계부터 constants 보다 크다), 텍스처 5칸에는 배열 4개 + 마스크가 들어 있다.
+			bool terrain = false;
+			TerrainConstants terrainConstants{};
 		};
+
+		// 묶음 키(Batch::pso) — 0 ~ 7 은 «양면 1 · 반전 2 · 알파 마스크 4» 조합, 8 · 9 = 지형 레이어 판(9 = 반전).
+		//  지형은 단면 · 알파 없음이라 반전 여부만 나눈다(2026-10-28).
+		static constexpr uint32_t kTerrainPsoKey = 8;
+		static constexpr uint32_t kPsoKeyCount = 10;
 
 		// RT 재질 표 — 재질 번호(TLAS InstanceID) → RtMaterialGpu(96 B). [4a] 그림자는 투과만, [4b] 반사는 전부 읽는다.
 		//  (2단계에는 float4 남는 빛뿐이었고, 4단계에서 텍스처 번호 · 상수까지 넓혔다)
@@ -681,6 +741,8 @@ namespace swc {
 		ComPtr<ID3D12PipelineState>        mirroredDoubleSidedPso;
 		// 2026-10-28 알파 마스크 — 배경 forward 의 마스크 판 4종(PSMain + ALPHA_MASK=1, 묶음 키 4 ~ 7)
 		ComPtr<ID3D12PipelineState>        forwardMaskedPsos[4];
+		// 2026-10-28 지형 레이어 — 배경 forward 의 지형 판 2종(PSMain + TERRAIN_LAYERS=1, 묶음 키 8 · 9 = 기본 · 반전)
+		ComPtr<ID3D12PipelineState>        forwardTerrainPsos[2];
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
 
@@ -882,7 +944,8 @@ namespace swc {
 		ComPtr<ID3D12DescriptorHeap> targetHeap;
 		UINT targetDescriptorSize = 0;
 
-		ComPtr<ID3D12PipelineState> gbufferPsos[8];   // Batch::pso 순서: 0 기본 · 1 양면 · 2 반전 · 3 반전 양면, +4 = 알파 마스크 판(2026-10-28)
+		// Batch::pso 순서: 0 기본 · 1 양면 · 2 반전 · 3 반전 양면, +4 = 알파 마스크 판(2026-10-28), 8 · 9 = 지형 레이어 판(기본 · 반전, 2026-10-28)
+		ComPtr<ID3D12PipelineState> gbufferPsos[kPsoKeyCount];
 		ComPtr<ID3D12RootSignature> lightingRootSig;
 		ComPtr<ID3D12PipelineState> lightingPso;
 		ComPtr<ID3D12Resource>      lightingCB;       // UPLOAD, 영속 매핑. 프레임마다 GPU 를 기다리므로 한 벌이면 된다
@@ -917,7 +980,7 @@ namespace swc {
 
 		struct Batch
 		{
-			uint32_t pso = 0;                  // 0 기본 · 1 양면 · 2 반전 · 3 반전 양면
+			uint32_t pso = 0;                  // 0 기본 · 1 양면 · 2 반전 · 3 반전 양면, +4 알파 마스크, 8 · 9 지형 레이어(kTerrainPsoKey)
 			MaterialHandle material = 0;
 			MeshHandle mesh = kInvalidMesh;
 			uint32_t first = 0;                // 보이는 인스턴스 목록에서 이 묶음 구간의 시작
@@ -1166,7 +1229,27 @@ namespace swc {
 		// ── 래스터 묶음 그리기 (2026-10-27 Render 에서 떼어 냄) ──
 		//  배경 forward 와 메인 G-buffer 가 같은 묶음 · 같은 루프를 쓰고 PSO 표만 다르다.
 		//  루트 시그니처 · 힙 · 프레임 CBV · 인스턴스 SRV 는 부르기 전에 묶어 둔다.
-		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[8])
+		// 재질 하나의 텍스처 5칸(재질 힙 materialIndex 번째 묶음)에 SRV 를 쓰고 그 묶음의 GPU 핸들을 돌려준다.
+		//  SRV 는 텍스처의 밉 수 · 배열 여부 그대로(TextureSrvDesc). CreateMaterial · CreateTerrainMaterial 이 같이 쓴다(2026-10-28).
+		D3D12_GPU_DESCRIPTOR_HANDLE WriteMaterialTextures(size_t materialIndex,
+			const std::array<TextureHandle, kMaterialTextureCount>& slots)
+		{
+			const size_t descriptorOffset = materialIndex * kMaterialTextureCount * materialDescriptorSize;
+			D3D12_CPU_DESCRIPTOR_HANDLE cpu = materialHeap->GetCPUDescriptorHandleForHeapStart();
+			cpu.ptr += descriptorOffset;
+			D3D12_GPU_DESCRIPTOR_HANDLE gpu = materialHeap->GetGPUDescriptorHandleForHeapStart();
+			gpu.ptr += descriptorOffset;
+			for (size_t slot = 0; slot < kMaterialTextureCount; ++slot)
+			{
+				const TextureGpu& texture = textures[slots[slot]];
+				const D3D12_SHADER_RESOURCE_VIEW_DESC srv = TextureSrvDesc(texture);
+				device->CreateShaderResourceView(texture.resource.Get(), &srv, cpu);
+				cpu.ptr += materialDescriptorSize;
+			}
+			return gpu;
+		}
+
+		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[kPsoKeyCount])
 		{
 			ID3D12PipelineState* currentPso = nullptr;
 			MaterialHandle currentMaterial = kInvalidMaterial;
@@ -1182,7 +1265,10 @@ namespace swc {
 				if (currentMaterial != batch.material)
 				{
 					const MaterialGpu& material = materials[batch.material];
-					commandList->SetGraphicsRoot32BitConstants(2, 12, &material.constants, 0);
+					if (material.terrain)   // 2026-10-28 4단계 — 지형은 20 DWORD, 일반 재질은 앞 12 DWORD
+						commandList->SetGraphicsRoot32BitConstants(2, kMaterialRootConstants, &material.terrainConstants, 0);
+					else
+						commandList->SetGraphicsRoot32BitConstants(2, sizeof(MaterialConstants) / sizeof(uint32_t), &material.constants, 0);
 					commandList->SetGraphicsRootDescriptorTable(3, material.textures);
 					currentMaterial = batch.material;
 				}
@@ -2452,7 +2538,7 @@ namespace swc {
 		// Root signature (래스터 — 배경 forward · 메인 G-buffer 가 같이 쓴다)
 		//   b1 = 묶음의 보이는 목록 시작 번호(루트 상수 1개, 수정방향 3.2), b0 = 프레임, b2 = 재질,
 		//   t1~t5 = 텍스처, t6 = 인스턴스, t7 = 보이는 인스턴스 번호 목록.
-		//   1 + 2 + 12 + 1 + 2 + 2 = 20 DWORD.
+		//   1 + 2 + 20 + 1 + 2 + 2 = 28 DWORD (2026-10-28 지형 4단계로 재질 상수 12 → 20).
 		//   (인스턴싱 전에는 b1 루트 상수 32개로 행렬을 그리기마다 넘겼다.)
 		//   ★ 2026-10-27 2단계 — TLAS(t0) 슬롯을 뺐다. 픽셀 셰이더 안 인라인 반사가 없어졌고,
 		//     RT 는 [4a] RT 그림자 컴퓨트가 자기 루트 시그니처로 TLAS 를 받는다.
@@ -2472,7 +2558,7 @@ namespace swc {
 
 			params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
 			params[2].Constants.ShaderRegister = 2;
-			params[2].Constants.Num32BitValues = 12;
+			params[2].Constants.Num32BitValues = kMaterialRootConstants;
 			params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 			D3D12_DESCRIPTOR_RANGE textureRange = {};
@@ -2493,21 +2579,33 @@ namespace swc {
 			params[5].Descriptor.ShaderRegister = 7;
 			params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+			// s0 = 재질 텍스처 — 이방성 16 (2026-10-28, 설계 문서 «이방성 샘플러 — 비스듬히 보는 넓은 지면의 선명도»).
+			//  선형 밉 필터는 화면 픽셀이 덮는 텍스처 영역의 «긴 쪽» 으로 밉을 골라, 비스듬히 보는 땅이 흐려진다.
+			//  이방성은 긴 쪽을 따라 여러 번 읽어 짧은 쪽 기준 밉을 쓴다(D3D12 의 최대 16). 지형 판의 SampleGrad 도
+			//  넘긴 미분으로 같은 계산을 한다. 밉 필터는 선형 그대로다(D3D12_FILTER_ANISOTROPIC 의 정의).
 			D3D12_STATIC_SAMPLER_DESC sampler = {};
-			sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			sampler.Filter = D3D12_FILTER_ANISOTROPIC;
 			sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
 			sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
 			sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-			sampler.MaxAnisotropy = 1;
+			sampler.MaxAnisotropy = D3D12_MAX_MAXANISOTROPY;
 			sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
 			sampler.MaxLOD = D3D12_FLOAT32_MAX;
 			sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			// 2026-10-28 지형 레이어 — s1 = 선형 · 가장자리 고정. 레이어 마스크(등면적 팔면체 매핑)는 가장자리 너머가
+			//  반대편이 아니라 접힌 이웃이라 반복(WRAP)으로 읽으면 안 된다(리소스 시안도 EXTEND). Forward.hlsl gClampSampler.
+			//  마스크는 SampleLevel(밉을 직접 고름)로만 읽어 이방성이 필요 없다.
+			D3D12_STATIC_SAMPLER_DESC samplers[2] = { sampler, sampler };
+			samplers[1].ShaderRegister = 1;
+			samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			samplers[1].MaxAnisotropy = 1;
+			samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
 
 			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
 			rsDesc.NumParameters = 6;
 			rsDesc.pParameters = params;
-			rsDesc.NumStaticSamplers = 1;
-			rsDesc.pStaticSamplers = &sampler;
+			rsDesc.NumStaticSamplers = 2;
+			rsDesc.pStaticSamplers = samplers;
 			rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
 			ComPtr<ID3DBlob> sig, err;
@@ -2565,6 +2663,18 @@ namespace swc {
 				impl->status = L"알파 마스크 픽셀 셰이더 컴파일 실패 (출력창 참고).";
 				return false;
 			}
+			// 2026-10-28 지형 레이어 — 같은 두 진입점을 TERRAIN_LAYERS=1 로 한 번 더 컴파일한다(레이어 4종 + 마스크 섞기 판).
+			//  지형 재질(CreateTerrainMaterial)만 이 판으로 그린다. 정점 셰이더는 같다(VOut 에 메시 좌표가 늘 들어 있다).
+			const wchar_t* const terrainDefine[] = { L"TERRAIN_LAYERS=1" };
+			std::vector<uint8_t> psTerrain = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", psTarget, terrainDefine, 1, log);
+			std::vector<uint8_t> gbufferPsTerrain = psTerrain.empty() ? std::vector<uint8_t>{} :
+				impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSGBuffer", psTarget, terrainDefine, 1, log);
+			if (psTerrain.empty() || gbufferPsTerrain.empty())
+			{
+				OutputDebugStringA(("[PS 지형 레이어] " + log + "\n").c_str());
+				impl->status = L"지형 레이어 픽셀 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
 
 			D3D12_INPUT_ELEMENT_DESC layout[] = {
 				{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, position)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -2606,6 +2716,19 @@ namespace swc {
 				}
 				return true;
 			};
+			// 2026-10-28 지형 레이어 판 — 단면이라 «기본 · 반전» 2종만(묶음 키 kTerrainPsoKey + 0 · 1).
+			auto createTerrainPair = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC desc,
+				ComPtr<ID3D12PipelineState>* const (&out)[2]) -> bool
+			{
+				for (UINT mirrored = 0; mirrored < 2; ++mirrored)
+				{
+					desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+					desc.RasterizerState.FrontCounterClockwise = mirrored ? TRUE : FALSE;
+					if (FAILED(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(out[mirrored]->ReleaseAndGetAddressOf()))))
+						return false;
+				}
+				return true;
+			};
 
 			// 배경 패스 forward — 백버퍼가 아니라 HDR 컬러에 그린다(2026-10-27)
 			psoDesc.NumRenderTargets = 1;
@@ -2626,6 +2749,17 @@ namespace swc {
 				if (!createVariants(maskedDesc, forwardMaskedOut))
 				{
 					impl->status = L"forward 알파 마스크 PSO 생성 실패.";
+					return false;
+				}
+			}
+			// 2026-10-28 지형 레이어 판 (묶음 키 8 · 9)
+			{
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC terrainDesc = psoDesc;
+				terrainDesc.PS = { psTerrain.data(), psTerrain.size() };
+				ComPtr<ID3D12PipelineState>* const forwardTerrainOut[2] = { &impl->forwardTerrainPsos[0], &impl->forwardTerrainPsos[1] };
+				if (!createTerrainPair(terrainDesc, forwardTerrainOut))
+				{
+					impl->status = L"forward 지형 레이어 PSO 생성 실패.";
 					return false;
 				}
 			}
@@ -2652,6 +2786,15 @@ namespace swc {
 			if (!createVariants(psoDesc, gbufferMaskedOut))
 			{
 				impl->status = L"G-buffer 알파 마스크 PSO 생성 실패.";
+				return false;
+			}
+			// 2026-10-28 지형 레이어 판 (묶음 키 8 · 9)
+			psoDesc.PS = { gbufferPsTerrain.data(), gbufferPsTerrain.size() };
+			ComPtr<ID3D12PipelineState>* const gbufferTerrainOut[2] = {
+				&impl->gbufferPsos[Impl::kTerrainPsoKey], &impl->gbufferPsos[Impl::kTerrainPsoKey + 1] };
+			if (!createTerrainPair(psoDesc, gbufferTerrainOut))
+			{
+				impl->status = L"G-buffer 지형 레이어 PSO 생성 실패.";
 				return false;
 			}
 		}
@@ -3835,24 +3978,41 @@ namespace swc {
 
 	TextureHandle GRenderer::CreateTexture(const TextureData& data)
 	{
-		const uint64_t rowBytes = uint64_t(data.width) * 4;
-		const uint64_t imageBytes = rowBytes * data.height;
-		if (!impl->device || !impl->fenceEvent || impl->frameOpen || data.width == 0 || data.height == 0 ||
-			data.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || data.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		// ── 2026-10-28 지형 레이어 — 밉 여러 단 · 배열 · R8 을 받는다 (기본값이면 예전 RGBA8 한 장과 같다) ──
+		//  pixels 배치 = 배열 원소마다 밉 0 ~ mipLevels−1 차례로, 행은 빈틈 없이(ModelData.h TextureData).
+		//  D3D12 서브리소스 번호(밉 + 원소 × 밉 수)도 같은 순서라 그대로 차례로 옮긴다.
+		const uint32_t bytesPerPixel = data.format == TextureFormat::R8 ? 1u : 4u;
+		uint32_t fullMips = 0;
+		for (uint32_t size = (std::max)(data.width, data.height); size > 0; size >>= 1) ++fullMips;
+		auto mipWidth = [&](uint32_t mip) { return (std::max)(data.width >> mip, 1u); };
+		auto mipHeight = [&](uint32_t mip) { return (std::max)(data.height >> mip, 1u); };
+		uint64_t imageBytes = 0;
+		const bool shapeValid = data.width > 0 && data.height > 0 &&
+			data.width <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION && data.height <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION &&
+			data.mipLevels >= 1 && data.mipLevels <= fullMips &&
+			data.arraySize >= 1 && data.arraySize <= D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
+		if (shapeValid)
+			for (uint32_t slice = 0; slice < data.arraySize; ++slice)
+				for (uint32_t mip = 0; mip < data.mipLevels; ++mip)
+					imageBytes += uint64_t(mipWidth(mip)) * mipHeight(mip) * bytesPerPixel;
+		if (!impl->device || !impl->fenceEvent || impl->frameOpen || !shapeValid ||
 			imageBytes != data.pixels.size() || impl->textures.size() >= kInvalidTexture)
 		{
-			impl->status = L"RGBA8 텍스처 데이터 또는 호출 시점이 올바르지 않습니다.";
+			impl->status = L"텍스처 데이터(크기 · 밉 · 배열 · 바이트 수) 또는 호출 시점이 올바르지 않습니다.";
 			return kInvalidTexture;
 		}
 
 		Impl::TextureGpu texture;
-		texture.format = data.srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+		texture.format = data.format == TextureFormat::R8 ? DXGI_FORMAT_R8_UNORM
+			: (data.srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM);
+		texture.mipLevels = data.mipLevels;
+		texture.arraySize = data.arraySize;
 		D3D12_RESOURCE_DESC desc = {};
 		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 		desc.Width = data.width;
 		desc.Height = data.height;
-		desc.DepthOrArraySize = 1;
-		desc.MipLevels = 1;
+		desc.DepthOrArraySize = static_cast<UINT16>(data.arraySize);
+		desc.MipLevels = static_cast<UINT16>(data.mipLevels);
 		desc.Format = texture.format;
 		desc.SampleDesc.Count = 1;
 		D3D12_HEAP_PROPERTIES defaultHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
@@ -3863,12 +4023,19 @@ namespace swc {
 			return kInvalidTexture;
 		}
 
-		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
-		UINT rows = 0;
-		UINT64 rowSize = 0, uploadBytes = 0;
-		impl->device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &rowSize, &uploadBytes);
-		if (uploadBytes == 0 || uploadBytes > (std::numeric_limits<size_t>::max)() ||
-			rows != data.height || rowSize != rowBytes)
+		const UINT subresources = data.mipLevels * data.arraySize;
+		std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(subresources);
+		std::vector<UINT> rowCounts(subresources);
+		std::vector<UINT64> rowSizes(subresources);
+		UINT64 uploadBytes = 0;
+		impl->device->GetCopyableFootprints(&desc, 0, subresources, 0, footprints.data(), rowCounts.data(), rowSizes.data(), &uploadBytes);
+		bool footprintsMatch = uploadBytes > 0 && uploadBytes <= (std::numeric_limits<size_t>::max)();
+		for (UINT s = 0; footprintsMatch && s < subresources; ++s)
+		{
+			const uint32_t mip = s % data.mipLevels;
+			footprintsMatch = rowCounts[s] == mipHeight(mip) && rowSizes[s] == uint64_t(mipWidth(mip)) * bytesPerPixel;
+		}
+		if (!footprintsMatch)
 		{
 			impl->status = L"텍스처 업로드 배치 계산 실패.";
 			return kInvalidTexture;
@@ -3889,10 +4056,17 @@ namespace swc {
 			impl->status = L"텍스처 업로드 버퍼 매핑 실패.";
 			return kInvalidTexture;
 		}
-		// GPU 행 간격은 256바이트 정렬이므로 원본 RGBA8 행을 따로 복사한다.
-		for (UINT row = 0; row < rows; ++row)
-			memcpy(mapped + static_cast<size_t>(footprint.Offset) + size_t(row) * footprint.Footprint.RowPitch,
-				data.pixels.data() + size_t(row) * size_t(rowBytes), size_t(rowBytes));
+		// GPU 행 간격은 256바이트 정렬이므로 원본 행을 하나씩 복사한다(서브리소스마다).
+		size_t source = 0;
+		for (UINT s = 0; s < subresources; ++s)
+		{
+			const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint = footprints[s];
+			const size_t rowBytes = static_cast<size_t>(rowSizes[s]);
+			for (UINT row = 0; row < rowCounts[s]; ++row)
+				memcpy(mapped + static_cast<size_t>(footprint.Offset) + size_t(row) * footprint.Footprint.RowPitch,
+					data.pixels.data() + source + size_t(row) * rowBytes, rowBytes);
+			source += rowBytes * rowCounts[s];
+		}
 		upload->Unmap(0, nullptr);
 
 		if (!impl->WaitForGpu()) return kInvalidTexture;
@@ -3902,14 +4076,18 @@ namespace swc {
 			impl->status = L"텍스처 업로드 명령 초기화 실패.";
 			return kInvalidTexture;
 		}
-		D3D12_TEXTURE_COPY_LOCATION source = {};
-		source.pResource = upload.Get();
-		source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		source.PlacedFootprint = footprint;
-		D3D12_TEXTURE_COPY_LOCATION destination = {};
-		destination.pResource = texture.resource.Get();
-		destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		impl->commandList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+		for (UINT s = 0; s < subresources; ++s)
+		{
+			D3D12_TEXTURE_COPY_LOCATION copySource = {};
+			copySource.pResource = upload.Get();
+			copySource.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			copySource.PlacedFootprint = footprints[s];
+			D3D12_TEXTURE_COPY_LOCATION destination = {};
+			destination.pResource = texture.resource.Get();
+			destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			destination.SubresourceIndex = s;
+			impl->commandList->CopyTextureRegion(&destination, 0, 0, 0, &copySource, nullptr);
+		}
 		D3D12_RESOURCE_BARRIER barrier = {};
 		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		barrier.Transition.pResource = texture.resource.Get();
@@ -3924,14 +4102,11 @@ namespace swc {
 		if (!impl->FlushCommands(upload, texture.resource)) return kInvalidTexture;
 
 		// UI 로도 그릴 수 있게 UI SRV 힙의 «핸들 번호» 슬롯에 SRV 를 하나 더 만든다(DrawSprites).
+		//  UI 셰이더는 Texture2D 라 배열 텍스처(지형 레이어 묶음)는 그 칸을 비워 둔다.
 		const UINT slot = UINT(impl->textures.size());
-		if (impl->srvHeap && slot < Impl::MaxUiTextures)
+		if (impl->srvHeap && slot < Impl::MaxUiTextures && texture.arraySize == 1)
 		{
-			D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-			srv.Format = texture.format;
-			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-			srv.Texture2D.MipLevels = 1;
+			const D3D12_SHADER_RESOURCE_VIEW_DESC srv = Impl::TextureSrvDesc(texture);
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu = impl->srvHeap->GetCPUDescriptorHandleForHeapStart();
 			cpu.ptr += SIZE_T(slot) * impl->srvDescriptorSize;
 			impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, cpu);
@@ -3945,11 +4120,7 @@ namespace swc {
 			texture.bindless = impl->AllocateBindless();
 			if (texture.bindless != Impl::kNoDescriptor)
 			{
-				D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-				srv.Format = texture.format;
-				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-				srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				srv.Texture2D.MipLevels = 1;
+				const D3D12_SHADER_RESOURCE_VIEW_DESC srv = Impl::TextureSrvDesc(texture);
 				impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, impl->BindlessCpu(texture.bindless));
 			}
 		}
@@ -3984,6 +4155,12 @@ namespace swc {
 				impl->status = L"재질이 등록되지 않은 GPU 텍스처를 참조합니다.";
 				return kInvalidMaterial;
 			}
+			// 2026-10-28 — 일반 재질 셰이더는 Texture2D 다. 배열 텍스처(지형 레이어 묶음)는 CreateTerrainMaterial 로만.
+			if (impl->textures[resolved[slot]].arraySize != 1)
+			{
+				impl->status = L"일반 재질에 배열 텍스처를 쓸 수 없습니다(지형 레이어는 CreateTerrainMaterial).";
+				return kInvalidMaterial;
+			}
 		}
 
 		Impl::MaterialGpu material;
@@ -3996,22 +4173,7 @@ namespace swc {
 		// ── 알파 마스크 (2026-10-28) — glTF MASK: 알파 < alphaCutoff 면 없는 것. 기준이 0 이하면 다 남으므로 마스크로 다루지 않는다 ──
 		material.alphaMask = data.alphaMask && std::isfinite(data.alphaCutoff) && data.alphaCutoff > 0.0f;
 		material.constants.alphaCutoff = material.alphaMask ? data.alphaCutoff : 0.0f;
-		const size_t descriptorOffset = impl->materials.size() * kMaterialTextureCount * impl->materialDescriptorSize;
-		D3D12_CPU_DESCRIPTOR_HANDLE cpu = impl->materialHeap->GetCPUDescriptorHandleForHeapStart();
-		cpu.ptr += descriptorOffset;
-		material.textures = impl->materialHeap->GetGPUDescriptorHandleForHeapStart();
-		material.textures.ptr += descriptorOffset;
-		for (size_t slot = 0; slot < kMaterialTextureCount; ++slot)
-		{
-			const Impl::TextureGpu& texture = impl->textures[resolved[slot]];
-			D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-			srv.Format = texture.format;
-			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-			srv.Texture2D.MipLevels = 1;
-			impl->device->CreateShaderResourceView(texture.resource.Get(), &srv, cpu);
-			cpu.ptr += impl->materialDescriptorSize;
-		}
+		material.textures = impl->WriteMaterialTextures(impl->materials.size(), resolved);
 
 		// ── 투과 → 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2026-10-27 렌더 2단계) ──
 		//  glTF 정의 그대로: 표면 투과(transmission) × 투과광을 물들이는 baseColor
@@ -4060,6 +4222,92 @@ namespace swc {
 			row.attenuationDistance = std::isfinite(data.attenuationDistance) ? data.attenuationDistance : 0.0f;
 			row.attenuationColor = data.attenuationColor;
 			row.alphaCutoff = material.constants.alphaCutoff;   // 2026-10-28 — 레이 후보의 알파 판정(RtCommon.hlsli AlphaMaskedOut)
+			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
+		}
+
+		impl->materials.push_back(material);
+		return static_cast<MaterialHandle>(impl->materials.size() - 1);
+	}
+
+	// ── 지형 레이어 재질 (2026-10-28) ──
+	//  래스터: 묶음 키 kTerrainPsoKey 의 PSO(Forward.hlsl TERRAIN_LAYERS=1)가 텍스처 5칸을 «배열 4개 + 마스크» 로,
+	//          루트 상수 20 DWORD 를 TerrainConstants 로 읽는다(4단계에서 12 → 20).
+	//  RT   : 재질 표 한 줄에 terrain = 1 을 적고 칸 몇 개를 다른 뜻으로 쓴다(RtMaterialGpu 주석) — RtSurface.hlsli FetchHitSurface.
+	//  그림자 · AO 레이는 지형을 보통 불투명 물체로 본다(투과 · 알파 없음).
+	MaterialHandle GRenderer::CreateTerrainMaterial(const TerrainMaterialData& data, TextureHandle baseColor,
+		TextureHandle normal, TextureHandle orm, TextureHandle height, TextureHandle layerMask)
+	{
+		const std::array<TextureHandle, kMaterialTextureCount> slots{ baseColor, normal, orm, height, layerMask };
+		auto fail = [&](const wchar_t* why)
+		{
+			impl->status = std::wstring(L"지형 레이어 재질: ") + why;
+			return kInvalidMaterial;
+		};
+		if (!impl->materialHeap || impl->frameOpen || impl->materials.size() >= Impl::MaxMaterials)
+			return fail(L"호출 시점 또는 재질 개수가 올바르지 않습니다.");
+		for (float value : data.heightBlend)
+			if (!std::isfinite(value)) return fail(L"높이 계수가 유한하지 않습니다.");
+		if (!std::isfinite(data.blendDepth) || !(data.blendDepth > 0.0f) || !std::isfinite(data.normalStrength))
+			return fail(L"경계 폭(0 보다 커야 함) 또는 노멀 세기가 올바르지 않습니다.");
+		if (!(data.triplanarTileA > 0.0f) || !(data.triplanarTileB > 0.0f) || !std::isfinite(data.triplanarTileA) ||
+			!std::isfinite(data.triplanarTileB) || !(data.warpScale >= 0.0f) || !std::isfinite(data.warpScale) ||
+			!std::isfinite(data.warpAmount) || data.triplanarLayers > 0xFu)
+			return fail(L"세 방향 투영(타일 크기 > 0 · 레이어 비트 4개) 또는 좌표 비틀기 값이 올바르지 않습니다.");
+		if (!std::isfinite(data.macroAmount) || !std::isfinite(data.macroBias) || !std::isfinite(data.bumpDistance) ||
+			!std::isfinite(data.reliefDistance) || !(data.reliefStrength >= 0.0f) || !(data.reliefStrength <= 1.0f))
+			return fail(L"4단계 값(색 흔들림 · 범프 거리 · 범프 세기 0 ~ 1)이 올바르지 않습니다.");
+		for (TextureHandle handle : slots)
+			if (handle >= impl->textures.size()) return fail(L"등록되지 않은 GPU 텍스처를 참조합니다.");
+
+		// 텍스처 모양 — 레이어 묶음 넷은 원소 4개 · 같은 크기 · 같은 밉 수, 형식은 슬롯마다 정해져 있다(셰이더가 그렇게 읽는다).
+		const Impl::TextureGpu& first = impl->textures[baseColor];
+		const DXGI_FORMAT expected[4] = { DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM,
+			DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8_UNORM };
+		for (size_t slot = 0; slot < 4; ++slot)
+		{
+			const Impl::TextureGpu& texture = impl->textures[slots[slot]];
+			const D3D12_RESOURCE_DESC desc = texture.resource->GetDesc();
+			const D3D12_RESOURCE_DESC firstDesc = first.resource->GetDesc();
+			if (texture.arraySize != 4 || texture.format != expected[slot] || texture.mipLevels != first.mipLevels ||
+				desc.Width != firstDesc.Width || desc.Height != firstDesc.Height)
+				return fail(L"레이어 텍스처는 원소 4개 배열이고 크기 · 밉 수가 같아야 합니다(색 sRGB · 노멀 · ORM RGBA · 높이 R8).");
+		}
+		const Impl::TextureGpu& mask = impl->textures[layerMask];
+		if (mask.arraySize != 1 || mask.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+			return fail(L"레이어 마스크는 RGBA8(UNORM) 한 장이어야 합니다.");
+
+		Impl::MaterialGpu material;
+		material.terrain = true;
+		TerrainConstants constants{};
+		constants.heightBlend = XMFLOAT4(data.heightBlend[0], data.heightBlend[1], data.heightBlend[2], data.heightBlend[3]);
+		constants.blendDepth = data.blendDepth;
+		constants.normalStrength = data.normalStrength;
+		constants.triplanarLayers = data.triplanarLayers;
+		constants.triplanarTileA = data.triplanarTileA;
+		constants.triplanarTileB = data.triplanarTileB;
+		constants.triplanarOffsetB = data.triplanarOffsetB ? 1.0f : 0.0f;
+		constants.warpScale = data.warpScale;
+		constants.warpAmount = data.warpAmount;
+		constants.macroAmount = data.macroAmount;         // 4단계
+		constants.macroBias = data.macroBias;
+		constants.bumpDistance = data.bumpDistance;
+		constants.reliefDistance = data.reliefDistance;
+		constants.reliefStrength = data.reliefStrength;
+		material.terrainConstants = constants;
+		material.textures = impl->WriteMaterialTextures(impl->materials.size(), slots);
+
+		if (impl->rtMaterialData)
+		{
+			RtMaterialGpu row = {};
+			row.terrain = 1;
+			row.baseColor = constants.heightBlend;          // 지형: 레이어별 높이 계수
+			row.roughness = data.blendDepth;                // 지형: 경계 폭
+			row.metallic = data.normalStrength;             // 지형: 노멀 세기 (RT 히트는 노멀맵을 안 쓰지만 같이 적는다)
+			row.emissive = XMFLOAT3(data.macroAmount, data.macroBias, 0.0f);   // 지형: 4단계 색 흔들림 세기 · 바탕(발광 아님)
+			for (size_t slot = 0; slot < 4; ++slot)         // 배열 4개: 색 · 노멀 · ORM · 높이
+				row.textures[slot] = impl->textures[slots[slot]].bindless;
+			row.emissiveTexture = mask.bindless;            // 지형: 레이어 마스크
+			row.alphaCutoff = 0.0f;                         // 알파 마스크 아님 — 레이 후보 판정에 오지 않는다
 			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
@@ -4197,9 +4445,13 @@ namespace swc {
 			};
 			auto psoOf = [&](const InstanceData& it) -> uint32_t
 			{
-				return (impl->materials[materialOf(it)].doubleSided ? 1u : 0u) |
+				const Impl::MaterialGpu& material = impl->materials[materialOf(it)];
+				// 2026-10-28 지형 레이어 판 — 단면 · 알파 없음, 반전만 나눈다(키 8 · 9)
+				if (material.terrain)
+					return Impl::kTerrainPsoKey + ((it.flags & kInstanceMirrored) ? 1u : 0u);
+				return (material.doubleSided ? 1u : 0u) |
 					((it.flags & kInstanceMirrored) ? 2u : 0u) |
-					(impl->materials[materialOf(it)].alphaMask ? 4u : 0u);   // 2026-10-28 — 알파 마스크 판 PSO
+					(material.alphaMask ? 4u : 0u);   // 2026-10-28 — 알파 마스크 판 PSO
 			};
 
 			std::vector<uint32_t>& order = impl->batchOrder;
@@ -4349,10 +4601,11 @@ namespace swc {
 			commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
 			bindRasterRoot();
 			// ④ 묶음마다 ExecuteIndirect 한 번 — 인스턴스 수는 컬링 셰이더가 채웠다
-			ID3D12PipelineState* const forwardPsos[8] = {
+			ID3D12PipelineState* const forwardPsos[Impl::kPsoKeyCount] = {
 				impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get(),
 				impl->forwardMaskedPsos[0].Get(), impl->forwardMaskedPsos[1].Get(),
-				impl->forwardMaskedPsos[2].Get(), impl->forwardMaskedPsos[3].Get() };
+				impl->forwardMaskedPsos[2].Get(), impl->forwardMaskedPsos[3].Get(),
+				impl->forwardTerrainPsos[0].Get(), impl->forwardTerrainPsos[1].Get() };   // 8 · 9 지형 레이어(2026-10-28)
 			impl->DrawBatches(pass, forwardPsos);
 
 			// 먼 행성 내부의 깊이 비교는 유지하고 이후 맵/캐릭터가 항상 앞에 놓이게 한다.
@@ -4375,9 +4628,9 @@ namespace swc {
 		const D3D12_CPU_DESCRIPTOR_HANDLE gbufferRtv = impl->Rtv(Impl::kRtvGBuffer);
 		commandList->OMSetRenderTargets(Impl::GbCount, &gbufferRtv, TRUE, &dsv);   // 연속 5장(GB0~GB4)을 한 번에
 		bindRasterRoot();
-		ID3D12PipelineState* const gbufferPsos[8] = {
-			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get(),
-			impl->gbufferPsos[4].Get(), impl->gbufferPsos[5].Get(), impl->gbufferPsos[6].Get(), impl->gbufferPsos[7].Get() };
+		ID3D12PipelineState* gbufferPsos[Impl::kPsoKeyCount] = {};
+		for (uint32_t key = 0; key < Impl::kPsoKeyCount; ++key)
+			gbufferPsos[key] = impl->gbufferPsos[key].Get();   // 0 ~ 7 일반 · 알파 마스크, 8 · 9 지형 레이어(2026-10-28)
 		impl->DrawBatches(pass, gbufferPsos);
 
 		// ── [0] 의 짝 — 여기까지(프레임 시작 · 컬링 · G-buffer)를 먼저 GPU 에 보내 컴퓨트 큐의 TLAS 빌드와 겹치게 하고,

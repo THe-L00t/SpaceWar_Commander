@@ -17,7 +17,10 @@ struct RtMaterial
 {
 	float4 baseColor;
 	float3 emissive;          float roughness;
-	float  metallic;          uint  hasNormalMap;     uint  doubleSided;   uint _pad0;   // 7단계 — 양면 재질(뒷면을 맞아도 «벽 속» 이 아니다)
+	float  metallic;          uint  hasNormalMap;     uint  doubleSided;   uint terrain;   // 7단계 — 양면 재질(뒷면을 맞아도 «벽 속» 이 아니다)
+	//  ★ terrain(2026-10-28, 예전 _pad0) ≠ 0 = 지형 레이어 재질(GRenderer CreateTerrainMaterial). 이때 칸 몇 개가 다른 뜻이다:
+	//    baseColor = 레이어별 높이 계수 · roughness = 경계 폭 · metallic = 노멀 세기 · emissive.xy = 4단계 색 흔들림 세기 · 바탕
+	//    textures = 배열 4개(색 · 노멀 · ORM · 높이) · emissiveTexture = 레이어 마스크  (RtSurface.hlsli FetchHitSurface)
 	uint4  textures;          // x = BaseColor  y = Normal  z = Roughness  w = Metallic
 	uint   emissiveTexture;   uint3 _pad1;
 	float3 transmittance;     uint  transmissive;     // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2단계)

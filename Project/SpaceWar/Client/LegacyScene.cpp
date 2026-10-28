@@ -62,6 +62,13 @@ namespace swc {
 		++layoutVersion;
 	}
 
+	void LegacyScene::SetMaterial(NodeHandle n, MaterialHandle material)
+	{
+		if (n >= this->material.size() || this->material[n] == material) return;
+		this->material[n] = material;
+		++layoutVersion;   // 렌더러는 구성 버전이 바뀔 때만 (PSO, 재질, 메시) 묶음을 다시 만든다
+	}
+
 	void LegacyScene::SetVisible(NodeHandle n, bool visible)
 	{
 		if (n >= this->visible.size()) return;

@@ -165,6 +165,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <None Include="Shaders\PostProcess.hlsl" />
     <None Include="Shaders\ReflectionTiles.hlsli" />
     <None Include="Shaders\ReflectionClassify.hlsl" />
+    <None Include="Shaders\TerrainLayers.hlsli" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
@@ -269,6 +270,9 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json">
         <TargetFolder>map\Glacier_Planet</TargetFolder>
       </ModelAsset>
+      <!-- 지형 레이어 (2026-10-28) — 레이어 4종의 색 · ORM · 노멀 · 높이와 레이어 마스크의 밉맵 DDS(resource dfa4fe4).
+           glb 에는 대체 레이어 한 장뿐이라 PlanetDebugScene::LoadTerrainLayers 가 이 파일들을 읽는다. 행성 폴더 구조 그대로. -->
+      <TerrainAsset Include="$(ProjectDir)..\..\assets\model\map\**\*_BaseColor.dds;$(ProjectDir)..\..\assets\model\map\**\*_ORM.dds;$(ProjectDir)..\..\assets\model\map\**\*_Normal.dds;$(ProjectDir)..\..\assets\model\map\**\*_Height.dds;$(ProjectDir)..\..\assets\model\map\**\*_LayerMask.dds" />
       <!-- 배치 JSON 이 가리키는 오브젝트 glb (텍스처는 glb 안에 내장 — 옆의 png 는 복사하지 않는다). 폴더 구조를 그대로 둔다. -->
       <ObjectAsset Include="$(ProjectDir)..\..\assets\model\prop\**\*.glb">
         <Category>prop</Category>
@@ -290,6 +294,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb')" Text="하늘 행성 LOD3의 future_ruins_fps_lod3.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(TargetFolder)\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(ObjectAsset)" DestinationFiles="@(ObjectAsset->'$(OutDir)assets\model\%(Category)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(TerrainAsset)" DestinationFiles="@(TerrainAsset->'$(OutDir)assets\model\map\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

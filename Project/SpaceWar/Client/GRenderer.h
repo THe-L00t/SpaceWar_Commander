@@ -40,6 +40,13 @@ namespace swc {
 		// 만든 텍스처는 재질에도, UI(DrawSprites)에도 쓸 수 있다.
 		TextureHandle CreateTexture(const TextureData&);
 		MaterialHandle CreateMaterial(const MaterialData&, const std::array<TextureHandle, kMaterialTextureCount>&);
+		// ── 지형 레이어 재질 (2026-10-28) ──
+		//  baseColor · normal · orm · height = 같은 종류 4장(마스크 R G B A 순)을 묶은 배열 텍스처(arraySize 4).
+		//    baseColor = RGBA8 sRGB, normal · orm = RGBA8, height = R8. 넷의 크기 · 밉 수가 같아야 한다.
+		//  layerMask = RGBA8 마스크 한 장(채널마다 레이어 비율).
+		//  이 재질로 그리는 메시는 «메시 좌표 원점 = 행성 중심» 이어야 한다 — 마스크 UV 를 그 방향으로 계산한다.
+		MaterialHandle CreateTerrainMaterial(const TerrainMaterialData&, TextureHandle baseColor, TextureHandle normal,
+			TextureHandle orm, TextureHandle height, TextureHandle layerMask);
 
 		void BeginFrame();
 		// BeginFrame마다 배경(view.background=true), 메인 패스를 각 한 번 호출한다.

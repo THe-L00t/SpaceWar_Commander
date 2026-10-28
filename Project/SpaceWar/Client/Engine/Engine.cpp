@@ -669,9 +669,47 @@ namespace swc {
 					return true;
 				}
 				PlanetDebugScene& target = sceneManager.DebugPlanet(index);
+				// 지형 레이어 DDS 경로 — SetPlacement 가 배치 결과를 옮겨 가기 전에 뽑는다(2026-10-28).
+				const std::vector<std::wstring> layerAssets = PlanetDebugScene::TerrainLayerAssets(index, *placement);
 				target.SetPlacement(std::move(*placement));
 
 				batch.NextStage();
+
+				// ── 지형 레이어 (2026-10-28, 사용자 «렌더러 밖 수정 이번만 허용») ──
+				//  glb 의 지형 재질은 대체 레이어 한 장뿐이다. 레이어 4종 + 마스크의 밉맵 DDS 를 로딩 스레드에서 읽고,
+				//  메인에서 렌더러 지형 재질을 만들어 지형 노드에 끼운다. 이 단계는 맵 Build(앞 단계) 뒤에 돈다.
+				//  못 읽으면 대체 레이어 한 장 그대로 둔다(로그만).
+				if (layerAssets.empty())
+				{
+					Log(L"[디버그 행성] 배치 JSON 에 terrain_layers 가 없어 지형은 대체 레이어 한 장으로 둔다");
+				}
+				else
+				{
+					auto layers = std::make_shared<TerrainLayerSet>();   // 로딩 스레드의 결과 슬롯
+					std::vector<std::wstring> layerPaths;
+					layerPaths.reserve(layerAssets.size());
+					for (const std::wstring& asset : layerAssets)
+						layerPaths.push_back(AssetPath(asset.c_str()));
+					batch.Add(L"지형 레이어",
+						[layers, layerPaths]()
+						{
+							return PlanetDebugScene::LoadTerrainLayers(layerPaths, *layers);
+						},
+						[this, index, layers](bool ok)
+						{
+							if (!ok)
+							{
+								Log(L"[디버그 행성] 지형 레이어를 못 읽어 대체 레이어 한 장으로 둔다 — %s", layers->error.c_str());
+								return true;
+							}
+							std::wstring error;
+							if (!sceneManager.DebugPlanet(index).ApplyTerrainLayers(index, std::move(*layers), renderer, scene, error))
+								Log(L"[디버그 행성] 지형 레이어 적용 실패 — 대체 레이어 한 장으로 둔다: %s", error.c_str());
+							else
+								Log(L"[디버그 행성] %s 지형 레이어 4종 + 마스크 적용", PlanetDebugScene::Name(index));
+							return true;
+						});
+				}
 				for (size_t type = 0; type < target.ObjectTypeCount(); ++type)
 				{
 					const std::wstring asset = target.ObjectAsset(type);
