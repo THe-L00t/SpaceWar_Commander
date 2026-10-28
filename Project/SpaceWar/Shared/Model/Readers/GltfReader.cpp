@@ -1313,6 +1313,38 @@ namespace Shared {
 				}
 				material.doubleSided = source["doubleSided"].AsBool();
 
+				// ── 투과 · 부피 · 굴절률 (2026-10-28) ──
+				//  KHR_materials_transmission · KHR_materials_volume · KHR_materials_ior 의 «계수» 만 읽는다.
+				//  transmissionTexture · thicknessTexture 는 렌더러에 슬롯이 없어 읽지 않는다.
+				//  렌더러가 거부하는 값(음수 두께 · 0 이하 감쇠 거리 · 1 미만 굴절률)은 glTF 기본값으로 돌린다.
+				const JsonValue& extensions = source["extensions"];
+				const double transmission =
+					extensions["KHR_materials_transmission"]["transmissionFactor"].AsNumber(0.0);
+				material.transmission = std::isfinite(transmission)
+					? std::clamp(static_cast<float>(transmission), 0.0f, 1.0f) : 0.0f;
+
+				const JsonValue& volume = extensions["KHR_materials_volume"];
+				const double thickness = volume["thicknessFactor"].AsNumber(0.0);
+				material.thickness = (std::isfinite(thickness) && thickness > 0.0)
+					? static_cast<float>(thickness) : 0.0f;
+				const double attenuationDistance = volume["attenuationDistance"].AsNumber(0.0);
+				if (std::isfinite(attenuationDistance) && attenuationDistance > 0.0)
+					material.attenuationDistance = static_cast<float>(attenuationDistance);
+				const JsonValue& attenuationColor = volume["attenuationColor"];
+				if (attenuationColor.IsArray() && attenuationColor.Size() == 3)
+				{
+					const auto unit = [](const JsonValue& value)
+					{
+						const double v = value.AsNumber(1.0);
+						return std::isfinite(v) ? std::clamp(static_cast<float>(v), 0.0f, 1.0f) : 1.0f;
+					};
+					material.attenuationColor = {
+						unit(attenuationColor.At(0)), unit(attenuationColor[1]), unit(attenuationColor[2]) };
+				}
+
+				const double ior = extensions["KHR_materials_ior"]["ior"].AsNumber(1.5);
+				material.ior = (std::isfinite(ior) && ior >= 1.0) ? static_cast<float>(ior) : 1.5f;
+
 				// ── 알파 마스크 (2026-10-28) — glTF alphaMode · alphaCutoff ──
 				//  MASK: 알파 ≥ alphaCutoff 면 불투명, 아니면 완전 투명(기본값 0.5, 1 보다 크면 전부 투명).
 				//  BLEND 는 렌더러에 섞기 패스가 없어 지금은 불투명으로 둔다(리소스에 BLEND 재질 0개, 10-28 확인).
