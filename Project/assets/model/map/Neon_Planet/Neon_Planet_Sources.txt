@@ -1,0 +1,26 @@
+Neon_Planet — 원본 텍스처 출처 (모두 CC0 1.0, 저작자 표시 의무 없음)
+
+형상(지형 · 도로 · 건물 · 소품 · 조명 기구 · 바위 · 덤불 · 풀)은 블렌더 스크립트로 직접 만들었고,
+표면 사진만 아래 CC0 스캔을 썼다. 각 PNG 는 체크리스트 형식(BaseColor sRGB · ORM · Normal OpenGL · Emissive sRGB)으로
+다시 묶거나 베이크한 것이다. 창 불빛 · 네온 글리프 · 발광 띠 · 경고 줄무늬 · 단말 화면은 절차적으로 그렸다.
+지형 레이어의 <Layer>_Height.png 는 같은 원본의 변위(displacement) 맵을 0~1 로 편 것이다.
+
+Poly Haven (https://polyhaven.com, CC0)
+  dark_rock_02             -> Rock_Dark_* (지형 레이어), Rock_Crag_A/B · Rock_Spire_A · Rock_Shard_A · Rock_Rubble_A (베이크)
+  dark_rock                -> 바위 베이크(섞음)
+  stony_dirt_path          -> Gravel_Dark_* (지형 레이어), 바위 윗면 흙먼지
+  dry_ground_rocks         -> Scrub_Dry_* (지형 레이어)
+  concrete_floor_worn_001  -> Pavement_* (지형 레이어 · 착륙장 · 교차로 판), Neon_Road_* (배수 홈 · 연석)
+  asphalt_02               -> Neon_Road_* (차로)
+  concrete_pavement        -> Neon_Road_* (보도)
+  concrete_layers_02       -> Neon_Building_Concrete_*, 소품 콘크리트(베이크)
+  concrete_wall_006        -> Neon_Building_Concrete_* (섞음)
+  metal_plate_02           -> Neon_Building_Metal_*, Neon_Building_Trim_* (문 · 창틀 · 환기구 · 금속판)
+  metal_plate              -> Neon_Building_Trim_* (문 발판 무늬판)
+  painted_metal_shutter    -> Neon_Building_Trim_* (셔터)
+  rusty_metal_04           -> Neon_Building_Trim_* (경고 줄무늬 닳은 곳), 소품 도장의 녹 · 녹슨 금속(베이크)
+
+ambientCG (https://ambientcg.com, CC0)
+  Foliage002               -> Grass_Dry_* (마른 이삭 줄기, 녹 · 주황 갈색으로 다시 칠함)
+
+마른 덤불(Shrub_Dry)의 잔가지 · 잎은 원본 사진 없이 형상으로 만들어 렌더했다.
