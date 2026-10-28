@@ -267,7 +267,7 @@ namespace swc {
 		XMFLOAT3 transmittance; uint32_t transmissive;
 		// 9단계 — [7] 반투명 패스가 읽는 투과 · 부피 · 굴절률 (MaterialData 그대로)
 		float    transmission;  float ior;  float thickness;  float attenuationDistance;
-		XMFLOAT3 attenuationColor; uint32_t pad2;
+		XMFLOAT3 attenuationColor; float alphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님), 예전 pad2 자리
 	};
 	static_assert(sizeof(RtMaterialGpu) == 128, "RtMaterial 은 128바이트 (9단계에서 96 → 128)");
 	//  인스턴스 표: TLAS 인스턴스 순번(InstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
@@ -417,6 +417,8 @@ namespace swc {
 	static_assert(sizeof(DenoiseConstants) == 208, "DenoiseCB 는 208바이트");
 
 	// RtShadow.hlsl 의 ShadowCB 와 같은 순서 · 크기 (2026-10-27 렌더 2단계, [4a] RT 그림자)
+	//  2026-10-28 — 알파 마스크 판정에 재질 텍스처가 필요해 그림자도 바인드리스(컴퓨트 공용 루트)로 옮겼다:
+	//  법선 · 깊이 · 그림자 마스크 UAV 를 바인드리스 번호로 넘긴다(112 → 128바이트).
 	struct ShadowConstants
 	{
 		XMFLOAT4X4 invViewProj;   // 전치해서 올린다(LightingConstants 와 같은 값)
@@ -424,16 +426,19 @@ namespace swc {
 		XMFLOAT3   sunDir;    float pad0;
 		uint32_t   width;
 		uint32_t   height;
-		uint32_t   pad1[2];
+		uint32_t   normalIndex;   // 바인드리스 — G-buffer 법선 SRV
+		uint32_t   depthIndex;    // 바인드리스 — 깊이 SRV
+		uint32_t   shadowUav;     // 바인드리스 — 그림자 마스크 UAV
+		uint32_t   pad1[3];
 	};
-	static_assert(sizeof(ShadowConstants) == 112, "ShadowCB 는 112바이트");
+	static_assert(sizeof(ShadowConstants) == 128, "ShadowCB 는 128바이트");
 
 	// Forward.hlsl의 MaterialCB와 16바이트 단위로 맞춘다.
 	struct MaterialConstants
 	{
 		XMFLOAT4 baseColor;
 		XMFLOAT3 emissive; float roughness;
-		float metallic; uint32_t hasNormalMap; float pad[2];
+		float metallic; uint32_t hasNormalMap; float alphaCutoff; float pad;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
 	};
 	static_assert(sizeof(MaterialConstants) == 12 * sizeof(uint32_t));
 
@@ -542,6 +547,8 @@ namespace swc {
 			// 11단계 — [3] 분류
 			BindlessReflectionTileSrv = 79, BindlessReflectionTileUav = 80,    // 반사 타일 목록 (uint × 화면 타일 수)
 			BindlessReflectionArgsUav = 81,                                     // DispatchRays 간접 인자 (raw — Width 에 원자 더하기)
+			// 2026-10-28 — [4a] 그림자를 바인드리스로 옮기면서
+			BindlessShadowMaskUav = 82,                                         // 그림자 마스크 UAV (RtShadow.hlsl 이 쓴다)
 			// 앞 128칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64, 10단계에서 → 128).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
 			BindlessReserved = 128 };
@@ -645,6 +652,10 @@ namespace swc {
 			//  transmissive 면 TLAS 인스턴스를 FORCE_NON_OPAQUE 로 넣어 [4a] 그림자 레이가 «통과 후보» 로 본다.
 			bool transmissive = false;
 			XMFLOAT3 transmittance{ 0.0f, 0.0f, 0.0f };   // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (RGB)
+			// ── 알파 마스크 (2026-10-28) — glTF alphaMode MASK · alphaCutoff > 0 ──
+			//  래스터: 묶음 키에 4 를 더해 discard 가 있는 PSO 로 그린다(마스크 아닌 물체는 discard 없는 PSO 그대로).
+			//  RT: TLAS 인스턴스를 FORCE_NON_OPAQUE 로 넣어 레이가 후보로 받아 빈 곳을 거른다.
+			bool alphaMask = false;
 		};
 
 		// RT 재질 표 — 재질 번호(TLAS InstanceID) → RtMaterialGpu(96 B). [4a] 그림자는 투과만, [4b] 반사는 전부 읽는다.
@@ -668,6 +679,8 @@ namespace swc {
 		ComPtr<ID3D12PipelineState>        doubleSidedPso;
 		ComPtr<ID3D12PipelineState>        mirroredPso;
 		ComPtr<ID3D12PipelineState>        mirroredDoubleSidedPso;
+		// 2026-10-28 알파 마스크 — 배경 forward 의 마스크 판 4종(PSMain + ALPHA_MASK=1, 묶음 키 4 ~ 7)
+		ComPtr<ID3D12PipelineState>        forwardMaskedPsos[4];
 		ComPtr<ID3D12Resource>             frameCB;
 		uint8_t*                           frameCBData = nullptr;
 
@@ -858,8 +871,8 @@ namespace swc {
 			return handle;
 		}
 
-		ComPtr<ID3D12RootSignature> rtShadowRootSig;    // RT 지원 장치에서만 만든다
-		ComPtr<ID3D12PipelineState> rtShadowPso;        // cs_6_5 (RayQuery)
+		// [4a] RT 그림자 — 2026-10-28 부터 컴퓨트 공용 바인드리스 루트(computeRootSig) · cs_6_6 (알파 마스크 판정에 재질 텍스처가 필요)
+		ComPtr<ID3D12PipelineState> rtShadowPso;        // RT + 바인드리스 장치에서만 만든다
 		ComPtr<ID3D12Resource>      shadowCB;           // UPLOAD, 영속 매핑
 		uint8_t*                    shadowCBData = nullptr;
 
@@ -869,7 +882,7 @@ namespace swc {
 		ComPtr<ID3D12DescriptorHeap> targetHeap;
 		UINT targetDescriptorSize = 0;
 
-		ComPtr<ID3D12PipelineState> gbufferPsos[4];   // Batch::pso 순서: 0 기본 · 1 양면 · 2 반전 · 3 반전 양면
+		ComPtr<ID3D12PipelineState> gbufferPsos[8];   // Batch::pso 순서: 0 기본 · 1 양면 · 2 반전 · 3 반전 양면, +4 = 알파 마스크 판(2026-10-28)
 		ComPtr<ID3D12RootSignature> lightingRootSig;
 		ComPtr<ID3D12PipelineState> lightingPso;
 		ComPtr<ID3D12Resource>      lightingCB;       // UPLOAD, 영속 매핑. 프레임마다 GPU 를 기다리므로 한 벌이면 된다
@@ -980,6 +993,71 @@ namespace swc {
 		std::wstring status;
 		RenderStats stats;
 
+		// ── GPU 시간 계측 (2026-10-28) — 직접 큐의 패스 경계마다 타임스탬프를 찍고, 2초마다 구간별 평균을 디버그 출력으로 낸다 ──
+		//  구간 = 한 표시(MarkGpuTime)에서 다음 표시까지. 같은 이름(배경 · 메인 Render 의 같은 자리)은 합친다.
+		//  «[0] TLAS 대기» 구간에는 직접 큐가 컴퓨트 큐의 TLAS 빌드를 기다린 시간이 들어간다.
+		//  EndFrame 이 GPU 완료를 기다리므로 같은 프레임 끝에서 바로 읽는다.
+		static constexpr UINT kMaxTimestamps = 64;
+		ComPtr<ID3D12QueryHeap> timestampHeap;
+		ComPtr<ID3D12Resource>  timestampReadback;
+		UINT64         timestampFrequency = 0;
+		UINT           timestampCount = 0;
+		const wchar_t* timestampNames[kMaxTimestamps] = {};
+		std::vector<std::pair<std::wstring, double>> gpuTimeSums;   // 구간 이름 → 누적 ms (처음 나온 순서)
+		double         gpuFrameSum = 0.0;
+		uint32_t       gpuTimedFrames = 0;
+		LARGE_INTEGER  gpuReportStart = {};
+
+		void MarkGpuTime(const wchar_t* name)
+		{
+			if (!timestampHeap || timestampCount >= kMaxTimestamps) return;
+			timestampNames[timestampCount] = name;
+			commandList->EndQuery(timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, timestampCount++);
+		}
+
+		void CollectGpuTimes(UINT count)
+		{
+			if (!timestampHeap || count < 2 || timestampFrequency == 0) return;
+			D3D12_RANGE range = { 0, count * sizeof(UINT64) };
+			void* mapped = nullptr;
+			if (FAILED(timestampReadback->Map(0, &range, &mapped))) return;
+			const UINT64* t = static_cast<const UINT64*>(mapped);
+			const double toMs = 1000.0 / double(timestampFrequency);
+			for (UINT i = 0; i + 1 < count; ++i)
+			{
+				const double ms = t[i + 1] >= t[i] ? double(t[i + 1] - t[i]) * toMs : 0.0;
+				auto it = std::find_if(gpuTimeSums.begin(), gpuTimeSums.end(),
+					[&](const std::pair<std::wstring, double>& e) { return e.first == timestampNames[i]; });
+				if (it == gpuTimeSums.end()) gpuTimeSums.emplace_back(timestampNames[i], ms);
+				else it->second += ms;
+			}
+			gpuFrameSum += t[count - 1] >= t[0] ? double(t[count - 1] - t[0]) * toMs : 0.0;
+			++gpuTimedFrames;
+			D3D12_RANGE noWrite = { 0, 0 };
+			timestampReadback->Unmap(0, &noWrite);
+
+			LARGE_INTEGER now, frequency;
+			QueryPerformanceCounter(&now);
+			QueryPerformanceFrequency(&frequency);
+			if (gpuReportStart.QuadPart == 0) gpuReportStart = now;
+			if (double(now.QuadPart - gpuReportStart.QuadPart) / double(frequency.QuadPart) < 2.0) return;
+
+			wchar_t line[96];
+			swprintf_s(line, L"[GPU 시간] %u 프레임 평균 — 전체 %.3f ms", gpuTimedFrames, gpuFrameSum / gpuTimedFrames);
+			std::wstring report = line;
+			for (const std::pair<std::wstring, double>& e : gpuTimeSums)
+			{
+				swprintf_s(line, L" | %s %.3f", e.first.c_str(), e.second / gpuTimedFrames);
+				report += line;
+			}
+			report += L"\n";
+			OutputDebugStringW(report.c_str());
+			gpuTimeSums.clear();
+			gpuFrameSum = 0.0;
+			gpuTimedFrames = 0;
+			gpuReportStart = now;
+		}
+
 		UINT rtvDescriptorSize = 0;
 		UINT frameIndex = 0;
 
@@ -1088,7 +1166,7 @@ namespace swc {
 		// ── 래스터 묶음 그리기 (2026-10-27 Render 에서 떼어 냄) ──
 		//  배경 forward 와 메인 G-buffer 가 같은 묶음 · 같은 루프를 쓰고 PSO 표만 다르다.
 		//  루트 시그니처 · 힙 · 프레임 CBV · 인스턴스 SRV 는 부르기 전에 묶어 둔다.
-		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[4])
+		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[8])
 		{
 			ID3D12PipelineState* currentPso = nullptr;
 			MaterialHandle currentMaterial = kInvalidMaterial;
@@ -1398,6 +1476,7 @@ namespace swc {
 		{
 			if (resolved) return;
 			resolved = true;
+			MarkGpuTime(L"[8] 후처리 · 톤맵 · UI");
 
 			// ★ 10단계 — 최종 화면(디버그 뷰 0)은 [8] 후처리: 자동 노출 → 블룸 → 톤맵(ACES · sRGB).
 			//   디버그 뷰 · 바인드리스 없는 장치는 예전처럼 0~1 자르기(값을 숫자 그대로 본다).
@@ -2010,6 +2089,8 @@ namespace swc {
 						impl->device->CreateUnorderedAccessView(resource, nullptr, &uavDesc, impl->BindlessCpu(slot));
 					};
 					bindlessUav(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::BindlessReflectionUav);
+					// 2026-10-28 — [4a] 그림자 마스크 (그림자를 바인드리스로 옮기면서)
+					bindlessUav(impl->shadowMask.resource.Get(), Impl::kShadowFormat, Impl::BindlessShadowMaskUav);
 
 					// 5단계 — [4d] 노이즈 제거가 읽고 쓰는 프레임 자원 (BindlessSlot 4 ~ 12)
 					bindlessSrv(impl->reflection.resource.Get(), Impl::kReflectionFormat, Impl::BindlessReflectionSrv);
@@ -2139,6 +2220,23 @@ namespace swc {
 		if (FAILED(impl->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, impl->commandAllocator.Get(), nullptr, IID_PPV_ARGS(&impl->commandList))))
 			return false;
 		impl->commandList->Close();
+
+		// GPU 시간 계측 (2026-10-28) — 만들지 못하면 계측만 끈다(그리기와 상관없다)
+		{
+			D3D12_QUERY_HEAP_DESC qd = {};
+			qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+			qd.Count = Impl::kMaxTimestamps;
+			D3D12_HEAP_PROPERTIES readbackHeap = HeapProps(D3D12_HEAP_TYPE_READBACK);
+			const D3D12_RESOURCE_DESC rd = BufferDesc(Impl::kMaxTimestamps * sizeof(UINT64));
+			if (FAILED(impl->commandQueue->GetTimestampFrequency(&impl->timestampFrequency)) ||
+				FAILED(impl->device->CreateQueryHeap(&qd, IID_PPV_ARGS(&impl->timestampHeap))) ||
+				FAILED(impl->device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &rd,
+					D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&impl->timestampReadback))))
+			{
+				impl->timestampHeap.Reset();
+				impl->timestampReadback.Reset();
+			}
+		}
 
 		// 프레임 상수 버퍼 (UPLOAD, 영속 매핑)
 		{
@@ -2455,6 +2553,18 @@ namespace swc {
 				impl->status = L"G-buffer 픽셀 셰이더 컴파일 실패 (출력창 참고).";
 				return false;
 			}
+			// 2026-10-28 알파 마스크 — 같은 두 진입점을 ALPHA_MASK=1 로 한 번 더 컴파일한다(discard 가 들어간 판).
+			//  마스크 재질만 이 판으로 그려, 마스크 아닌 물체는 discard 없는 셰이더 그대로 둔다(이른 깊이 쓰기를 잃지 않게).
+			const wchar_t* const maskDefine[] = { L"ALPHA_MASK=1" };
+			std::vector<uint8_t> psMasked = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", psTarget, maskDefine, 1, log);
+			std::vector<uint8_t> gbufferPsMasked = psMasked.empty() ? std::vector<uint8_t>{} :
+				impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSGBuffer", psTarget, maskDefine, 1, log);
+			if (psMasked.empty() || gbufferPsMasked.empty())
+			{
+				OutputDebugStringA(("[PS 알파 마스크] " + log + "\n").c_str());
+				impl->status = L"알파 마스크 픽셀 셰이더 컴파일 실패 (출력창 참고).";
+				return false;
+			}
 
 			D3D12_INPUT_ELEMENT_DESC layout[] = {
 				{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, position)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -2507,6 +2617,18 @@ namespace swc {
 				impl->status = L"forward PSO 생성 실패.";
 				return false;
 			}
+			// 2026-10-28 알파 마스크 판 (묶음 키 4 ~ 7)
+			{
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC maskedDesc = psoDesc;
+				maskedDesc.PS = { psMasked.data(), psMasked.size() };
+				ComPtr<ID3D12PipelineState>* const forwardMaskedOut[4] = {
+					&impl->forwardMaskedPsos[0], &impl->forwardMaskedPsos[1], &impl->forwardMaskedPsos[2], &impl->forwardMaskedPsos[3] };
+				if (!createVariants(maskedDesc, forwardMaskedOut))
+				{
+					impl->status = L"forward 알파 마스크 PSO 생성 실패.";
+					return false;
+				}
+			}
 
 			// [1] G-buffer — 렌더 타깃 5장(GB0~GB4, PSGBuffer 의 SV_Target0~4), 형식은 kGBufferFormats
 			psoDesc.PS = { gbufferPs.data(), gbufferPs.size() };
@@ -2521,6 +2643,15 @@ namespace swc {
 			if (!createVariants(psoDesc, gbufferOut))
 			{
 				impl->status = L"G-buffer PSO 생성 실패.";
+				return false;
+			}
+			// 2026-10-28 알파 마스크 판 (묶음 키 4 ~ 7)
+			psoDesc.PS = { gbufferPsMasked.data(), gbufferPsMasked.size() };
+			ComPtr<ID3D12PipelineState>* const gbufferMaskedOut[4] = {
+				&impl->gbufferPsos[4], &impl->gbufferPsos[5], &impl->gbufferPsos[6], &impl->gbufferPsos[7] };
+			if (!createVariants(psoDesc, gbufferMaskedOut))
+			{
+				impl->status = L"G-buffer 알파 마스크 PSO 생성 실패.";
 				return false;
 			}
 		}
@@ -2601,70 +2732,9 @@ namespace swc {
 			}
 		}
 
-		// ── [4a] RT 그림자 파이프라인 (RtShadow.hlsl, 2026-10-27 렌더 2단계) ──
-		//   b0 = ShadowCB(루트 CBV)
-		//   테이블 = targetHeap 슬롯 0 부터 (SRV t0~t5 G-buffer GB0~GB4 · 깊이 = 슬롯 0~5, UAV u0 그림자 마스크 = 슬롯 8)
-		//   t6 = TLAS(루트 SRV), t7 = 재질 표(루트 SRV) — 둘 다 버퍼라 힙 없이 주소로 넘긴다.
-		//   (5단계 후속 — GB4 가 G-buffer 묶음에 들어오면서 깊이 t4 → t5, TLAS t5 → t6, 재질 표 t6 → t7)
-		//   RayQuery 가 들어 있어 cs_6_5 — RT 지원 장치에서만 만든다. 실패하면 RT 를 끄고 계속한다.
-		if (impl->rtSupported)
-		{
-			bool ok = true;
-			D3D12_DESCRIPTOR_RANGE ranges[2] = {};
-			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-			ranges[0].NumDescriptors = Impl::GbCount + 1;
-			ranges[0].BaseShaderRegister = 0;
-			ranges[0].OffsetInDescriptorsFromTableStart = Impl::SlotGBuffer;
-			ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-			ranges[1].NumDescriptors = 1;
-			ranges[1].BaseShaderRegister = 0;
-			ranges[1].OffsetInDescriptorsFromTableStart = Impl::SlotShadowUav;
-
-			D3D12_ROOT_PARAMETER params[4] = {};
-			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-			params[0].Descriptor.ShaderRegister = 0;
-			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-			params[1].DescriptorTable.NumDescriptorRanges = 2;
-			params[1].DescriptorTable.pDescriptorRanges = ranges;
-			params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;   // TLAS
-			params[2].Descriptor.ShaderRegister = 6;
-			params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;   // 재질 표
-			params[3].Descriptor.ShaderRegister = 7;
-			for (D3D12_ROOT_PARAMETER& param : params)
-				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-			rsDesc.NumParameters = 4;
-			rsDesc.pParameters = params;
-			ComPtr<ID3DBlob> sig, err;
-			if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) ||
-				FAILED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->rtShadowRootSig))))
-				ok = false;
-
-			std::string log;
-			std::vector<uint8_t> cs;
-			if (ok)
-			{
-				cs = impl->shaderCompiler.CompileFromFile(ShaderPath(L"RtShadow.hlsl").c_str(), L"CSMain", L"cs_6_5", nullptr, 0, log);
-				if (cs.empty())
-				{
-					OutputDebugStringA(("[RtShadow CS] " + log + "\n").c_str());
-					ok = false;
-				}
-			}
-			if (ok)
-			{
-				D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
-				psoDesc.pRootSignature = impl->rtShadowRootSig.Get();
-				psoDesc.CS = { cs.data(), cs.size() };
-				ok = SUCCEEDED(impl->device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&impl->rtShadowPso)));
-			}
-			if (!ok)
-			{
-				impl->rtShadowPso.Reset();
-				impl->status += L"  (RT 그림자 파이프라인 생성 실패 — 그림자 없이 진행)";
-			}
-		}
+		// ── [4a] RT 그림자 파이프라인 ──
+		//  2026-10-28 — 아래 «바인드리스 컴퓨트 공용 루트 시그니처 + 파이프라인» 블록으로 옮겼다(알파 마스크 판정에
+		//  재질 텍스처가 필요해 cs_6_5 · 테이블 방식 → cs_6_6 · 공용 바인드리스 루트). 예전 전용 루트 시그니처는 없앴다.
 
 		// ── [4b] RT 반사 파이프라인 (RtReflection.hlsl, DispatchRays, 2026-10-27 렌더 4단계) ──
 		//  RT 지원 + SM 6.6 바인드리스 지원 장치에서만. 하나라도 실패하면 반사만 끄고 계속한다.
@@ -2737,27 +2807,32 @@ namespace swc {
 			}
 
 			// RT 파이프라인 상태 객체 — 하위 객체 5개
-			//   DXIL 라이브러리 · 히트 그룹(삼각형, closest hit 하나) · 셰이더 설정(페이로드 16 B, 속성 8 B)
+			//   DXIL 라이브러리 · 히트 그룹(삼각형, closest hit + any hit — 2026-10-28 알파 마스크) · 셰이더 설정(페이로드 16 B, 속성 8 B)
 			//   · 전역 루트 시그니처 · 파이프라인 설정(재귀 1 — raygen 의 TraceRay 한 단계. 히트 셰이더 안 그림자는 RayQuery 라 안 셈)
 			static const wchar_t* const kRayGen = L"RayGen";
 			static const wchar_t* const kMiss = L"Miss";
 			static const wchar_t* const kClosestHit = L"ClosestHit";
+			static const wchar_t* const kAnyHit = L"AnyHit";   // 2026-10-28 알파 마스크 — 비불투명 인스턴스의 빈 곳을 거른다
 			static const wchar_t* const kHitGroup = L"HitGroup";
 			if (ok)
 			{
-				D3D12_EXPORT_DESC exports[3] = {
+				D3D12_EXPORT_DESC exports[4] = {
 					{ kRayGen, nullptr, D3D12_EXPORT_FLAG_NONE },
 					{ kMiss, nullptr, D3D12_EXPORT_FLAG_NONE },
-					{ kClosestHit, nullptr, D3D12_EXPORT_FLAG_NONE } };
+					{ kClosestHit, nullptr, D3D12_EXPORT_FLAG_NONE },
+					{ kAnyHit, nullptr, D3D12_EXPORT_FLAG_NONE } };
 				D3D12_DXIL_LIBRARY_DESC libraryDesc = {};
 				libraryDesc.DXILLibrary = { library.data(), library.size() };
-				libraryDesc.NumExports = 3;
+				libraryDesc.NumExports = 4;
 				libraryDesc.pExports = exports;
 
+				// 히트 그룹 = closest hit + any hit. any hit 은 비불투명 인스턴스(알파 마스크 · 투과)에서만 불린다
+				//  — 불투명 BLAS(GEOMETRY_FLAG_OPAQUE)는 시스템이 바로 받아들여 any hit 을 건너뛴다.
 				D3D12_HIT_GROUP_DESC hitGroup = {};
 				hitGroup.HitGroupExport = kHitGroup;
 				hitGroup.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
 				hitGroup.ClosestHitShaderImport = kClosestHit;
+				hitGroup.AnyHitShaderImport = kAnyHit;
 
 				D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {};
 				shaderConfig.MaxPayloadSizeInBytes = 16;     // ReflectionPayload: float3 color + float hitT
@@ -3012,6 +3087,17 @@ namespace swc {
 					impl->bloomDownPso.Reset();
 					impl->bloomUpPso.Reset();
 					OutputDebugStringW(L"[GRenderer] [8] 후처리 파이프라인 생성 실패 — 예전 톤맵(0~1 자르기)\n");
+				}
+			}
+
+			// [4a] RT 그림자 (RtShadow.hlsl) — 2026-10-28 부터 이 공용 루트(b0 ShadowCB · t0 TLAS · t1 재질 표 · t2 인스턴스 표 · s0).
+			//  법선 · 깊이 · 그림자 마스크 UAV 는 바인드리스 번호로 읽고 쓴다. RT 지원 장치에서만. 실패하면 그림자 없이 계속한다.
+			if (ok && impl->rtSupported)
+			{
+				if (!createCompute(L"RtShadow.hlsl", L"CSMain", impl->rtShadowPso))
+				{
+					impl->rtShadowPso.Reset();
+					impl->status += L"  (RT 그림자 파이프라인 생성 실패 — 그림자 없이 진행)";
 				}
 			}
 
@@ -3907,6 +3993,9 @@ namespace swc {
 		material.constants.roughness = data.roughness;
 		material.constants.metallic = data.metallic;
 		material.constants.hasNormalMap = textures[static_cast<size_t>(TextureSlot::Normal)] != kInvalidTexture ? 1u : 0u;
+		// ── 알파 마스크 (2026-10-28) — glTF MASK: 알파 < alphaCutoff 면 없는 것. 기준이 0 이하면 다 남으므로 마스크로 다루지 않는다 ──
+		material.alphaMask = data.alphaMask && std::isfinite(data.alphaCutoff) && data.alphaCutoff > 0.0f;
+		material.constants.alphaCutoff = material.alphaMask ? data.alphaCutoff : 0.0f;
 		const size_t descriptorOffset = impl->materials.size() * kMaterialTextureCount * impl->materialDescriptorSize;
 		D3D12_CPU_DESCRIPTOR_HANDLE cpu = impl->materialHeap->GetCPUDescriptorHandleForHeapStart();
 		cpu.ptr += descriptorOffset;
@@ -3970,6 +4059,7 @@ namespace swc {
 			row.thickness = (std::max)(data.thickness, 0.0f);
 			row.attenuationDistance = std::isfinite(data.attenuationDistance) ? data.attenuationDistance : 0.0f;
 			row.attenuationColor = data.attenuationColor;
+			row.alphaCutoff = material.constants.alphaCutoff;   // 2026-10-28 — 레이 후보의 알파 판정(RtCommon.hlsli AlphaMaskedOut)
 			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
@@ -3986,6 +4076,8 @@ namespace swc {
 		++impl->frameCounter;   // 프레임 번호 — 시간 누적 · 노이즈 시드용 자리(2026-10-27 룰렛이 빠져 지금은 읽는 곳 없음)
 		impl->commandAllocator->Reset();
 		impl->commandList->Reset(impl->commandAllocator.Get(), nullptr);
+		impl->timestampCount = 0;
+		impl->MarkGpuTime(L"프레임 시작(지우기)");
 		impl->resolved = false;
 		impl->skyDoneThisFrame = false;   // 6단계 — 이번 프레임의 첫 Render 가 해 · 하늘을 처리한다
 		// 10단계 — 프레임 시간(자동 노출 적응 속도가 «스톱/초» 라서). 첫 프레임 · 멈췄다 돌아온 프레임은 0.1 초로 자른다.
@@ -4027,6 +4119,7 @@ namespace swc {
 
 		// ── [6] 해 · 하늘 (2026-10-27 렌더 6단계) — 프레임의 첫 Render 에서 한 번(배경이 먼저면 배경에서) ──
 		//  땅에 닿는 태양 조도를 구하고(아래 모든 상수가 쓴다), HDR 컬러 전체에 하늘을 그린다.
+		impl->MarkGpuTime(L"[6] 하늘");
 		impl->UpdateSunAndSky(view);
 
 		// ── TLAS 재빌드 (패킷 인스턴스 → TLAS 인스턴스) ──
@@ -4049,7 +4142,9 @@ namespace swc {
 				//   투과 재질이면 FORCE_NON_OPAQUE 로 넣어 그림자 레이가 통과 후보로 본다.
 				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
 				const uint32_t index = impl->accel.InstanceCount();
-				impl->accel.AddInstance(blasIndex, it.world, material, impl->materials[material].transmissive);
+				// 투과 · 알파 마스크(2026-10-28) 재질은 FORCE_NON_OPAQUE — 레이가 후보로 받아 남는 빛 · 빈 곳을 처리한다
+				impl->accel.AddInstance(blasIndex, it.world, material,
+					impl->materials[material].transmissive || impl->materials[material].alphaMask);
 				// ★ 2026-10-27 렌더 4단계 — 들어간 인스턴스와 같은 순번으로 인스턴스 표 한 줄.
 				//   반사 히트 셰이더가 InstanceIndex() 로 이 줄을 찾아 정점 · 인덱스 버퍼(바인드리스 번호)와 재질을 안다.
 				//   AddInstance 가 상한으로 버렸으면(개수가 안 늘었으면) 쓰지 않는다.
@@ -4103,7 +4198,8 @@ namespace swc {
 			auto psoOf = [&](const InstanceData& it) -> uint32_t
 			{
 				return (impl->materials[materialOf(it)].doubleSided ? 1u : 0u) |
-					((it.flags & kInstanceMirrored) ? 2u : 0u);
+					((it.flags & kInstanceMirrored) ? 2u : 0u) |
+					(impl->materials[materialOf(it)].alphaMask ? 4u : 0u);   // 2026-10-28 — 알파 마스크 판 PSO
 			};
 
 			std::vector<uint32_t>& order = impl->batchOrder;
@@ -4177,6 +4273,7 @@ namespace swc {
 
 		const UINT batchCount = UINT(pass.batches.size());
 		const UINT argsBytes = batchCount * UINT(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+		impl->MarkGpuTime(L"GPU 컬링");
 		if (batchCount > 0)
 		{
 			// ── ③ GPU 컬링 — 간접 인자를 0 으로 되돌리고, 보이는 인스턴스만 묶음 목록에 담는다 ──
@@ -4243,6 +4340,7 @@ namespace swc {
 
 		if (view.background)
 		{
+			impl->MarkGpuTime(L"배경 패스");
 			// ── 배경 패스 — forward 로 HDR 컬러에 바로 그린다 ──
 			//  자기 투영(넓은 near/far)을 쓰고 끝나면 깊이를 지우므로 메인 G-buffer 와 섞지 않는다.
 			impl->TransitionTargets({
@@ -4251,8 +4349,10 @@ namespace swc {
 			commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
 			bindRasterRoot();
 			// ④ 묶음마다 ExecuteIndirect 한 번 — 인스턴스 수는 컬링 셰이더가 채웠다
-			ID3D12PipelineState* const forwardPsos[4] = {
-				impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get() };
+			ID3D12PipelineState* const forwardPsos[8] = {
+				impl->pso.Get(), impl->doubleSidedPso.Get(), impl->mirroredPso.Get(), impl->mirroredDoubleSidedPso.Get(),
+				impl->forwardMaskedPsos[0].Get(), impl->forwardMaskedPsos[1].Get(),
+				impl->forwardMaskedPsos[2].Get(), impl->forwardMaskedPsos[3].Get() };
 			impl->DrawBatches(pass, forwardPsos);
 
 			// 먼 행성 내부의 깊이 비교는 유지하고 이후 맵/캐릭터가 항상 앞에 놓이게 한다.
@@ -4262,6 +4362,7 @@ namespace swc {
 		}
 
 		// ── [1] G-buffer — 메인 패스는 조명 없이 표면 정보만 쓴다 (Forward.hlsl PSGBuffer) ──
+		impl->MarkGpuTime(L"[1] G-buffer");
 		//  G-buffer 는 지우지 않는다. 깊이가 1 인 픽셀(물체 없음)은 뒤 단계가 읽지 않기 때문이다.
 		//  ★ 5단계 — GB4 모션 벡터까지 5장(RTV 가 연속이라 범위 한 번으로 묶인다).
 		impl->TransitionTargets({
@@ -4274,12 +4375,14 @@ namespace swc {
 		const D3D12_CPU_DESCRIPTOR_HANDLE gbufferRtv = impl->Rtv(Impl::kRtvGBuffer);
 		commandList->OMSetRenderTargets(Impl::GbCount, &gbufferRtv, TRUE, &dsv);   // 연속 5장(GB0~GB4)을 한 번에
 		bindRasterRoot();
-		ID3D12PipelineState* const gbufferPsos[4] = {
-			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get() };
+		ID3D12PipelineState* const gbufferPsos[8] = {
+			impl->gbufferPsos[0].Get(), impl->gbufferPsos[1].Get(), impl->gbufferPsos[2].Get(), impl->gbufferPsos[3].Get(),
+			impl->gbufferPsos[4].Get(), impl->gbufferPsos[5].Get(), impl->gbufferPsos[6].Get(), impl->gbufferPsos[7].Get() };
 		impl->DrawBatches(pass, gbufferPsos);
 
 		// ── [0] 의 짝 — 여기까지(프레임 시작 · 컬링 · G-buffer)를 먼저 GPU 에 보내 컴퓨트 큐의 TLAS 빌드와 겹치게 하고,
 		//    여기부터(TLAS 를 읽는 [4a])는 그 빌드가 끝난 뒤 돌게 한다. 비동기로 안 보냈으면 아무것도 안 한다.
+		impl->MarkGpuTime(L"[0] TLAS 대기");
 		impl->JoinAsyncTlasBuild();
 
 		// G-buffer · 깊이를 컴퓨트가 읽는 상태로. 깊이는 DEPTH_READ 와 셰이더 읽기를 같이 켠다(둘 다 읽기 상태라 함께 둘 수 있다).
@@ -4300,6 +4403,7 @@ namespace swc {
 		//  G-buffer 와 상관없이 프로브 자리에서 레이를 쏜다 — TLAS 만 있으면 된다(위에서 빌드 대기를 끝냈다).
 		//  반사([4b])보다 먼저 돌려 반사 히트도 이번 프레임 프로브를 읽게 한다.
 		//  돌지 않으면(RT 끔 · 미지원 · 인스턴스 0) 라이팅 · 반사가 하늘 조도로 주변광을 대신한다(probeVolume.enabled = 0).
+		impl->MarkGpuTime(L"[4c] GI");
 		const bool giPass = rtActive && impl->giTracePso && impl->bindlessHeap && !impl->bindlessOverflow &&
 			impl->skyValid && impl->accel.InstanceCount() > 0;
 		if (giPass)
@@ -4310,7 +4414,10 @@ namespace swc {
 		// ── [4a] RT 그림자 — 픽셀마다 태양으로 그림자 레이 1개 (RtShadow.hlsl, 2026-10-27 렌더 2단계) ──
 		//  TLAS 는 이 함수 맨 앞에서 이번 프레임 인스턴스로 다시 빌드했다(UAV 배리어까지 끝남).
 		//  돌지 않으면(RT 미지원 · R 키로 끔 · 인스턴스 0) 라이팅이 그림자 마스크를 안 읽는다(shadowEnabled = 0).
-		const bool shadowPass = rtActive && impl->rtShadowPso && impl->accel.InstanceCount() > 0;
+		impl->MarkGpuTime(L"[4a] 그림자");
+		//  2026-10-28 — 바인드리스(컴퓨트 공용 루트)로 옮겼다: 알파 마스크 후보 판정이 재질 텍스처 · 정점을 읽는다.
+		const bool shadowPass = rtActive && impl->rtShadowPso && impl->bindlessHeap && !impl->bindlessOverflow &&
+			impl->accel.InstanceCount() > 0;
 		if (shadowPass)
 		{
 			impl->TransitionTargets({ { &impl->shadowMask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
@@ -4322,15 +4429,21 @@ namespace swc {
 			sc.sunDir = impl->sunDir;
 			sc.width = impl->width;
 			sc.height = impl->height;
+			sc.normalIndex = Impl::BindlessGbNormal;
+			sc.depthIndex = Impl::BindlessDepth;
+			sc.shadowUav = Impl::BindlessShadowMaskUav;
 			memcpy(impl->shadowCBData, &sc, sizeof(sc));
 
-			commandList->SetDescriptorHeaps(1, targetHeaps);
-			commandList->SetComputeRootSignature(impl->rtShadowRootSig.Get());
+			// 힙을 먼저, 루트 시그니처를 나중에(CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED 사양 — [4b] 와 같은 순서)
+			ID3D12DescriptorHeap* shadowHeaps[] = { impl->bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, shadowHeaps);
+			commandList->SetComputeRootSignature(impl->computeRootSig.Get());
 			commandList->SetPipelineState(impl->rtShadowPso.Get());
 			commandList->SetComputeRootConstantBufferView(0, impl->shadowCB->GetGPUVirtualAddress());
-			commandList->SetComputeRootDescriptorTable(1, impl->TargetGpu(Impl::SlotGBuffer));
-			commandList->SetComputeRootShaderResourceView(2, impl->accel.TlasAddress());
-			commandList->SetComputeRootShaderResourceView(3, impl->rtMaterials->GetGPUVirtualAddress());
+			commandList->SetComputeRootShaderResourceView(1, impl->accel.TlasAddress());
+			commandList->SetComputeRootShaderResourceView(2, impl->rtMaterials->GetGPUVirtualAddress());
+			commandList->SetComputeRootShaderResourceView(3, impl->rtInstances->GetGPUVirtualAddress() +
+				UINT64(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu));
 			commandList->Dispatch(groupsX, groupsY, 1);
 		}
 
@@ -4338,6 +4451,7 @@ namespace swc {
 		//  RayGen 이 G-buffer 법선 · 거칠기 · 깊이를 바인드리스로 읽고, 맞은 물체는 ClosestHit 이 그 자리에서 셰이딩한다.
 		//  돌지 않으면(RT 미지원 · R 키로 끔 · SM 6.6 아님 · 힙 넘침 · 인스턴스 0) 라이팅이 반사 텍스처를 안 읽는다(reflectionEnabled = 0).
 		//  [4a] 와 쓰는 텍스처가 달라서(그림자 마스크 / 반사 텍스처) 둘 사이에 배리어가 필요 없다.
+		impl->MarkGpuTime(L"[3][4b][4d] 반사");
 		const bool reflectionPass = rtActive && impl->rtReflectionPso && impl->bindlessHeap && !impl->bindlessOverflow &&
 			impl->accel.InstanceCount() > 0;
 		if (reflectionPass)
@@ -4481,6 +4595,7 @@ namespace swc {
 		// ── [2] AO — 화면 공간 추적 + 모르는 레이만 RayQuery (AO.hlsl, 2026-10-27 렌더 8단계) ──
 		//  ① 레이(픽셀마다 1개) → ② 시간 누적(이력 두 장 번갈아) → ③ 공간 필터 → AO 텍스처(라이팅 t13).
 		//  RT 가 꺼져 있으면(R 키 · 미지원 · 인스턴스 0) «모름» 레이를 안 가려짐으로 본다 = 순수 SSAO. 바인드리스만 있으면 돈다.
+		impl->MarkGpuTime(L"[2] AO");
 		const bool aoPass = impl->aoTracePso && impl->bindlessHeap && !impl->bindlessOverflow;
 		if (aoPass)
 		{
@@ -4519,7 +4634,13 @@ namespace swc {
 			commandList->SetComputeRootConstantBufferView(0, impl->aoCB->GetGPUVirtualAddress());
 			// TLAS 루트 SRV — RT 장치면 늘 묶는다(셰이더에 RayQuery 코드가 있으면 안 돌아도 묶여 있어야 한다). 실제로 쏘는지는 rtEnabled.
 			if (impl->rtSupported)
+			{
 				commandList->SetComputeRootShaderResourceView(1, impl->accel.TlasAddress());
+				// 2026-10-28 알파 마스크 — «모름» 레이의 후보 판정이 재질 표 · 인스턴스 표를 읽는다
+				commandList->SetComputeRootShaderResourceView(2, impl->rtMaterials->GetGPUVirtualAddress());
+				commandList->SetComputeRootShaderResourceView(3, impl->rtInstances->GetGPUVirtualAddress() +
+					UINT64(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu));
+			}
 
 			impl->TransitionTargets({ { &impl->aoRaw, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
 			commandList->SetPipelineState(impl->aoTracePso.Get());
@@ -4545,6 +4666,7 @@ namespace swc {
 
 		// ── 이번 프레임 깊이 · 법선을 «이전 프레임 사본» 으로 떠 둔다 (5단계 [4d] · 8단계 [2] 의 시간 누적이 같이 쓴다) ──
 		//  다음 프레임 시간 누적이 «같은 표면인지» 볼 때 쓴다. 이번 시간 누적들은 위에서 이미 지난 프레임 사본을 읽었다 — 순서가 중요하다.
+		impl->MarkGpuTime(L"깊이 · 법선 사본");
 		if (reflectionPass || aoPass)
 		{
 			impl->TransitionTargets({
@@ -4563,6 +4685,7 @@ namespace swc {
 
 		// ── [5] 라이팅 합성 — 컴퓨트가 G-buffer · 깊이 · 그림자 마스크 · 반사 텍스처를 읽어 HDR 컬러에 쓴다 (Lighting.hlsl) ──
 		//  (5단계 — t4 = GB4 모션 벡터(디버그), t7 = [4d] 결과, t8 = 노이즈 제거 전 반사(디버그))
+		impl->MarkGpuTime(L"[5] 라이팅");
 		impl->TransitionTargets({
 			{ &impl->shadowMask,         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->reflection,         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
@@ -4596,6 +4719,7 @@ namespace swc {
 		//  ② 화면 색 피라미드: HDR → 밉 0, 밉 i−1 → 밉 i (ColorPyramid.hlsl). 밉마다 상태가 달라 하위 자원 배리어를 직접 건다.
 		//  ③ HDR 에 그리기 — 읽기 전용 DSV(깊이 테스트만), 셰이더가 같은 깊이를 SRV 로 읽는다(굴절 자리 앞 가림 검사)
 		//  디버그 뷰(0 이 아닌 것)에서는 그리지 않는다 — 디버그 뷰는 G-buffer 값을 보여 주는데 얼음은 G-buffer 에 없다.
+		impl->MarkGpuTime(L"[7] 반투명");
 		impl->transparentDraws.clear();
 		if (impl->transparentPso && impl->debugMode == 0)
 		{
@@ -4770,6 +4894,13 @@ namespace swc {
 		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		impl->commandList->ResourceBarrier(1, &barrier);
 
+		// GPU 시간 계측 (2026-10-28) — 마지막 표시를 찍고 이번 프레임 타임스탬프를 리드백 버퍼로 옮긴다
+		impl->MarkGpuTime(L"끝");
+		const UINT timestampsThisFrame = impl->timestampCount;
+		if (impl->timestampHeap && timestampsThisFrame > 0)
+			impl->commandList->ResolveQueryData(impl->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0,
+				timestampsThisFrame, impl->timestampReadback.Get(), 0);
+
 		impl->commandList->Close();
 
 		ID3D12CommandList* lists[] = { impl->commandList.Get() };
@@ -4783,6 +4914,7 @@ namespace swc {
 
 		// ── 통계 — GPU 컬링 결과(묶음별 인스턴스 수)를 읽는다. GPU 를 기다린 뒤라 이번 프레임 값이다 ──
 		if (!finished) return;
+		impl->CollectGpuTimes(timestampsThisFrame);
 		for (Impl::PassGpu& pass : impl->passes[slot])
 		{
 			if (!pass.usedThisFrame || pass.batches.empty() || !pass.statesInitialized) continue;

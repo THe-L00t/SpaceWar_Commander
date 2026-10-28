@@ -13,7 +13,9 @@
 //    한 프레임만 보면 점박이 노이즈 → [4d] 가 이웃 픽셀 · 이전 프레임과 섞어 거칠기만큼 흐린 반사로 만든다.
 //    출력 a 채널 = 레이가 맞은 거리(미스면 gMaxDistance) — 나중에 NRD · DLSS RR 이 요구하는 «반사 히트 거리» 자리.
 //    원문 추정식의 가중치 F·G2/G1 중 F 는 라이팅의 F_env 가 맡고, G2/G1(≤ 1, 매끈할수록 1)은 지금 생략한다.
-//  ★ 반사 레이는 RAY_FLAG_FORCE_OPAQUE — 투과 재질 물체도 반사에서는 불투명 표면으로 보인다(얼음 패스 [7] 전까지).
+//  ★ 반사 레이는 투과 재질 물체도 불투명 표면으로 본다(얼음 패스 [7] 전까지).
+//    2026-10-28 알파 마스크 — 전에는 RAY_FLAG_FORCE_OPAQUE 로 쐈다. 이제 플래그 없이 쏘고, 비불투명 인스턴스(마스크 · 투과)는
+//    AnyHit 이 받는다: 마스크로 빈 곳이면 IgnoreHit(지나감), 그 밖(마스크의 있는 곳 · 얼음)은 그대로 받아들인다 → 얼음은 예전과 같다.
 //  ★ 바인드리스: 루트 시그니처에 CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, 힙은 GRenderer 의 bindlessHeap.
 //    히트 셰이더 안 번호는 레이마다 다를 수 있어 NonUniformResourceIndex 로 감싼다(사양 요구).
 //  ★ 2026-10-27 렌더 6단계 — 하늘
@@ -126,7 +128,8 @@ void RayGen()
 	payload.color = float3(0.0, 0.0, 0.0);
 	payload.hitT  = -1.0;
 	// 히트 그룹 0 번 하나, 미스 0 번 하나. 기하 기여 배수 1(BLAS 마다 기하 1개).
-	TraceRay(gScene, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, ray, payload);
+	// 2026-10-28 — FORCE_OPAQUE 를 뺐다: 알파 마스크 인스턴스는 AnyHit 이 빈 곳을 거른다.
+	TraceRay(gScene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload);
 
 	// a = 맞은 거리 (5단계 — 미스는 레이 길이 상한으로)
 	output[pixel] = float4(payload.color, payload.hitT >= 0.0 ? payload.hitT : gMaxDistance);
@@ -138,6 +141,16 @@ void Miss(inout ReflectionPayload payload)
 	Texture2D<float4> sky = ResourceDescriptorHeap[gSkyIndex];   // 6단계 — [6] 하늘 텍스처 (해 원반 제외)
 	payload.color = SampleSkyRadiance(sky, gSkySampler, WorldRayDirection());
 	payload.hitT  = -1.0;
+}
+
+// 2026-10-28 알파 마스크 — 비불투명 인스턴스(FORCE_NON_OPAQUE: 마스크 · 투과)를 맞을 때만 불린다.
+//  빈 곳이면 IgnoreHit 으로 지나가고, 아니면 아무것도 안 해서 그대로 받아들인다(가장 가까운 것이 ClosestHit 으로 간다).
+[shader("anyhit")]
+void AnyHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionAttributes attr)
+{
+	const RtInstance inst = gRtInstances[InstanceIndex()];
+	if (AlphaMaskedOut(inst, gRtMaterials[inst.material], PrimitiveIndex(), attr.barycentrics, gSampler))
+		IgnoreHit();
 }
 
 [shader("closesthit")]
@@ -177,7 +190,7 @@ void ClosestHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionA
 	const DirectLighting lit = EvaluateSunAndAmbient(albedo, N, V, rough, metallic, gSunDir,
 		gSunIlluminance, ambientEOverPi);
 	const float3 L   = normalize(-gSunDir);
-	const float3 sun = (dot(N, L) > 0.0) ? TraceSunVisibility(gScene, gRtMaterials, P + N * 0.02, L, gMaxDistance)
+	const float3 sun = (dot(N, L) > 0.0) ? TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gSampler, P + N * 0.02, L, gMaxDistance)
 	                                     : float3(0.0, 0.0, 0.0);
 
 	payload.color = (lit.diffuse + lit.specular) * sun + lit.ambient + emissive;

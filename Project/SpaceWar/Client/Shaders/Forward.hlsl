@@ -63,8 +63,13 @@ cbuffer MaterialCB : register(b2)
 {
 	float4 gBaseColor;
 	float3 gEmissive;      float gRoughness;
-	float  gMetallic;      uint  gHasNormalMap;   float2 _pad3;
+	float  gMetallic;      uint  gHasNormalMap;   float gAlphaCutoff;   float _pad3;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
 };
+
+// 2026-10-28 알파 마스크 — GRenderer 가 PSMain · PSGBuffer 를 ALPHA_MASK=1 로 한 번 더 컴파일해 마스크 재질에만 쓴다.
+#ifndef ALPHA_MASK
+#define ALPHA_MASK 0
+#endif
 
 // 슬롯 순서는 ModelData.h 의 TextureSlot 과 같다.
 Texture2D gBaseColorMap : register(t1);
@@ -157,6 +162,12 @@ Surface SampleSurface(VOut i, bool frontFace)
 {
 	Surface s;
 	float4 baseTex = gBaseColorMap.Sample(gSampler, i.uv);
+#if ALPHA_MASK
+	// glTF alphaMode MASK — baseColor 알파(텍스처 a × 계수 a)가 기준보다 작으면 그 픽셀은 없다:
+	//  깊이 · G-buffer 에 아무것도 안 쓰므로 뒤 패스(AO 화면 추적 · 반사 분류 · 라이팅)도 없는 것으로 본다.
+	if (baseTex.a * gBaseColor.a < gAlphaCutoff)
+		discard;
+#endif
 	s.albedo   = baseTex.rgb * gBaseColor.rgb * i.col;
 	// ★ 2026-10-28 — glTF metallicRoughness 텍스처는 거칠기 = G, 금속성 = B 다(R 은 차폐 — ORM 묶음).
 	//   로더는 같은 이미지를 거칠기 · 금속성 두 슬롯에 건다. 전에는 둘 다 R(차폐)을 읽어 비금속 땅이 금속으로 그려졌다.

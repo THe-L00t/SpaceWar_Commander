@@ -3,7 +3,8 @@
 //
 //  [4b] RtReflection.hlsl ClosestHit 안에 있던 «정점 세 개 읽기 → 무게중심 보간 → 재질 텍스처» 를 함수로 뺐다.
 //  [4c] ProbeGI.hlsl(프로브 레이 · 컴퓨트 RayQuery)도 같은 표면 값을 써야 해서다.
-//  ResourceDescriptorHeap 을 쓰므로 SM 6.6 셰이더만 include 한다(RtShadow.hlsl 은 cs_6_5 라 RtCommon.hlsli 만).
+//  ResourceDescriptorHeap 을 쓰므로 SM 6.6 셰이더만 include 한다.
+//  (2026-10-28 — RtCommon.hlsli 도 알파 마스크 판정에 ResourceDescriptorHeap 을 쓰게 되어 RtShadow.hlsl 을 cs_6_6 로 올렸다)
 // ============================================================
 #ifndef RT_SURFACE_HLSLI
 #define RT_SURFACE_HLSLI

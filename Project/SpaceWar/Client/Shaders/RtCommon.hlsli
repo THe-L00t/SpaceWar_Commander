@@ -23,7 +23,7 @@ struct RtMaterial
 	float3 transmittance;     uint  transmissive;     // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2단계)
 	// 9단계 — [7] 반투명 패스가 읽는 투과 · 부피 값 (glTF KHR_materials_transmission · volume · ior 그대로)
 	float  transmission;      float ior;              float thickness;     float attenuationDistance;
-	float3 attenuationColor;  uint  _pad2;
+	float3 attenuationColor;  float alphaCutoff;      // 2026-10-28 — 알파 마스크 기준(glTF alphaCutoff). 0 = 마스크 아님
 };
 
 // TLAS 인스턴스 표 — 인스턴스 순번(InstanceIndex / CandidateInstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
@@ -45,12 +45,46 @@ float RayOffsetBias(float viewDistance)
 	return 0.02 + viewDistance * viewDistance * 1.0e-6;
 }
 
+// ── 알파 마스크 (2026-10-28) — 후보 삼각형의 그 자리가 «없는 것» 인가 ──
+//  glTF alphaMode MASK: baseColor 알파(텍스처 a × baseColor.a) < alphaCutoff 면 그 자리는 완전 투명 = 없다.
+//  alphaCutoff 가 0 인 재질(불투명 · 투과)은 텍스처를 읽지 않고 «있음» 으로 본다.
+//  마스크 재질은 TLAS 인스턴스가 FORCE_NON_OPAQUE 라 RayQuery 후보 · any-hit 로 온다(GRenderer AddInstance).
+//  UV 는 후보의 무게중심으로 정점 세 개를 보간한다(RtSurface.hlsli FetchHitSurface 와 같은 정점 배치 60바이트 · UV 36).
+//  밉맵이 없어 0 단계를 읽는다(재질 텍스처 MipLevels = 1).
+bool AlphaMaskedOut(RtInstance inst, RtMaterial mat, uint primitive, float2 bary, SamplerState textureSampler)
+{
+	if (mat.alphaCutoff <= 0.0)
+		return false;
+	ByteAddressBuffer vb = ResourceDescriptorHeap[NonUniformResourceIndex(inst.vertexBuffer)];
+	ByteAddressBuffer ib = ResourceDescriptorHeap[NonUniformResourceIndex(inst.indexBuffer)];
+	const uint3  tri = ib.Load3(primitive * 12);
+	const float3 w   = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+	float2 uv = float2(0.0, 0.0);
+	[unroll]
+	for (uint k = 0; k < 3; ++k)
+		uv += asfloat(vb.Load2(tri[k] * 60 + 36)) * w[k];
+	Texture2D baseTex = ResourceDescriptorHeap[NonUniformResourceIndex(mat.textures.x)];
+	return baseTex.SampleLevel(textureSampler, uv, 0).a * mat.baseColor.a < mat.alphaCutoff;
+}
+
+// RayQuery 후보가 «있는 것» 인가 — 알파 마스크로 빈 곳이면 거짓(지나간다), 그 밖의 비불투명 후보는 참.
+//  AO · GI · 반투명 패스의 후보 루프가 쓴다: 참이면 CommitNonOpaqueTriangleHit.
+//  투과 물체(얼음)도 참이다 — 그 패스들은 전에 FORCE_OPAQUE 로 쏴서 얼음을 불투명으로 봤고, 그 동작을 그대로 둔다.
+bool CandidateIsSolid(StructuredBuffer<RtInstance> instances, StructuredBuffer<RtMaterial> materials,
+	uint instanceIndex, uint primitive, float2 bary, SamplerState textureSampler)
+{
+	const RtInstance inst = instances[instanceIndex];
+	return !AlphaMaskedOut(inst, materials[inst.material], primitive, bary, textureSampler);
+}
+
 // 태양 쪽 가시도(RGB). 0 = 완전히 가림, 1 = 다 보임, 그 사이 = 투과 물체를 지나 남은 빛.
 //  · 불투명 물체: BLAS 가 OPAQUE 라 시스템이 바로 확정 → ACCEPT_FIRST_HIT_AND_END_SEARCH 로 끝 → 0
 //  · 투과 물체: 인스턴스가 FORCE_NON_OPAQUE 라 후보로 온다 → 확정하지 않고 재질의 남는 빛을 곱한다.
 //    물체 하나는 한 번만 곱한다(들어감 · 나옴 두 면 + DXR 의 any-hit 중복 허용 때문에 인스턴스 순번으로 거른다).
 //    곱셈이라 후보 순서와 상관없다. 남는 빛이 1 % 밑이면 불투명처럼 확정하고 끝낸다.
+//  · 알파 마스크 물체(2026-10-28): 후보로 온다 → 빈 곳이면 지나가고, 있는 곳이면 불투명처럼 확정한다.
 float3 TraceSunVisibility(RaytracingAccelerationStructure scene, StructuredBuffer<RtMaterial> materials,
+	StructuredBuffer<RtInstance> instances, SamplerState textureSampler,
 	float3 origin, float3 toSun, float maxDistance)
 {
 	RayDesc ray;
@@ -72,6 +106,17 @@ float3 TraceSunVisibility(RaytracingAccelerationStructure scene, StructuredBuffe
 			continue;
 
 		const uint instance = q.CandidateInstanceIndex();
+		const RtMaterial candidateMat = materials[q.CandidateInstanceID()];
+		// 알파 마스크 (2026-10-28) — 잎 · 풀 사이 빈 곳은 없는 것처럼 지나간다
+		if (AlphaMaskedOut(instances[instance], candidateMat, q.CandidatePrimitiveIndex(), q.CandidateTriangleBarycentrics(), textureSampler))
+			continue;
+		// 마스크의 «있는» 곳(투과 아님)은 불투명 — 확정하고 끝낸다(ACCEPT_FIRST_HIT_AND_END_SEARCH)
+		if (candidateMat.transmissive == 0)
+		{
+			q.CommitNonOpaqueTriangleHit();
+			continue;
+		}
+
 		bool already = false;
 		for (uint k = 0; k < countedCount; ++k)
 			already = already || (counted[k] == instance);
@@ -80,7 +125,7 @@ float3 TraceSunVisibility(RaytracingAccelerationStructure scene, StructuredBuffe
 		if (countedCount < kMaxTrackedObjects)
 			counted[countedCount++] = instance;
 
-		transmittance *= materials[q.CandidateInstanceID()].transmittance;   // InstanceID = 재질 번호
+		transmittance *= candidateMat.transmittance;   // InstanceID = 재질 번호
 		if (max(transmittance.r, max(transmittance.g, transmittance.b)) < kOpaqueCutoff)
 			q.CommitNonOpaqueTriangleHit();
 	}

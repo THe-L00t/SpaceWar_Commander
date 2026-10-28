@@ -12,7 +12,9 @@
 //  섞기: 새 값 = lerp(이번 값, 지난 값, 0.97) — 천천히 수렴해 깜빡임을 막는다(설계 문서). 새로 들어온 칸은 0.97 대신 0.
 //  레이 방향: 구 위 피보나치 64개를 프레임마다 무작위 회전(고정 방향 줄무늬 방지 — 설계 문서).
 //  ★ 프로브는 확산(조도)만 담는다 — 맞은 점의 정반사 · 금속 반사는 넣지 않는다(금속은 확산 0).
-//  ★ 레이는 RAY_FLAG_FORCE_OPAQUE — 투과 재질(얼음)도 GI 에서는 불투명으로 본다(설계 문서 「행성별 특징」 3.4 의 4번과 같은 선택).
+//  ★ 투과 재질(얼음)은 GI 에서 불투명으로 본다(설계 문서 「행성별 특징」 3.4 의 4번과 같은 선택).
+//    2026-10-28 알파 마스크 — 전에는 RAY_FLAG_FORCE_OPAQUE 였다. 이제 후보 루프에서 마스크로 빈 곳은 지나가고,
+//    그 밖의 비불투명 후보(마스크의 있는 곳 · 얼음)는 확정한다(RtCommon.hlsli CandidateIsSolid) → 얼음은 예전과 같다.
 // ============================================================
 
 #include "Probes.hlsli"
@@ -70,9 +72,14 @@ void CSProbeTrace(uint ray : SV_GroupThreadID, uint3 group : SV_GroupID)
 	r.Direction = D;
 	r.TMin      = 0.0;
 	r.TMax      = gMaxDistance;
-	RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+	RayQuery<RAY_FLAG_NONE> q;
 	q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, r);
-	q.Proceed();
+	while (q.Proceed())   // 비불투명 후보(알파 마스크 · 투과)만 여기로 온다
+	{
+		if (CandidateIsSolid(gRtInstances, gRtMaterials, q.CandidateInstanceIndex(), q.CandidatePrimitiveIndex(),
+				q.CandidateTriangleBarycentrics(), gWrapSampler))
+			q.CommitNonOpaqueTriangleHit();
+	}
 
 	float4 result;
 	if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
@@ -98,7 +105,7 @@ void CSProbeTrace(uint ray : SV_GroupThreadID, uint3 group : SV_GroupID)
 			float3 sun = float3(0.0, 0.0, 0.0);
 			if (NdotL > 0.0)
 				sun = gSunIlluminance * (NdotL / kPi) *
-					TraceSunVisibility(gScene, gRtMaterials, P + N * RayOffsetBias(t), L, gMaxDistance);
+					TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gWrapSampler, P + N * RayOffsetBias(t), L, gMaxDistance);
 
 			// 다중 반사 — 맞은 점의 간접 조도 = 지난 프레임까지의 프로브 (없으면 하늘 조도)
 			Texture2D<float4>      irradiance = ResourceDescriptorHeap[gIrradianceSrv];

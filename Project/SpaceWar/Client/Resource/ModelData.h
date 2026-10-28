@@ -47,6 +47,11 @@ namespace swc {
 		// ── 굴절률 (2026-10-27 렌더 9단계) — glTF KHR_materials_ior 의 ior, 기본값 1.5 도 같다. 얼음 1.31.
 		//  [7] 반투명 패스가 굴절 방향(HDRP 상자 모델)과 표면 반사율 F0 = ((ior−1)/(ior+1))² 에 쓴다.
 		float ior = 1.5f;
+		// ── 알파 마스크 (2026-10-28) — glTF alphaMode MASK · alphaCutoff ──
+		//  참이면 «baseColor 알파(텍스처 a × baseColor.a) < alphaCutoff» 인 곳은 없는 것으로 그린다:
+		//  G-buffer · 배경 패스는 그 픽셀을 버리고, RT 레이(그림자 · AO · GI · 반사 · 반투명)는 그 자리를 지나간다.
+		bool  alphaMask = false;
+		float alphaCutoff = 0.5f;
 		std::array<uint32_t, kMaterialTextureCount> textures{
 			kInvalidModelIndex, kInvalidModelIndex, kInvalidModelIndex,
 			kInvalidModelIndex, kInvalidModelIndex };

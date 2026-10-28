@@ -35,6 +35,10 @@ cbuffer AoCB : register(b0)
 };
 
 RaytracingAccelerationStructure gScene : register(t0);   // TLAS (루트 SRV) — gRtEnabled 일 때만 읽는다
+// 2026-10-28 알파 마스크 — «모름» 레이의 후보 판정에 재질 표 · 인스턴스 표 · 재질 텍스처 샘플러를 쓴다(컴퓨트 공용 루트 t1 · t2 · s0)
+StructuredBuffer<RtMaterial>    gRtMaterials : register(t1);
+StructuredBuffer<RtInstance>    gRtInstances : register(t2);
+SamplerState                    gWrapSampler : register(s0);
 
 // RT(DXR 1.1)가 없는 장치는 AO_RAYQUERY=0 으로 컴파일한다 — RayQuery 명령이 들어 있으면 PSO 를 못 만든다.
 #ifndef AO_RAYQUERY
@@ -137,9 +141,15 @@ void CSAoTrace(uint3 id : SV_DispatchThreadID)
 			ray.Direction = dir;
 			ray.TMin      = 0.0;
 			ray.TMax      = gRadius;
-			RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE> q;
+			// 2026-10-28 알파 마스크 — 전에는 FORCE_OPAQUE. 빈 곳은 지나가고, 나머지 비불투명 후보(마스크의 있는 곳 · 얼음)는 가림으로 확정
+			RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
 			q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
-			q.Proceed();
+			while (q.Proceed())
+			{
+				if (CandidateIsSolid(gRtInstances, gRtMaterials, q.CandidateInstanceIndex(), q.CandidatePrimitiveIndex(),
+						q.CandidateTriangleBarycentrics(), gWrapSampler))
+					q.CommitNonOpaqueTriangleHit();
+			}
 			if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
 				verdict = kAoOccluded;
 		}

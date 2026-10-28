@@ -97,7 +97,7 @@ float3 ShadeHitDiffuse(uint instanceIndex, uint primitive, float2 bary, float3x4
 	const float  NdotL = dot(N, L);
 	float3 sun = float3(0.0, 0.0, 0.0);
 	if (NdotL > 0.0)
-		sun = gSunIlluminance * (NdotL / kPi) * TraceSunVisibility(gScene, gRtMaterials, P + N * RayOffsetBias(t), L, gMaxDistance);
+		sun = gSunIlluminance * (NdotL / kPi) * TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gWrapSampler, P + N * RayOffsetBias(t), L, gMaxDistance);
 	float  weight = 0.0;
 	float3 ambient = float3(0.0, 0.0, 0.0);
 	if (gProbeVolume.enabled != 0)
@@ -188,9 +188,15 @@ float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target
 		ray.Direction = Rr;
 		ray.TMin      = 0.0;
 		ray.TMax      = gMaxDistance;
-		RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+		// 2026-10-28 알파 마스크 — 전에는 FORCE_OPAQUE. 빈 곳은 지나가고 나머지 비불투명 후보(마스크의 있는 곳 · 얼음)는 확정
+		RayQuery<RAY_FLAG_NONE> q;
 		q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
-		q.Proceed();
+		while (q.Proceed())
+		{
+			if (CandidateIsSolid(gRtInstances, gRtMaterials, q.CandidateInstanceIndex(), q.CandidatePrimitiveIndex(),
+					q.CandidateTriangleBarycentrics(), gWrapSampler))
+				q.CommitNonOpaqueTriangleHit();
+		}
 		if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
 		{
 			const float t = q.CommittedRayT();
@@ -209,7 +215,7 @@ float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float  NdotL = saturate(dot(N, L));
 	float3 sunVisibility = float3(1.0, 1.0, 1.0);
 	if (gRtEnabled != 0 && NdotL > 0.0)
-		sunVisibility = TraceSunVisibility(gScene, gRtMaterials, P + N * RayOffsetBias(length(P - gEyePos)), L, gMaxDistance);
+		sunVisibility = TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gWrapSampler, P + N * RayOffsetBias(length(P - gEyePos)), L, gMaxDistance);
 	const float3 specular = SpecularGGX(NdotL, NdotV, saturate(dot(N, H)), rough, FresnelSchlick(F0, saturate(dot(V, H))))
 		* NdotL * gSunIlluminance * sunVisibility;
 	const float3 opaqueDiffuse = (1.0 - mat.transmission) * tint / kPi * NdotL * gSunIlluminance * sunVisibility;
