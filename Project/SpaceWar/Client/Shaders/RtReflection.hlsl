@@ -34,7 +34,7 @@
 #include "Probes.hlsli"      // 7단계 — [4c] GI 프로브 샘플
 #include "ReflectionTiles.hlsli"   // 11단계 — [3] 분류와 같은 «레이가 필요한가» 판정 · 타일 번호 규칙
 
-// GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (224바이트 — 7단계에서 144 → 224)
+// GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (416바이트 — 7단계에서 144 → 224, 10-28 GI 두 겹 → 320, 지면에 맞춘 축 → 416)
 cbuffer ReflectionCB : register(b0)
 {
 	float4x4 gInvViewProj;
@@ -43,9 +43,10 @@ cbuffer ReflectionCB : register(b0)
 	uint2    gSize;          uint  gNormalIndex;     uint gMaterialIndex;   // ↓ 바인드리스 힙 번호
 	uint     gDepthIndex;    uint  gOutputIndex;     uint  gFrameIndex;   uint gSkyIndex;   // 5단계 난수 씨앗 · 6단계 하늘 텍스처
 	float3   gSunIlluminance; uint gSkyIrradianceIndex;   // 6단계 — 태양 조도(RGB) · 하늘 조도 텍스처
-	ProbeVolume gProbeVolume;                             // 7단계 — [4c] GI 프로브 격자 (64 B)
+	ProbeVolume gProbeVolume;                             // 7단계 — [4c] GI 프로브 가까운 겹 (10-28 64 → 128 B)
 	uint     gProbeIrradianceIndex; uint gProbeDistanceIndex; uint gProbeStateIndex;
 	uint     gTileListIndex;   // 11단계 — [3] 분류 타일 목록 SRV (kNoTileList 면 화면 전체 디스패치)
+	ProbeVolume gProbeVolumeFar;                          // 2026-10-28 — 먼 겹 (같은 아틀라스의 뒤쪽)
 };
 
 RaytracingAccelerationStructure gScene       : register(t0);   // TLAS (루트 SRV)
@@ -175,12 +176,14 @@ void ClosestHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionA
 	// 주변광: 7단계 — [4c] GI 프로브(쓸 수 있으면), 아니면 6단계 하늘 조도/π
 	float3 ambientEOverPi = float3(0.0, 0.0, 0.0);
 	float  probeWeight = 0.0;
-	if (gProbeVolume.enabled != 0)
+	if (gProbeVolume.enabled != 0 || gProbeVolumeFar.enabled != 0)
 	{
 		Texture2D<float4>      probeIrradiance = ResourceDescriptorHeap[gProbeIrradianceIndex];
 		Texture2D<float2>      probeDistance   = ResourceDescriptorHeap[gProbeDistanceIndex];
 		StructuredBuffer<int4> probeStates     = ResourceDescriptorHeap[gProbeStateIndex];
-		ambientEOverPi = SampleProbes(probeIrradiance, probeDistance, probeStates, gClampSampler, gProbeVolume, P, N, V, probeWeight);
+		uint probeLayer;   // 2026-10-28 두 겹 — 가까운 겹 → 먼 겹
+		ambientEOverPi = SampleProbeLayers(probeIrradiance, probeDistance, probeStates, gClampSampler,
+			gProbeVolume, gProbeVolumeFar, P, N, V, probeWeight, probeLayer);
 	}
 	if (probeWeight <= 0.0)
 	{

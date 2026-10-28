@@ -20,7 +20,7 @@
 #include "Sky.hlsli"
 #include "Probes.hlsli"
 
-// GRenderer.cpp 의 TransparentConstants 와 같은 배치 (288바이트)
+// GRenderer.cpp 의 TransparentConstants 와 같은 배치 (480바이트 — 10-28 GI 두 겹 288 → 384, 지면에 맞춘 축 → 480)
 cbuffer TransparentCB : register(b0)
 {
 	float4x4 gViewProj;
@@ -31,7 +31,8 @@ cbuffer TransparentCB : register(b0)
 	uint2    gSize;            uint  gMipCount;   uint gRtEnabled;
 	uint     gSkySrv;          uint  gSkyIrradianceSrv;   uint gProbeIrradianceSrv;  uint gProbeDistanceSrv;
 	uint     gProbeStateSrv;   uint3 _pad0;
-	ProbeVolume gProbeVolume;
+	ProbeVolume gProbeVolume;      // GI 프로브 가까운 겹
+	ProbeVolume gProbeVolumeFar;   // 2026-10-28 — 먼 겹 (같은 아틀라스의 뒤쪽)
 };
 cbuffer DrawCB : register(b1)
 {
@@ -100,12 +101,13 @@ float3 ShadeHitDiffuse(uint instanceIndex, uint primitive, float2 bary, float3x4
 		sun = gSunIlluminance * (NdotL / kPi) * TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gWrapSampler, P + N * RayOffsetBias(t), L, gMaxDistance);
 	float  weight = 0.0;
 	float3 ambient = float3(0.0, 0.0, 0.0);
-	if (gProbeVolume.enabled != 0)
+	if (gProbeVolume.enabled != 0 || gProbeVolumeFar.enabled != 0)
 	{
 		Texture2D<float4>      irradiance = ResourceDescriptorHeap[gProbeIrradianceSrv];
 		Texture2D<float2>      distance   = ResourceDescriptorHeap[gProbeDistanceSrv];
 		StructuredBuffer<int4> states     = ResourceDescriptorHeap[gProbeStateSrv];
-		ambient = SampleProbes(irradiance, distance, states, gClampSampler, gProbeVolume, P, N, -D, weight);
+		uint layer;   // 2026-10-28 두 겹 — 가까운 겹 → 먼 겹
+		ambient = SampleProbeLayers(irradiance, distance, states, gClampSampler, gProbeVolume, gProbeVolumeFar, P, N, -D, weight, layer);
 	}
 	if (weight <= 0.0)
 	{
