@@ -843,6 +843,8 @@ namespace swc {
 		XMFLOAT3                    skyBuiltUp{};       // 하늘 텍스처를 만든 때의 위 · 해 방향 — 바뀌면 다시 만든다
 		XMFLOAT3                    skyBuiltSunDir{};
 		bool                        skyDoneThisFrame = false;   // 이번 프레임의 첫 Render 에서 해 · 하늘을 이미 처리했다
+		XMFLOAT3                    mainViewUp{ 0.0f, 1.0f, 0.0f };   // 2026-10-28 — 마지막 메인 화면의 위쪽(행성 기준) — 하늘 · 해 높이 기준
+		bool                        hasMainViewUp = false;
 		XMFLOAT3                    sunIlluminance{ 0.85f, 0.85f, 0.85f };   // 이번 프레임 «땅에 닿는 태양 조도» (모든 패스 상수)
 
 		// ── [4c] GI 프로브 (2026-10-27 렌더 7단계, ProbeGI.hlsl · Probes.hlsli) ──
@@ -1385,7 +1387,10 @@ namespace swc {
 			skyDoneThisFrame = true;
 
 			// ① 태양 조도
-			XMVECTOR up = XMLoadFloat3(&view.up);
+			//  위쪽 = 행성 기준(메인 화면의 위쪽). 배경 패스가 먼저면 직전 프레임 메인 화면 값(위쪽은 걸을 때 천천히 바뀐다).
+			//  메인 화면을 아직 한 번도 안 그렸으면 이 view 의 값.
+			const XMFLOAT3 upSource = (view.background && hasMainViewUp) ? mainViewUp : view.up;
+			XMVECTOR up = XMLoadFloat3(&upSource);
 			up = XMVectorGetX(XMVector3LengthSq(up)) > 1.0e-12f ? XMVector3Normalize(up) : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 			const XMVECTOR toSun = XMVector3Normalize(XMVectorNegate(XMLoadFloat3(&sunDir)));
 			const float muS = XMVectorGetX(XMVector3Dot(up, toSun));
@@ -4440,6 +4445,14 @@ namespace swc {
 
 		// ── [6] 해 · 하늘 (2026-10-27 렌더 6단계) — 프레임의 첫 Render 에서 한 번(배경이 먼저면 배경에서) ──
 		//  땅에 닿는 태양 조도를 구하고(아래 모든 상수가 쓴다), HDR 컬러 전체에 하늘을 그린다.
+		//  2026-10-28 — 메인 화면의 위쪽(엔진이 넣는 행성 기준 위쪽)을 기억해 둔다. 배경 패스가 먼저 오는 프레임은
+		//  배경 view 에 위쪽이 없어(SkyPlanet 이 RenderView{} 로 만듦 → 기본값 (0, 1, 0)) 하늘이 월드 +Y 기준 «낮» 으로
+		//  계산됐다. 이제 하늘 · 해 높이는 늘 이 행성 기준 위쪽으로 계산한다(UpdateSunAndSky).
+		if (!view.background)
+		{
+			impl->mainViewUp = view.up;
+			impl->hasMainViewUp = true;
+		}
 		impl->MarkGpuTime(L"[6] 하늘");
 		impl->UpdateSunAndSky(view);
 
