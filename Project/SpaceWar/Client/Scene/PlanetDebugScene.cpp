@@ -15,6 +15,7 @@
 #include <DirectXMath.h>
 #include "Client/GRenderer.h"
 #include "Client/LegacyScene.h"
+#include "Client/Resource/TextureLoader.h"
 #include "Shared/Model/Readers/JsonValue.h"
 
 using namespace DirectX;
@@ -26,21 +27,62 @@ namespace {
 		const wchar_t* name;
 		const wchar_t* asset;
 		const wchar_t* placement;
+		// 지형 레이어 (2026-10-28) — 블렌더 시안 재질 값(Resource_Work/<행성>/scripts/build_map.py draft_terrain_material).
+		//  heightBlend = 레이어(마스크 R G B A)마다 Height 에 곱하는 값, normalStrength = Normal Map 노드 Strength.
+		//  경계 폭(0.2)은 다섯 행성 모두 같아 TerrainMaterialData 기본값을 쓴다.
+		std::array<float, 4> heightBlend;
+		float normalStrength;
+		// 3단계 (2026-10-28) — 시안의 세 방향 투영: 레이어 비트(R 1 · G 2 · B 4 · A 8), 크기 A · B(m), B 좌표 오프셋,
+		//  좌표 비틀기(규모 · 최대 거리, m). 숲 · 네온 · 폐허 · 화산은 바위 레이어(G) 9 m + 2.7 m · 비틀기 없음,
+		//  빙하는 화강암(G) · 빙하 얼음(B) 8 m + 2.96 m(8 × 0.37) · B 오프셋 (3.7, 1.9, 5.3) · 70 m 규모 ±10 m.
+		uint32_t triplanarLayers;
+		float triplanarTileA;
+		float triplanarTileB;
+		bool  triplanarOffsetB;
+		float warpScale;
+		float warpAmount;
+		// 4단계 (2026-10-28) — 시안의 큰 규모 색 흔들림(노이즈 × amount + bias) · 범프 1 Distance · 범프 2 Distance · Strength.
+		//  숲 · 네온 · 폐허 0.32 / 0.84 · 0.06 · 0.45 · 0.8, 화산 범프 0.09 · 0.55 · 0.9, 빙하 0.22 / 0.89 · 0.07 · 0.45 · 0.7.
+		float macroAmount;
+		float macroBias;
+		float bumpDistance;
+		float reliefDistance;
+		float reliefStrength;
 	};
 
 	// resource 브랜치 예시 행성 (fa6777c · 8bafbc6 · 6afb98d · c51ed07 · 5dfe6bd)
 	constexpr std::array<PlanetEntry, swc::PlanetDebugScene::kCount> kPlanets{ {
 		{ L"Verdant",  L"model\\map\\Verdant_Planet\\Verdant_Planet.glb",
-		               L"model\\map\\Verdant_Planet\\Verdant_Planet_Placement.json" },
+		               L"model\\map\\Verdant_Planet\\Verdant_Planet_Placement.json",   { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
+		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
+		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f },
 		{ L"Neon",     L"model\\map\\Neon_Planet\\Neon_Planet.glb",
-		               L"model\\map\\Neon_Planet\\Neon_Planet_Placement.json" },
+		               L"model\\map\\Neon_Planet\\Neon_Planet_Placement.json",         { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
+		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
+		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f },
 		{ L"Ruin",     L"model\\map\\Ruin_Planet\\Ruin_Planet.glb",
-		               L"model\\map\\Ruin_Planet\\Ruin_Planet_Placement.json" },
+		               L"model\\map\\Ruin_Planet\\Ruin_Planet_Placement.json",         { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
+		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
+		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f },
 		{ L"Volcanic", L"model\\map\\Volcanic_Planet\\Volcanic_Planet.glb",
-		               L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Placement.json" },
+		               L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Placement.json", { 0.5f, 0.5f, 0.5f, 0.5f }, 1.6f,
+		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
+		               0.32f, 0.84f, 0.09f, 0.55f, 0.9f },
+		// 빙하: A = Snow 만 0.35 (시안 «0.35 if name == 'Snow' else 0.5»)
 		{ L"Glacier",  L"model\\map\\Glacier_Planet\\Glacier_Planet.glb",
-		               L"model\\map\\Glacier_Planet\\Glacier_Planet_Placement.json" },
+		               L"model\\map\\Glacier_Planet\\Glacier_Planet_Placement.json",   { 0.5f, 0.5f, 0.5f, 0.35f }, 1.4f,
+		               2u | 4u, 8.0f, 8.0f * 0.37f, true, 70.0f, 10.0f,
+		               0.22f, 0.89f, 0.07f, 0.45f, 0.7f },
 	} };
+
+	// 보이는 지형 메시의 노드 — «<행성>_Planet_Terrain». 같은 메시를 쓰는 접지용 «COL_Expedition_Planet_Terrain» 은 뺀다
+	// (다섯 행성 glb 확인, 2026-10-28).
+	bool IsTerrainNode(std::string_view name)
+	{
+		constexpr std::string_view suffix = "_Planet_Terrain";
+		return name.size() > suffix.size() && name.substr(name.size() - suffix.size()) == suffix &&
+			name.substr(0, 4) != "COL_";
+	}
 
 	// 스폰 = 착륙 지점 L1 의 플랫폼 노드. 예시 행성은 L1 방향이 게임 맵(kPlanetSpawnUp)과 달라
 	// 맵 노드에서 읽는다(resource fa6777c 커밋의 «주의»). 다섯 행성 모두 최상위 노드다.
@@ -117,12 +159,22 @@ namespace swc {
 			return false;
 		}
 
-		root = model.Instantiate(scene);
+		// 지형 메시의 그리기 노드를 기억한다 — 지형 레이어 재질로 바꿔 끼울 자리(ApplyTerrainLayers, 2026-10-28).
+		std::vector<uint32_t> terrainMeshes;
+		for (const ModelNodeData& node : data.nodes)
+			if (IsTerrainNode(node.name))
+				terrainMeshes.insert(terrainMeshes.end(), node.meshes.begin(), node.meshes.end());
+		std::vector<std::pair<uint32_t, NodeHandle>> meshNodes;
+		root = model.Instantiate(scene, kInvalidNode, &meshNodes);
 		if (root == kInvalidNode)
 		{
 			error = L"행성 모델을 장면에 등록하지 못했습니다.";
 			return false;
 		}
+		terrainNodes.clear();
+		for (const auto& [mesh, node] : meshNodes)
+			if (std::find(terrainMeshes.begin(), terrainMeshes.end(), mesh) != terrainMeshes.end())
+				terrainNodes.push_back(node);
 		scene.SetLocalTransform(root,
 			XMMatrixTranslation(float(planetCenter.x), float(planetCenter.y), float(planetCenter.z)));
 		scene.SetVisible(root, false);   // 들어갈 때 Engine 이 켠다
@@ -195,6 +247,15 @@ namespace swc {
 			out.types.push_back(std::move(type));
 		}
 		out.instances.reserve(root["instance_count"].AsUint(0));
+
+		// 지형 레이어 (2026-10-28) — terrain_layers.channels 의 R G B A = 레이어 이름, mask = 마스크 PNG 이름.
+		//  없으면 빈 채로 둔다 → 지형은 glb 의 대체 레이어 한 장으로 그린다.
+		const Shared::JsonValue& terrainLayers = root["terrain_layers"];
+		const Shared::JsonValue& channels = terrainLayers["channels"];
+		const char* const channelKeys[4] = { "R", "G", "B", "A" };
+		for (size_t c = 0; c < 4; ++c)
+			out.terrainLayers[c] = channels[channelKeys[c]].AsString();
+		out.terrainMask = terrainLayers["mask"].AsString();
 
 		// ② 인스턴스
 		const char* const begin = text.data();
@@ -414,6 +475,101 @@ namespace swc {
 		return true;
 	}
 
+	// ── 지형 레이어 (2026-10-28) ────────────────────────────────────
+	//  레이어 텍스처는 resource dfa4fe4 의 밉맵 DDS(원본 PNG 옆, 같은 이름)를 읽는다 — glb 에는 대체 레이어 한 장뿐이다.
+	std::vector<std::wstring> PlanetDebugScene::TerrainLayerAssets(size_t index, const PlanetPlacement& placement)
+	{
+		std::vector<std::wstring> assets;
+		if (index >= kPlanets.size() || placement.terrainMask.empty()) return assets;
+		for (const std::string& layer : placement.terrainLayers)
+			if (layer.empty()) return assets;
+
+		const std::wstring folder = std::filesystem::path(kPlanets[index].asset).parent_path().wstring() + L"\\";
+		const wchar_t* const kinds[4] = { L"_BaseColor.dds", L"_Normal.dds", L"_ORM.dds", L"_Height.dds" };
+		for (const wchar_t* kind : kinds)
+			for (const std::string& layer : placement.terrainLayers)
+				assets.push_back(folder + FromUtf8(layer) + kind);
+		// 마스크 — JSON 에는 PNG 이름(…_LayerMask.png)이 적혀 있다. 같은 이름의 DDS 를 읽는다.
+		std::filesystem::path mask(FromUtf8(placement.terrainMask));
+		mask.replace_extension(L".dds");
+		assets.push_back(folder + mask.wstring());
+		return assets;
+	}
+
+	bool PlanetDebugScene::LoadTerrainLayers(const std::vector<std::wstring>& paths, TerrainLayerSet& out)
+	{
+		if (paths.size() != 17)
+		{
+			out.error = L"지형 레이어 파일 목록이 17개가 아닙니다.";
+			return false;
+		}
+		TextureData* const arrays[4] = { &out.baseColor, &out.normal, &out.orm, &out.height };
+		for (size_t kind = 0; kind < 4; ++kind)
+		{
+			std::vector<TextureData> slices(4);
+			for (size_t layer = 0; layer < 4; ++layer)
+				if (!LoadDdsTexture(paths[kind * 4 + layer].c_str(), slices[layer], out.error)) return false;
+			if (!CombineTextureArray(slices, *arrays[kind], out.error)) return false;
+		}
+		return LoadDdsTexture(paths[16].c_str(), out.mask, out.error);
+	}
+
+	bool PlanetDebugScene::ApplyTerrainLayers(size_t index, TerrainLayerSet&& layers, GRenderer& renderer,
+		LegacyScene& scene, std::wstring& error)
+	{
+		if (!loaded || index >= kPlanets.size())
+		{
+			error = L"행성 맵이 아직 올라가지 않았습니다.";
+			return false;
+		}
+		if (terrainNodes.empty())
+		{
+			error = L"지형 노드(…_Planet_Terrain)를 맵에서 찾지 못했습니다.";
+			return false;
+		}
+
+		// 텍스처 5개 — 올린 뒤 바로 픽셀을 놓는다(무압축 + 밉이라 행성 하나에 약 360 MiB).
+		TextureData* const sources[5] = { &layers.baseColor, &layers.normal, &layers.orm, &layers.height, &layers.mask };
+		TextureHandle handles[5] = {};
+		for (size_t i = 0; i < 5; ++i)
+		{
+			handles[i] = renderer.CreateTexture(*sources[i]);
+			std::vector<uint8_t>().swap(sources[i]->pixels);
+			if (handles[i] == kInvalidTexture)
+			{
+				error = L"지형 레이어 텍스처 업로드 실패: " + renderer.StatusText();
+				return false;
+			}
+		}
+
+		TerrainMaterialData material;
+		material.name = "Terrain_Layers";
+		material.heightBlend = kPlanets[index].heightBlend;
+		material.normalStrength = kPlanets[index].normalStrength;
+		material.triplanarLayers = kPlanets[index].triplanarLayers;   // 3단계 (2026-10-28)
+		material.triplanarTileA = kPlanets[index].triplanarTileA;
+		material.triplanarTileB = kPlanets[index].triplanarTileB;
+		material.triplanarOffsetB = kPlanets[index].triplanarOffsetB;
+		material.warpScale = kPlanets[index].warpScale;
+		material.warpAmount = kPlanets[index].warpAmount;
+		material.macroAmount = kPlanets[index].macroAmount;           // 4단계 (2026-10-28)
+		material.macroBias = kPlanets[index].macroBias;
+		material.bumpDistance = kPlanets[index].bumpDistance;
+		material.reliefDistance = kPlanets[index].reliefDistance;
+		material.reliefStrength = kPlanets[index].reliefStrength;
+		const MaterialHandle handle = renderer.CreateTerrainMaterial(material,
+			handles[0], handles[1], handles[2], handles[3], handles[4]);
+		if (handle == kInvalidMaterial)
+		{
+			error = renderer.StatusText();
+			return false;
+		}
+		for (const NodeHandle node : terrainNodes)
+			scene.SetMaterial(node, handle);
+		terrainLayered = true;
+		return true;
+	}
+
 	std::wstring PlanetDebugScene::Status() const
 	{
 		size_t loadedTypes = 0;
@@ -421,6 +577,7 @@ namespace swc {
 			if (type.loaded) ++loadedTypes;
 
 		std::wstring status = L"지형 " + std::to_wstring(ground.TriangleCount()) + L" 삼각형";
+		status += terrainLayered ? L" · 지형 레이어 섞기" : L" · 지형 대체 1장";   // 2026-10-28
 		if (!objectTypes.empty())
 		{
 			status += L" · 오브젝트 보임 " + std::to_wstring(liveList.size()) + L" / 배치 " +

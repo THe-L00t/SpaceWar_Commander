@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <utility>
 #include <vector>
 #include "Handles.h"
 #include "Resource/ModelData.h"
@@ -19,7 +20,10 @@ namespace swc {
 		// 닫힌 표시용 행성만 양면 설정을 덮어써 뒷면 제거를 강제할 수 있다.
 		bool Initialize(const ModelData&, GRenderer&, const DirectX::XMFLOAT4X4& visualTransform,
 			bool forceBackfaceCulling = false);
-		NodeHandle Instantiate(LegacyScene&, NodeHandle parent = kInvalidNode) const;
+		// meshNodes(선택, 2026-10-28) — 만든 그리기 노드를 (ModelData 메시 번호, 노드) 쌍으로 덧붙인다.
+		//  올린 뒤에 특정 메시의 재질만 바꿀 때 쓴다(예시 행성 지형 레이어 — PlanetDebugScene).
+		NodeHandle Instantiate(LegacyScene&, NodeHandle parent = kInvalidNode,
+			std::vector<std::pair<uint32_t, NodeHandle>>* meshNodes = nullptr) const;
 
 		const std::wstring& LastError() const { return lastError; }
 

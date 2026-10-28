@@ -27,8 +27,14 @@
 //    이 변경 전과 같은 화면이 나와야 한다 — 회귀 확인 기준이다.
 // ============================================================
 
+//  ★ 2026-10-28 지형 레이어 — 세 번째 판(TERRAIN_LAYERS=1)
+//    예시 행성 지형(레이어 4종 + LayerMask)을 섞어 그린다. 재질 상수 · 텍스처 5칸을 다른 뜻으로 읽는다(아래 TerrainCB).
+//    GRenderer 가 PSMain · PSGBuffer 를 TERRAIN_LAYERS=1 로 한 번 더 컴파일해 지형 재질(CreateTerrainMaterial)에만 쓴다.
+//    정점 셰이더는 모든 판이 같다 — VOut 에 메시 좌표(마스크 UV 계산용)가 늘 들어 있다.
+
 #include "Shading.hlsli"
 #include "GBuffer.hlsli"
+#include "TerrainLayers.hlsli"
 
 // GRenderer.cpp 의 FrameConstants 와 같은 배치 (176바이트 — 5단계에서 96 → 160, 6단계에서 → 176)
 cbuffer FrameCB : register(b0)
@@ -58,6 +64,39 @@ struct InstanceGpu           // GRenderer 의 Impl::InstanceGpu 와 같은 128�
 StructuredBuffer<InstanceGpu> gInstances : register(t6);
 StructuredBuffer<uint>        gVisible   : register(t7);
 
+// 2026-10-28 알파 마스크 — GRenderer 가 PSMain · PSGBuffer 를 ALPHA_MASK=1 로 한 번 더 컴파일해 마스크 재질에만 쓴다.
+#ifndef ALPHA_MASK
+#define ALPHA_MASK 0
+#endif
+// 2026-10-28 지형 레이어 판 (위 머리말)
+#ifndef TERRAIN_LAYERS
+#define TERRAIN_LAYERS 0
+#endif
+
+#if TERRAIN_LAYERS
+// ── 지형 재질 (GRenderer 의 TerrainConstants 와 같은 배치 — 재질 루트 상수 자리 b2, 4단계에서 12 → 20 DWORD) ──
+cbuffer TerrainCB : register(b2)
+{
+	float4 gHeightBlend;                       // 레이어(마스크 R G B A)마다 Height 에 곱하는 값 (시안 0.5, 빙하 눈 0.35)
+	float  gTriTileA;      float gTriTileB;     // 3단계 — 세 방향 투영 크기 A · B (m)
+	float  gWarpScale;     float gBlendDepth;   // 3단계 — 좌표 비틀기 노이즈 규모(m, 0 = 안 함) · 경계 폭(시안 0.2)
+	float  gNormalStrength;
+	uint   gTriLayers;                          // 3단계 — 세 방향 투영 레이어 비트(R 1 · G 2 · B 4 · A 8)
+	float  gWarpAmount;                         // 3단계 — 좌표 비틀기 최대 거리(m)
+	float  gTriOffsetB;                         // 3단계 — 1 = 크기 B 좌표에 (3.7, 1.9, 5.3)
+	float  gMacroAmount;   float gMacroBias;    // 4단계 — 큰 규모 색 흔들림: 노이즈 × amount + bias
+	float  gBumpDistance;                       // 4단계 — 범프 1(레이어 높이맵) Distance(m)
+	float  gReliefDistance;                     // 4단계 — 범프 2(지면 요철) Distance(m)
+	float  gReliefStrength;                     // 4단계 — 범프 2 Strength
+};
+
+// 텍스처 5칸 = 같은 종류 4장(마스크 R G B A 순)을 묶은 배열 4개 + 마스크. 슬롯 번호는 일반 재질과 같은 자리다.
+Texture2DArray        gLayerBaseColor : register(t1);   // sRGB
+Texture2DArray        gLayerNormal    : register(t2);   // 탄젠트 공간, OpenGL(+Y)
+Texture2DArray        gLayerOrm       : register(t3);   // R = AO · G = 거칠기 · B = 금속(0)
+Texture2DArray<float> gLayerHeight    : register(t4);   // 0 ~ 1
+Texture2D             gLayerMask      : register(t5);   // RGBA = 레이어 4개 비율(합 1)
+#else
 // ── 재질 (GRenderer 의 MaterialConstants 와 16바이트 단위로 같아야 한다) ──
 cbuffer MaterialCB : register(b2)
 {
@@ -66,19 +105,16 @@ cbuffer MaterialCB : register(b2)
 	float  gMetallic;      uint  gHasNormalMap;   float gAlphaCutoff;   float _pad3;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
 };
 
-// 2026-10-28 알파 마스크 — GRenderer 가 PSMain · PSGBuffer 를 ALPHA_MASK=1 로 한 번 더 컴파일해 마스크 재질에만 쓴다.
-#ifndef ALPHA_MASK
-#define ALPHA_MASK 0
-#endif
-
 // 슬롯 순서는 ModelData.h 의 TextureSlot 과 같다.
 Texture2D gBaseColorMap : register(t1);
 Texture2D gNormalMap    : register(t2);
 Texture2D gRoughnessMap : register(t3);
 Texture2D gMetallicMap  : register(t4);
 Texture2D gEmissiveMap  : register(t5);
+#endif
 
-SamplerState gSampler : register(s0);   // 루트 시그니처의 정적 샘플러 (선형 · WRAP)
+SamplerState gSampler      : register(s0);   // 루트 시그니처의 정적 샘플러 (이방성 16 · WRAP — 2026-10-28, 전에는 선형)
+SamplerState gClampSampler : register(s1);   // 2026-10-28 — 선형 · 가장자리 고정 (지형 레이어 마스크)
 
 struct VIn
 {
@@ -100,6 +136,8 @@ struct VOut
 	// 5단계 — 모션 벡터용 클립 좌표 두 개. 나누기(w)는 픽셀 셰이더에서 한다(보간 뒤에 나눠야 원근이 맞다).
 	float4 curClip  : CURCLIP;
 	float4 prevClip : PREVCLIP;
+	// 2026-10-28 지형 레이어 — 메시 좌표(인스턴스 변환 전). 지형은 원점 = 행성 중심이라 이 방향으로 마스크 UV 를 구한다.
+	float3 meshPos  : MESHPOS;
 };
 
 VOut VSMain(VIn i, uint instance : SV_InstanceID)
@@ -118,6 +156,7 @@ VOut VSMain(VIn i, uint instance : SV_InstanceID)
 	o.uv    = i.uv;
 	// 접선도 월드로 옮긴다. 부호(w)는 그대로 넘긴다.
 	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), world).xyz, i.tan.w);
+	o.meshPos = i.pos;   // 2026-10-28 지형 레이어 (지형 판만 읽는다)
 	return o;
 }
 
@@ -132,7 +171,10 @@ VOut VSMain(VIn i, uint instance : SV_InstanceID)
 //   FbxModelLoader 가 로드 때 255-G 를 하고 있었고, 그래서 FBX 모델의 요철이 반대로 보였다.
 //   지금은 FBX 경로와 자체 파서 경로(ModelBuilder) 둘 다 픽셀을 건드리지 않는다.
 //   ※ -Y(DirectX) 규약 원본을 받게 되면 이 줄을 지우는 대신 재질 플래그로 가려야 한다.
-float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
+//   (2026-10-28 지형 레이어 판도 같은 규약 — 섞은 노멀에 같은 반전을 한 번 한다)
+//
+// 탄젠트 공간 노멀(녹색 반전을 이미 한 값) → 월드 법선. 일반 판 · 지형 판이 같이 쓴다(2026-10-28 나눔).
+float3 TangentToWorld(float3 N, float4 tangent, float3 nTex)
 {
 	float3 T = tangent.xyz - N * dot(N, tangent.xyz);   // 그람-슈미트 직교화
 	if (dot(T, T) < 1e-8) return N;                     // 접선이 퇴화했다 — 기하 법선을 쓴다
@@ -140,11 +182,17 @@ float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
 	T = normalize(T);
 	float3 B = normalize(cross(N, T) * tangent.w);
 
-	float3 nTex = gNormalMap.Sample(gSampler, uv).rgb * 2.0 - 1.0;
-	nTex.y = -nTex.y;
-
 	return normalize(T * nTex.x + B * nTex.y + N * nTex.z);
 }
+
+#if !TERRAIN_LAYERS
+float3 ApplyNormalMap(float3 N, float4 tangent, float2 uv)
+{
+	float3 nTex = gNormalMap.Sample(gSampler, uv).rgb * 2.0 - 1.0;
+	nTex.y = -nTex.y;
+	return TangentToWorld(N, tangent, nTex);
+}
+#endif
 
 // ── 재질 샘플링 (2026-10-27) ──
 //  PSMain(배경 forward)과 PSGBuffer(메인 G-buffer)가 같은 표면 값을 써야 하므로 한 함수로 묶었다.
@@ -158,6 +206,194 @@ struct Surface
 	float3 emissive;
 };
 
+#if TERRAIN_LAYERS
+// ── 지형 레이어 표면 (2026-10-28) ──
+//  블렌더 시안(Resource_Work/<행성>/scripts/build_map.py draft_terrain_material)의 1 · 2 · 3 · 4단계.
+//  표면 아래 산란(빙하 얼음 · 눈)은 아직 없다(노션 10-28 작업기록 12 ~ 15절).
+//  ① 마스크: UV 를 메시 좌표 방향으로 계산한다. 팔면체 접힘 선에서 UV 가 튀어 하드웨어 미분(밉 선택)이 깨지므로
+//     밉은 «화면 픽셀 하나가 덮는 표면 길이 ÷ 마스크 텍셀 한 변» 으로 직접 고른다(SampleLevel).
+//  ② 높이 섞기(TerrainLayerWeights). 가중치가 0 인 레이어는 색 · ORM · 노멀을 읽지 않는다(Unity HDRP TerrainLit ·
+//     Frostbite 2007 과 같은 동적 분기). 마스크만으로 이길 수 없는 레이어는 높이도 읽지 않는다(아래 canWin).
+//     분기 안에서는 하드웨어 미분을 쓸 수 없어 좌표 미분을 밖에서 구해 SampleGrad 로 넘긴다.
+//  ③ 반복 숨김(3단계): 레이어마다 크기가 다른 두 벌을 노이즈로 섞는다 — 일반 레이어는 UV 두 벌, 바위 레이어는 메시 좌표의
+//     세 방향 투영(블렌더 BOX) 두 크기. 높이 · 색 · ORM · 노멀 모두 같은 섞기를 거친다(시안 sample()).
+//     → 1 · 2단계에서 경계 지대가 4 m 마다 같은 얼룩으로 바뀌던 바둑판이 노이즈를 따라 흐트러진다.
+//  섞는 값 = 색 · 거칠기(ORM.g) · AO(ORM.r) · 높이 · 탄젠트 공간 노멀(세 방향 투영 레이어는 평평 — 시안과 같음).
+//  금속성 0(ORM.b 가 0 인 지형 규격), 발광 0.
+//  ④ 4단계(시안 그대로): 색 × 큰 규모 흔들림(약 83 m) × AO 배율(AO × 0.55 + 0.45) × 바위 흔들림(바위 가중치만큼),
+//     법선 = 노멀맵 → 범프 1(섞은 높이, 바위는 4배) → 범프 2(지면 요철 노이즈). 범프는 블렌더 Bump 노드 식(TerrainBump).
+//     AO 는 G-buffer 에 자리가 없어, 시안처럼 색에 곱하는 것으로만 쓴다(일반 재질은 여전히 안 쓴다).
+
+// 한 픽셀의 레이어 좌표 — 두 크기 UV · 세 방향 투영 좌표와 그 미분, 섞는 비율
+struct TerrainCoords
+{
+	float  anti;                      // 크기 B 비율(0 = A 만, 1 = B 만)
+	float2 uvA, uvB;
+	float2 dxA, dyA, dxB, dyB;
+	float3 boxA, boxB;                // 세 방향 투영 좌표(블렌더 축 · 타일 단위)
+	float3 dBoxAx, dBoxAy, dBoxBx, dBoxBy;
+	float3 boxN;                      // 블렌더 축 법선(면마다 좌우 뒤집기 부호)
+	float3 boxWeight;                 // 면 가중치(X · Y · Z)
+};
+
+// BOX 투영 한 크기 — 면마다 Blender svm_node_tex_image_box 의 좌표 규칙(부호에 따라 좌우 뒤집기)
+float4 SampleBox(Texture2DArray tex, float layer, float3 co, float3 dcx, float3 dcy, TerrainCoords c)
+{
+	float4 r = float4(0.0, 0.0, 0.0, 0.0);
+	[branch] if (c.boxWeight.x > 0.0)
+	{
+		const float s = c.boxN.x < 0.0 ? -1.0 : 1.0;
+		r += c.boxWeight.x * tex.SampleGrad(gSampler, float3(s < 0.0 ? 1.0 - co.y : co.y, co.z, layer),
+			float2(s * dcx.y, dcx.z), float2(s * dcy.y, dcy.z));
+	}
+	[branch] if (c.boxWeight.y > 0.0)
+	{
+		const float s = c.boxN.y > 0.0 ? -1.0 : 1.0;
+		r += c.boxWeight.y * tex.SampleGrad(gSampler, float3(s < 0.0 ? 1.0 - co.x : co.x, co.z, layer),
+			float2(s * dcx.x, dcx.z), float2(s * dcy.x, dcy.z));
+	}
+	[branch] if (c.boxWeight.z > 0.0)
+	{
+		const float s = c.boxN.z > 0.0 ? -1.0 : 1.0;
+		r += c.boxWeight.z * tex.SampleGrad(gSampler, float3(s < 0.0 ? 1.0 - co.y : co.y, co.x, layer),
+			float2(s * dcx.y, dcx.x), float2(s * dcy.y, dcy.x));
+	}
+	return r;
+}
+float SampleBoxHeight(Texture2DArray<float> tex, float layer, float3 co, float3 dcx, float3 dcy, TerrainCoords c)
+{
+	float r = 0.0;
+	[branch] if (c.boxWeight.x > 0.0)
+	{
+		const float s = c.boxN.x < 0.0 ? -1.0 : 1.0;
+		r += c.boxWeight.x * tex.SampleGrad(gSampler, float3(s < 0.0 ? 1.0 - co.y : co.y, co.z, layer),
+			float2(s * dcx.y, dcx.z), float2(s * dcy.y, dcy.z));
+	}
+	[branch] if (c.boxWeight.y > 0.0)
+	{
+		const float s = c.boxN.y > 0.0 ? -1.0 : 1.0;
+		r += c.boxWeight.y * tex.SampleGrad(gSampler, float3(s < 0.0 ? 1.0 - co.x : co.x, co.z, layer),
+			float2(s * dcx.x, dcx.z), float2(s * dcy.x, dcy.z));
+	}
+	[branch] if (c.boxWeight.z > 0.0)
+	{
+		const float s = c.boxN.z > 0.0 ? -1.0 : 1.0;
+		r += c.boxWeight.z * tex.SampleGrad(gSampler, float3(s < 0.0 ? 1.0 - co.y : co.y, co.x, layer),
+			float2(s * dcx.y, dcx.x), float2(s * dcy.y, dcy.x));
+	}
+	return r;
+}
+
+// 레이어 하나를 읽는다 — 두 크기를 c.anti 로 섞는다. triplanar 면 BOX 투영, 아니면 UV.
+float4 SampleLayer(Texture2DArray tex, uint layer, bool triplanar, TerrainCoords c)
+{
+	float4 r = float4(0.0, 0.0, 0.0, 0.0);
+	[branch] if (c.anti < 1.0)
+		r += (1.0 - c.anti) * (triplanar ? SampleBox(tex, float(layer), c.boxA, c.dBoxAx, c.dBoxAy, c)
+		                                 : tex.SampleGrad(gSampler, float3(c.uvA, float(layer)), c.dxA, c.dyA));
+	[branch] if (c.anti > 0.0)
+		r += c.anti * (triplanar ? SampleBox(tex, float(layer), c.boxB, c.dBoxBx, c.dBoxBy, c)
+		                         : tex.SampleGrad(gSampler, float3(c.uvB, float(layer)), c.dxB, c.dyB));
+	return r;
+}
+float SampleLayerHeight(uint layer, bool triplanar, TerrainCoords c)
+{
+	float r = 0.0;
+	[branch] if (c.anti < 1.0)
+		r += (1.0 - c.anti) * (triplanar ? SampleBoxHeight(gLayerHeight, float(layer), c.boxA, c.dBoxAx, c.dBoxAy, c)
+		                                 : gLayerHeight.SampleGrad(gSampler, float3(c.uvA, float(layer)), c.dxA, c.dyA));
+	[branch] if (c.anti > 0.0)
+		r += c.anti * (triplanar ? SampleBoxHeight(gLayerHeight, float(layer), c.boxB, c.dBoxBx, c.dBoxBy, c)
+		                         : gLayerHeight.SampleGrad(gSampler, float3(c.uvB, float(layer)), c.dxB, c.dyB));
+	return r;
+}
+
+Surface SampleSurface(VOut i, bool frontFace)
+{
+	uint maskWidth, maskHeight, maskMips;
+	gLayerMask.GetDimensions(0, maskWidth, maskHeight, maskMips);
+	// 등면적 매핑이라 마스크 텍셀 넓이 = 4πR² ÷ 픽셀 수 → 한 변 = R·√(4π) ÷ 폭
+	const float texelSize = length(i.meshPos) * 3.5449077 / float(maskWidth);
+	const float footprint = max(length(ddx(i.world)), length(ddy(i.world)));   // 화면 픽셀 하나가 덮는 표면 길이(m)
+	const float maskLod   = clamp(log2(max(footprint / texelSize, 1e-4)), 0.0, float(maskMips - 1));
+	const float4 mask     = gLayerMask.SampleLevel(gClampSampler, TerrainMaskUv(i.meshPos), maskLod);
+
+	// ── 3단계 좌표 ──
+	//  시안 노이즈 · 세 방향 투영은 블렌더 물체 좌표(Z 위)다 — glTF (x, y, z) → 블렌더 (x, −z, y) 로 바꿔 같은 면 · 방향을 쓴다.
+	const float3 co = float3(i.meshPos.x, -i.meshPos.z, i.meshPos.y);
+	TerrainCoords c;
+	c.anti = saturate(TerrainFbm(co * kTerrainAntiScale, kTerrainNoiseOctave, footprint * kTerrainAntiScale) * 3.0 - 1.0);
+	c.uvA  = i.uv;
+	c.uvB  = i.uv * kTerrainUvBScale + kTerrainUvBOffset;
+	c.dxA  = ddx(c.uvA);  c.dyA = ddy(c.uvA);
+	c.dxB  = c.dxA * kTerrainUvBScale;  c.dyB = c.dyA * kTerrainUvBScale;
+	float3 boxCo = co;
+	if (gWarpScale > 0.0)   // 빙하 시안: 70 m 규모 노이즈로 최대 10 m 민다(지형 UV0 의 uv_warp 와 같은 뜻)
+		boxCo += (TerrainFbm3(co / gWarpScale, kTerrainNoiseOctave, footprint / gWarpScale) - 0.5) * (2.0 * gWarpAmount);
+	c.boxA = boxCo / gTriTileA;
+	c.boxB = boxCo / gTriTileB + float3(3.7, 1.9, 5.3) * gTriOffsetB;
+	c.dBoxAx = ddx(c.boxA);  c.dBoxAy = ddy(c.boxA);
+	c.dBoxBx = ddx(c.boxB);  c.dBoxBy = ddy(c.boxB);
+	const float3 nGeo = normalize(i.nrm);
+	c.boxN      = float3(nGeo.x, -nGeo.z, nGeo.y);
+	c.boxWeight = TerrainBoxWeights(c.boxN, kTerrainBoxBlend);
+
+	// ── 높이 → 가중치 ──
+	//  마스크만으로 이길 수 없는 레이어(마스크 + 높이 계수 ≤ 가장 큰 마스크 − 경계 폭)는 높이를 읽지 않는다.
+	//  그 레이어의 점수는 문턱보다 늘 낮아 가중치가 0 이기 때문이다(높이를 0 으로 둬도 결과가 같다).
+	const float maxMask = max(max(mask.x, mask.y), max(mask.z, mask.w));
+	float4 height = float4(0.0, 0.0, 0.0, 0.0);
+	[unroll] for (uint h = 0; h < 4; ++h)
+	{
+		[branch] if (mask[h] + gHeightBlend[h] > maxMask - gBlendDepth)
+			height[h] = SampleLayerHeight(h, ((gTriLayers >> h) & 1u) != 0u, c);
+	}
+	const float4 w = TerrainLayerWeights(mask, height, gHeightBlend, gBlendDepth);
+
+	float3 albedo = float3(0.0, 0.0, 0.0);
+	float3 nTex   = float3(0.0, 0.0, 0.0);
+	float  rough  = 0.0;
+	float  ao     = 0.0;
+	[unroll] for (uint k = 0; k < 4; ++k)
+	{
+		[branch] if (w[k] > 0.0)
+		{
+			const bool triplanar = ((gTriLayers >> k) & 1u) != 0u;
+			albedo += w[k] * SampleLayer(gLayerBaseColor, k, triplanar, c).rgb;
+			const float4 orm = SampleLayer(gLayerOrm, k, triplanar, c);
+			rough  += w[k] * orm.g;
+			ao     += w[k] * orm.r;   // 4단계 — 색에 곱한다(아래)
+			// 세 방향 투영 레이어는 노멀맵 대신 평평한 노멀(시안 «(0.5, 0.5, 1.0) if tri»)
+			nTex   += w[k] * (triplanar ? float3(0.0, 0.0, 1.0) : SampleLayer(gLayerNormal, k, false, c).rgb * 2.0 - 1.0);
+		}
+	}
+
+	Surface s;
+	// ── 4단계 색 흔들림 — 시안 «col × macro × aof × var» ──
+	s.albedo   = albedo * TerrainColorScale(co, footprint, ao, w[kTerrainRockLayer], gMacroAmount, gMacroBias) * i.col;
+	s.rough    = clamp(rough, kMinRoughness, 1.0);
+	s.metallic = 0.0;
+	s.emissive = float3(0.0, 0.0, 0.0);
+	s.N = normalize(i.nrm);
+	if (!frontFace) s.N = -s.N;
+	// 섞은 탄젠트 공간 노멀 — 녹색 반전(ApplyNormalMap 과 같은 규약) 뒤 기울기에 노멀 세기를 곱한다.
+	//  시안 Normal Map 노드의 Strength 를 «기울기(xy) 배율» 로 근사한 것이다.
+	nTex.y  = -nTex.y;
+	nTex.xy *= gNormalStrength;
+	s.N = TangentToWorld(s.N, i.tan, nTex);
+
+	// ── 4단계 범프 2단 — 시안: 노멀맵 → bump1(섞은 높이 × (바위 × 3 + 1)) → bump2(지면 요철) ──
+	//  높이 변화는 화면 미분(ddx_fine · ddy_fine — 2×2 묶음 안에서도 픽셀 쌍마다)으로 잰다. 블렌더도 픽셀 한 칸 옆의 높이를
+	//  다시 계산해 차이를 쓴다(Bump 노드). 가중치가 0 인 레이어는 높이를 안 읽었지만 섞은 높이에 0 을 더하므로 같다.
+	const float3 dPdx = ddx_fine(i.world);
+	const float3 dPdy = ddy_fine(i.world);
+	const float  bumpHeight = dot(w, height) * (w[kTerrainRockLayer] * kTerrainRockBumpGain + 1.0);
+	s.N = TerrainBump(s.N, dPdx, dPdy, ddx_fine(bumpHeight), ddy_fine(bumpHeight), gBumpDistance, 1.0);
+	const float  relief = TerrainRelief(co, footprint);
+	s.N = TerrainBump(s.N, dPdx, dPdy, ddx_fine(relief), ddy_fine(relief), gReliefDistance, gReliefStrength);
+	return s;
+}
+#else
 Surface SampleSurface(VOut i, bool frontFace)
 {
 	Surface s;
@@ -182,6 +418,7 @@ Surface SampleSurface(VOut i, bool frontFace)
 		s.N = ApplyNormalMap(s.N, i.tan, i.uv);
 	return s;
 }
+#endif
 
 // ── [1] G-buffer (메인 패스) ──
 //  조명 계산 없이 표면 정보만 쓴다. 배치는 GBuffer.hlsli.

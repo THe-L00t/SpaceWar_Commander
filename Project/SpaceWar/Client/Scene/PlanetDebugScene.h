@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -35,6 +36,10 @@
 //    접지 노드 이름 규칙(COL_Expedition_Planet_Terrain · Walkable_Path_* · Landing_L*_Platform)도 같아서
 //    PlanetSurface::IsGroundObject 를 그대로 쓴다. 오브젝트는 접지면에 넣지 않는다(밟을 수 없다).
 //  ★ 메인 스레드 소유. 소유자는 SceneManager 다(명세 5절). ReadPlacement 만 로딩 스레드에서 부른다.
+//  ★ 지형 레이어 (2026-10-28, 사용자 «렌더러 밖 수정 이번만 허용» — 지형 레이어 작업)
+//    glb 의 지형 재질은 대체 레이어 한 장뿐이다(리소스 규격). 배치 JSON 의 terrain_layers 로 레이어 4종 + 마스크의
+//    밉맵 DDS 를 읽어(LoadTerrainLayers, 로딩 스레드) 렌더러 지형 재질을 만들고 지형 노드의 재질을 바꿔 끼운다
+//    (ApplyTerrainLayers, 메인). 못 읽으면 대체 레이어 한 장 그대로 띄운다.
 // ============================================================
 
 namespace swc {
@@ -62,6 +67,21 @@ namespace swc {
 		std::vector<Instance> instances;
 		size_t                skipped = 0;   // 모르는 id · 잘못된 숫자로 건너뛴 인스턴스 수
 		std::wstring          error;         // 실패 원인 (로딩 스레드 → 메인)
+
+		// 지형 레이어 (2026-10-28) — JSON terrain_layers. channels 의 R G B A = 레이어 이름, mask = 마스크 PNG 이름.
+		std::array<std::string, 4> terrainLayers;
+		std::string                terrainMask;
+	};
+
+	// 지형 레이어 텍스처 — 로딩 스레드가 DDS 를 읽어 채우고, 메인이 PlanetDebugScene::ApplyTerrainLayers 로 GPU 에 올린다(2026-10-28).
+	struct TerrainLayerSet
+	{
+		TextureData  baseColor;   // 배열 4장(마스크 R G B A 순) — 아래 셋도 같다
+		TextureData  normal;
+		TextureData  orm;
+		TextureData  height;
+		TextureData  mask;        // RGBA 한 장
+		std::wstring error;       // 실패 원인 (로딩 스레드 → 메인)
 	};
 
 	class PlanetDebugScene : public Scene
@@ -102,7 +122,17 @@ namespace swc {
 		// 처음 · force · kRestreamDistance 이상 움직였을 때만 다시 고른다. 다시 골랐으면 true.
 		bool StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force);
 
-		// 창 제목용 — «지형 N 삼각형 · 오브젝트 보임 k / 배치 M · 종류 a/b»
+		// ── 지형 레이어 (2026-10-28) ──
+		// 읽을 DDS 의 exe 옆 assets\ 기준 경로 17개 — 색 4 · 노멀 4 · ORM 4 · 높이 4(각각 마스크 R G B A 순) + 마스크.
+		//  JSON 에 terrain_layers 가 없으면 빈 목록.
+		static std::vector<std::wstring> TerrainLayerAssets(size_t index, const PlanetPlacement& placement);
+		// 로딩 스레드에서 부른다(멤버를 건드리지 않는다). paths = 위 목록을 실제 경로로 바꾼 것. 실패하면 out.error.
+		static bool LoadTerrainLayers(const std::vector<std::wstring>& paths, TerrainLayerSet& out);
+		// 메인 스레드. Build 뒤에 부른다 — 텍스처 5개를 올려 지형 재질을 만들고 지형 그리기 노드의 재질을 바꾼다.
+		bool ApplyTerrainLayers(size_t index, TerrainLayerSet&& layers, GRenderer& renderer, LegacyScene& scene,
+			std::wstring& error);
+
+		// 창 제목용 — «지형 N 삼각형 · 지형 레이어 섞기 / 대체 1장 · 오브젝트 보임 k / 배치 M · 종류 a/b»
 		std::wstring Status() const;
 
 		const Shared::PlanetSurface& Ground() const { return ground; }
@@ -128,6 +158,8 @@ namespace swc {
 		NodeHandle            root = kInvalidNode;
 		Vec3d                 spawnUp{ 0.0, 1.0, 0.0 };
 		bool                  loaded = false;
+		std::vector<NodeHandle> terrainNodes;          // 지형 메시(…_Planet_Terrain)의 그리기 노드 — 지형 레이어 재질로 바꾼다
+		bool                  terrainLayered = false;  // 지형 레이어 재질을 끼웠는가(창 제목)
 
 		std::vector<ObjectType>                 objectTypes;
 		std::vector<PlanetPlacement::Instance>  instances;
