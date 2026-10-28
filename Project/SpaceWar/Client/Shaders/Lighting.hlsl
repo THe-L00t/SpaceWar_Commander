@@ -27,6 +27,8 @@
 //
 //  ★ 2026-10-27 렌더 7단계 — 주변광 = [4c] GI 프로브 (Probes.hlsli SampleProbes, t10 조도 · t11 거리 · t12 상태)
 //    프로브를 쓸 수 없는 픽셀(격자 밖 · 아직 안 채워짐 · RT 꺼짐)은 6단계 하늘 조도로 대신한다.
+//  ★ 2026-10-28 두 겹 — 가까운 겹(4 m) → 먼 겹(16 m, ±256 m) → 하늘 조도 순서(Probes.hlsli SampleProbeLayers).
+//    디버그 뷰 12: 초록 = 가까운 겹 · 파랑 = 먼 겹 · 빨강 = 하늘 조도로 대신.
 //
 //  ★ 2026-10-27 렌더 8단계 — [2] AO (t13). 간접 확산(주변광)에만 곱한다 — 직접광 · 반사에는 곱하지 않는다.
 //    곱하기 전에 GTAO 다중 반사 보정(Jimenez 외 2016 식 10)을 건다: 밝은 표면은 가려진 곳에서도 서로 튕긴 빛이 남는다.
@@ -37,7 +39,7 @@
 #include "Sky.hlsli"
 #include "Probes.hlsli"
 
-// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(208바이트 — 4단계에서 112 → 128, 6단계 → 144, 7단계 → 208)
+// GRenderer.cpp 의 LightingConstants 와 같은 순서 · 크기(304바이트 — 4단계에서 112 → 128, 6단계 → 144, 7단계 → 208, 10-28 두 겹 → 304, 지면에 맞춘 축 → 400)
 cbuffer LightingCB : register(b0)
 {
 	float4x4 gInvViewProj;   // 깊이 → 월드 위치 (행벡터 규약: mul(v, M))
@@ -51,7 +53,8 @@ cbuffer LightingCB : register(b0)
 	uint2    _pad2;
 	float3   gSunIlluminance;      // 6단계 — 땅에 닿는 태양 조도(RGB)
 	uint     gSkyEnabled;          // 6단계 — 1 = 하늘 조도 텍스처가 이번 프레임 값이다
-	ProbeVolume gProbeVolume;      // 7단계 — [4c] GI 프로브 격자 (enabled = 0 이면 하늘 조도)
+	ProbeVolume gProbeVolume;      // 7단계 — [4c] GI 프로브 가까운 겹 (enabled = 0 이면 못 씀)
+	ProbeVolume gProbeVolumeFar;   // 2026-10-28 — 먼 겹 (같은 아틀라스 t10 ~ t12 의 뒤쪽)
 };
 
 Texture2D<float4>   gAlbedo   : register(t0);   // GB0
@@ -101,11 +104,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	const float3 emissive = gEmissive[pixel];
 
 	const float3 V = normalize(gEyePos - P);
-	// 주변 조도/π: 7단계 GI 프로브 → (못 쓰면) 6단계 하늘 조도 → (그것도 없으면) 예전 상수
-	float3 ambientEOverPi = float3(0.0, 0.0, 0.0);
+	// 주변 조도/π: 7단계 GI 프로브(10-28 가까운 겹 → 먼 겹) → (못 쓰면) 6단계 하늘 조도 → (그것도 없으면) 예전 상수
 	float  probeWeight = 0.0;
-	if (gProbeVolume.enabled != 0)
-		ambientEOverPi = SampleProbes(gProbeIrradiance, gProbeDistance, gProbeStates, gClampSampler, gProbeVolume, P, N, V, probeWeight);
+	uint   probeLayer = 2;
+	float3 ambientEOverPi = SampleProbeLayers(gProbeIrradiance, gProbeDistance, gProbeStates, gClampSampler,
+		gProbeVolume, gProbeVolumeFar, P, N, V, probeWeight, probeLayer);
 	if (probeWeight <= 0.0)
 		ambientEOverPi = (gSkyEnabled != 0) ? SampleSkyIrradiance(gSkyIrradiance, gSkySampler, N)
 		                                    : float3(kAmbient, kAmbient, kAmbient);
@@ -144,7 +147,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	case 9:  color = lit.F_env * reflection;         break;   // 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
 	case 10: color = float3(rough, metallic, 0.0);   break;
 	case 11: color = ambientEOverPi;                 break;   // 6단계 — 주변 조도 / π (7단계부터 GI 프로브, 못 쓰면 하늘)
-	case 12: color = (probeWeight > 0.0) ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);   break;   // 7단계 — 프로브를 썼나(초록) / 하늘로 대신(빨강)
+	case 12:                                                  // 7단계 — 프로브를 썼나. 10-28: 초록 가까운 겹 · 파랑 먼 겹 · 빨강 하늘로 대신
+		color = (probeLayer == 0) ? float3(0.0, 1.0, 0.0) : (probeLayer == 1) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+		break;
 	case 13: color = float3(ao, ao, ao);             break;   // 8단계 — [2] AO (노이즈 제거 후)
 	}
 

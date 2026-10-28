@@ -13,20 +13,30 @@
 //    테두리는 팔면체 가장자리 맞은편 텍셀을 복사한 값 — 쌍선형 샘플이 프로브 칸을 넘지 않게(RTXGI 와 같은 배치).
 //  ★ 조도는 «코사인 가중 평균 휘도 = 조도 / π» 로 저장한다(설계 문서 6.4). 알베도만 곱하면 확산 휘도다.
 //    (RTXGI 는 1/2π 로 저장하고 샘플에서 2π 를 곱한다 — 같은 값의 다른 표현)
+//  ★ 2026-10-28 두 겹(캐스케이드, Majercik 외 2021 7.3) — 가까운 겹(4 m) + 먼 겹(16 m, 정육면체).
+//    두 겹은 아틀라스 · 상태 버퍼를 같이 쓰고, 겹마다 «시작 번호»(storageOffset) 뒤에 이어 놓인다.
+//    샘플은 가까운 겹 → 먼 겹 → (둘 다 못 쓰면) 하늘 조도 순서. 겹 사이를 섞는 구간은 아직 없다(사용자 «경계 섞기 보류»).
+//  ★ 2026-10-28 지면에 맞춘 격자 — 격자 축이 월드 축이 아니라 axisX · axisY · axisZ(행성 중심 기준 회전)다.
+//    axisY = 짧은 축 = 지면 위쪽. 그래서 얇은 격자가 땅과 나란히 놓여 플레이어 둘레 수평으로 고르게 덮는다
+//    (전에는 위쪽에 가장 가까운 월드 축이라 행성 위에서 36 ~ 47° 비스듬 → 앞쪽 약 30 m 에서 끊겼다).
+//    «칸» 은 회전된 격자 좌표의 정수 칸이다: 칸 = floor(dot(P, 축) / 간격), 프로브 위치 = Σ 칸 × 축 × 간격.
 // ============================================================
 #ifndef PROBES_HLSLI
 #define PROBES_HLSLI
 
 #include "GBuffer.hlsli"   // EncodeNormalOct · DecodeNormalOct
 
-// GRenderer.cpp 의 ProbeVolumeGpu 와 같은 배치 (64바이트). 여러 상수 버퍼에 그대로 들어간다.
+// GRenderer.cpp 의 ProbeVolumeGpu 와 같은 배치 (128바이트 — 2026-10-28 두 겹 64 → 80, 지면에 맞춘 축 80 → 128).
+//  여러 상수 버퍼에 그대로 들어간다.
 struct ProbeVolume
 {
-	int3   baseCell;     uint  generation;       // 격자 맨 앞 칸의 월드 칸 번호 · 세대(격자 축이 바뀌면 +1 → 옛 데이터 무시)
+	int3   baseCell;     uint  generation;       // 격자 맨 앞 칸(격자 좌표) · 세대(격자 축이 바뀌면 +1 → 옛 데이터 무시)
 	int3   dims;         float spacing;          // 축별 프로브 수 · 간격(m)
 	float  normalBias;   float viewBias;         // 샘플 위치를 법선 · 시선 쪽으로 띄우는 거리(간격 배수)
 	uint   probesPerRow; uint  enabled;          // 아틀라스 한 줄의 프로브 수 · 1 = 이번 프레임에 쓸 수 있다
-	float2 irradianceAtlasSize;  float2 distanceAtlasSize;
+	float2 irradianceAtlasSize;  float2 distanceAtlasSize;   // 두 겹이 같이 쓰는 아틀라스 전체 크기
+	uint   storageOffset;  uint3 _pad;           // 2026-10-28 — 이 겹 프로브가 아틀라스 · 상태 버퍼에서 시작하는 번호
+	float4 axisX;  float4 axisY;  float4 axisZ;  // 2026-10-28 — 격자 축(월드 단위 벡터, w 안 씀). axisY = 짧은 축 = 지면 위쪽
 };
 
 static const uint kProbeIrradianceTexels = 8;    // 6×6 + 테두리
@@ -41,7 +51,7 @@ int3 PositiveMod(int3 a, int3 m)
 	return ((a % m) + m) % m;
 }
 
-// 월드 칸 → 저장 번호 (링 주소)
+// 월드 칸 → 겹 안의 저장 번호 (링 주소, 0 ~ 겹의 프로브 수 − 1). 아틀라스 · 상태 버퍼 번호는 여기에 storageOffset 을 더한다.
 uint ProbeStorageIndex(int3 cell, ProbeVolume v)
 {
 	const int3 s = PositiveMod(cell, v.dims);
@@ -55,9 +65,16 @@ int3 ProbeCellFromStorage(uint index, ProbeVolume v)
 	return v.baseCell + PositiveMod(s - PositiveMod(v.baseCell, v.dims), v.dims);
 }
 
+// 칸(격자 좌표) → 월드 위치. 2026-10-28 — 격자 축이 돌아가 있다(행성 중심 기준).
 float3 ProbeWorldPosition(int3 cell, ProbeVolume v)
 {
-	return float3(cell) * v.spacing;
+	return (float(cell.x) * v.axisX.xyz + float(cell.y) * v.axisY.xyz + float(cell.z) * v.axisZ.xyz) * v.spacing;
+}
+
+// 월드 위치 → 격자 좌표(칸 단위, 소수). floor 하면 칸 번호.
+float3 ProbeGridCoord(float3 P, ProbeVolume v)
+{
+	return float3(dot(P, v.axisX.xyz), dot(P, v.axisY.xyz), dot(P, v.axisZ.xyz)) / v.spacing;
 }
 
 // 상태 한 칸 = int4(월드 칸 xyz, 세대 << 2 | 상태). 이 칸 · 이 세대 · 활성이어야 쓴다.
@@ -83,7 +100,7 @@ float3 SampleProbes(Texture2D<float4> irradiance, Texture2D<float2> distance, St
 	SamplerState clampSampler, ProbeVolume v, float3 P, float3 N, float3 V, out float weightSum)
 {
 	const float3 biasedP = P + (N * v.normalBias + V * v.viewBias) * v.spacing;
-	const float3 cellF   = biasedP / v.spacing;
+	const float3 cellF   = ProbeGridCoord(biasedP, v);   // 2026-10-28 — 지면에 맞춘 격자 좌표
 	const int3   base    = int3(floor(cellF));
 	const float3 alpha   = cellF - float3(base);
 
@@ -96,7 +113,7 @@ float3 SampleProbes(Texture2D<float4> irradiance, Texture2D<float2> distance, St
 		const int3 cell   = base + offset;
 		if (any(cell < v.baseCell) || any(cell >= v.baseCell + v.dims))
 			continue;   // 격자 밖
-		const uint index = ProbeStorageIndex(cell, v);
+		const uint index = v.storageOffset + ProbeStorageIndex(cell, v);   // 2026-10-28 두 겹 — 공용 아틀라스 · 상태 번호
 		if (!ProbeUsable(states[index], cell, v))
 			continue;
 
@@ -133,6 +150,28 @@ float3 SampleProbes(Texture2D<float4> irradiance, Texture2D<float2> distance, St
 		weightSum += weight;
 	}
 	return weightSum > 0.0 ? sum / weightSum : float3(0.0, 0.0, 0.0);
+}
+
+// 2026-10-28 두 겹 — 가까운 겹을 먼저, 거기서 쓸 프로브가 없으면 먼 겹. 둘 다 없으면 weightSum = 0(부른 쪽이 하늘 조도).
+//  layer = 0 가까운 겹 · 1 먼 겹 · 2 둘 다 못 씀 (디버그 뷰 12 색).
+float3 SampleProbeLayers(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
+	SamplerState clampSampler, ProbeVolume nearV, ProbeVolume farV, float3 P, float3 N, float3 V,
+	out float weightSum, out uint layer)
+{
+	weightSum = 0.0;
+	layer = 2;
+	float3 e = float3(0.0, 0.0, 0.0);
+	if (nearV.enabled != 0)
+	{
+		e = SampleProbes(irradiance, distance, states, clampSampler, nearV, P, N, V, weightSum);
+		if (weightSum > 0.0) { layer = 0; return e; }
+	}
+	if (farV.enabled != 0)
+	{
+		e = SampleProbes(irradiance, distance, states, clampSampler, farV, P, N, V, weightSum);
+		if (weightSum > 0.0) { layer = 1; return e; }
+	}
+	return float3(0.0, 0.0, 0.0);
 }
 
 #endif

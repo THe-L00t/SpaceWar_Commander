@@ -243,17 +243,20 @@ namespace swc {
 		uint32_t   skyEnabled;          // 2026-10-27 6단계 — 1 이면 하늘 조도 텍스처(t9)를 주변광으로 읽는다
 		struct ProbeVolumeGpu
 		{
-			// Shaders/Probes.hlsli 의 ProbeVolume 과 같은 배치 (64 B) — 라이팅 · 반사 · GI 상수에 그대로 들어간다
+			// Shaders/Probes.hlsli 의 ProbeVolume 과 같은 배치 (128 B, 10-28 두 겹 64 → 80, 지면에 맞춘 축 → 128) — 라이팅 · 반사 · 반투명 · GI 상수에 그대로 들어간다
 			int32_t  baseCell[3];  uint32_t generation;    // 격자 맨 앞 칸의 월드 칸 번호 · 세대
 			int32_t  dims[3];      float    spacing;       // 축별 프로브 수 · 간격(m)
 			float    normalBias;   float    viewBias;      // 샘플 위치 띄우기(간격 배수)
 			uint32_t probesPerRow; uint32_t enabled;       // 아틀라스 한 줄 프로브 수 · 1 = 이번 프레임에 쓸 수 있다
-			float    irradianceAtlasSize[2];  float distanceAtlasSize[2];
-		} probeVolume;                  // 2026-10-27 7단계 — [4c] GI 프로브 (enabled 0 이면 하늘 조도)
+			float    irradianceAtlasSize[2];  float distanceAtlasSize[2];   // 두 겹이 같이 쓰는 아틀라스 전체 크기
+			uint32_t storageOffset; uint32_t padV[3];      // 2026-10-28 — 이 겹 프로브의 아틀라스 · 상태 버퍼 시작 번호
+			float    axisX[4], axisY[4], axisZ[4];         // 2026-10-28 — 격자 축(월드 단위 벡터). axisY = 짧은 축 = 지면 위쪽
+		} probeVolume;                  // 2026-10-27 7단계 — [4c] GI 프로브 가까운 겹 (enabled 0 이면 못 씀)
+		ProbeVolumeGpu probeVolumeFar;  // 2026-10-28 — 먼 겹 (가까운 겹에서 못 쓰면 이것, 둘 다 못 쓰면 하늘 조도)
 	};
 	using ProbeVolumeGpu = LightingConstants::ProbeVolumeGpu;
-	static_assert(sizeof(ProbeVolumeGpu) == 64, "ProbeVolume 은 64바이트");
-	static_assert(sizeof(LightingConstants) == 208, "LightingCB 는 208바이트");
+	static_assert(sizeof(ProbeVolumeGpu) == 128, "ProbeVolume 은 128바이트 (10-28 64 → 80 → 128)");
+	static_assert(sizeof(LightingConstants) == 400, "LightingCB 는 400바이트 (10-28 GI 두 겹 208 → 304, 축 → 400)");
 
 	// ── RT 표 (2026-10-27 렌더 4단계) — Shaders/RtCommon.hlsli 와 같은 배치 ──
 	//  재질 표: 재질 번호(TLAS InstanceID)로 찾는다. 텍스처 번호는 SM 6.6 바인드리스 힙 번호.
@@ -299,8 +302,9 @@ namespace swc {
 		ProbeVolumeGpu probeVolume;           // 7단계 — [4c] GI 프로브 격자 — 맞은 점 주변광
 		uint32_t   probeIrradianceIndex, probeDistanceIndex, probeStateIndex;   // 7단계 — 바인드리스 번호
 		uint32_t   tileListIndex;   // 11단계 — [3] 분류 타일 목록 SRV (0xFFFFFFFF 면 화면 전체 DispatchRays)
+		ProbeVolumeGpu probeVolumeFar;        // 2026-10-28 — GI 먼 겹
 	};
-	static_assert(sizeof(ReflectionConstants) == 224, "ReflectionCB 는 224바이트");
+	static_assert(sizeof(ReflectionConstants) == 416, "ReflectionCB 는 416바이트 (10-28 GI 두 겹 224 → 320, 축 → 416)");
 
 	// ReflectionClassify.hlsl 의 ClassifyCB 와 같은 순서 · 크기 (2026-10-27 렌더 11단계, [3] 분류)
 	struct ClassifyConstants
@@ -313,17 +317,20 @@ namespace swc {
 	static_assert(sizeof(ClassifyConstants) == 48, "ClassifyCB 는 48바이트");
 
 	// ProbeGI.hlsl 의 GiCB 와 같은 순서 · 크기 (2026-10-27 렌더 7단계, [4c] GI 프로브) — 세 진입점이 같은 상수를 쓴다
+	//  2026-10-28 두 겹 — 겹마다 이 상수를 한 벌씩(512 B 칸) 채워 세 진입점을 겹마다 돌린다. layer = 이번 겹.
 	struct GiConstants
 	{
-		ProbeVolumeGpu volume;               // 64
+		ProbeVolumeGpu nearVolume;           // 128 — 가까운 겹
+		ProbeVolumeGpu farVolume;            // 128 — 먼 겹
 		XMFLOAT4   rayRotation[3];           // 이번 프레임 레이 회전(행 3개)
-		XMFLOAT3   sunDir;           uint32_t firstProbe;      // 이번 프레임에 갱신하는 첫 저장 번호
-		XMFLOAT3   sunIlluminance;   uint32_t probeCount;      // 전체 프로브 수
+		XMFLOAT3   sunDir;           uint32_t firstProbe;      // 이번 프레임에 갱신하는 첫 번호(겹 안)
+		XMFLOAT3   sunIlluminance;   uint32_t probeCount;      // 이번 겹의 프로브 수
 		uint32_t   rayDataUav, rayDataSrv, irradianceUav, irradianceSrv;   // ↓ 바인드리스 번호
 		uint32_t   distanceUav, distanceSrv, stateUav, stateSrv;
 		uint32_t   skySrv, skyIrradianceSrv, probesThisFrame;  float maxDistance;
+		uint32_t   probeCycle;       uint32_t layer;   uint32_t pad0[2];   // 이번 겹을 다 돈 횟수(꺼 둔 프로브 다시 잴 바퀴) · 이번 겹
 	};
-	static_assert(sizeof(GiConstants) == 192, "GiCB 는 192바이트");
+	static_assert(sizeof(GiConstants) == 400, "GiCB 는 400바이트 (10-28 바퀴 번호 192 → 208, 두 겹 → 304, 축 → 400)");
 
 	// AO.hlsl 의 AoCB 와 같은 순서 · 크기 (2026-10-27 렌더 8단계, [2] AO) — 세 진입점이 같은 상수를 쓴다
 	struct AoConstants
@@ -351,9 +358,10 @@ namespace swc {
 		uint32_t   width, height, mipCount, rtEnabled;
 		uint32_t   skySrv, skyIrradianceSrv, probeIrradianceSrv, probeDistanceSrv;
 		uint32_t   probeStateSrv, pad0[3];
-		ProbeVolumeGpu probeVolume;
+		ProbeVolumeGpu probeVolume;        // GI 가까운 겹
+		ProbeVolumeGpu probeVolumeFar;     // 2026-10-28 — GI 먼 겹
 	};
-	static_assert(sizeof(TransparentConstants) == 288, "TransparentCB 는 288바이트");
+	static_assert(sizeof(TransparentConstants) == 480, "TransparentCB 는 480바이트 (10-28 GI 두 겹 288 → 384, 축 → 480)");
 
 	// ColorPyramid.hlsl 의 PyramidCB (2026-10-27 렌더 9단계) — 디스패치마다 256 B 칸 하나
 	struct PyramidConstants
@@ -841,9 +849,22 @@ namespace swc {
 		//  설계 문서 3.2 · 6.4 의 DDGI. 카메라를 따라 스크롤하는 32×8×32 격자(간격 4 m) — 짧은 축(8)은 «위» 에 가장 가까운 월드 축.
 		//  (설계 문서는 y 가 짧은 축. 행성 위라 걷는 자리마다 위가 달라서, 위에 가까운 축을 고른다 — 바뀌면 세대를 올려 다시 채운다)
 		//  프레임마다 1/4(2048개)씩 64 레이로 갱신. RT + 바인드리스 장치에서만.
+		//  ★ 2026-10-28 두 겹(캐스케이드, Majercik 외 2021 7.3) — 사용자 «GI 겹은 언제 늘릴건데» (지평선까지 덮기).
+		//    겹 0 = 가까운 겹(4 m), 겹 1 = 먼 겹(16 m). 두 겹 다 32×8×32 이고 아틀라스 · 상태 버퍼를 같이 쓴다(먼 겹은 kProbeCount 뒤).
+		//    프레임마다 겹마다 2048개씩 갱신한다(겹마다 4 프레임에 한 바퀴).
+		//  ★ 2026-10-28 지면에 맞춘 격자 — 사용자 «플레이어 기준 거리를 좀 늘려» · «정육면체면 또 바닥 아래까지 측정하는거 아니야?».
+		//    짧은 축(8)을 월드 축이 아니라 지면 위쪽에 맞춰 격자를 돌린다(probeAxes, 행성 중심 기준). 그래서 얇은 격자가 땅과 나란해
+		//    가까운 겹은 플레이어 둘레 수평 ±64 m, 먼 겹은 ±256 m 를 고르게 덮고 땅 속으로 들어가는 칸이 적다.
+		//    걸어서 위쪽이 격자 축에서 kProbeReorientDegrees 넘게 기울면 다시 맞추고 두 겹을 새로 채운다(세대 +1).
 		static constexpr int   kProbeGridLong = 32, kProbeGridShort = 8;
-		static constexpr UINT  kProbeCount = UINT(kProbeGridLong * kProbeGridLong * kProbeGridShort);   // 8192
-		static constexpr UINT  kProbesPerFrame = kProbeCount / 4;                                      // 2048
+		static constexpr UINT  kProbeCount = UINT(kProbeGridLong * kProbeGridLong * kProbeGridShort);   // 8192 — 겹마다
+		static constexpr UINT  kProbesPerFrame = kProbeCount / 4;                                      // 2048 — 겹마다
+		static constexpr int   kProbeLayerCount = 2;
+		static constexpr UINT  kProbeFarCount = kProbeCount;                                           // 먼 겹도 32×8×32
+		static constexpr float kProbeFarSpacing = 16.0f;
+		static constexpr UINT  kProbeTotalCount = kProbeCount + kProbeFarCount;                        // 16384 — 아틀라스 · 상태 버퍼
+		static constexpr float kProbeReorientDegrees = 10.0f;                                          // 격자를 다시 맞추는 기울기(임시값)
+		static_assert(kProbeFarCount % kProbesPerFrame == 0, "먼 겹 프로브 수는 프레임당 갱신 수의 배수(바퀴 계산)");
 		static constexpr UINT  kProbeRays = 64;
 		static constexpr UINT  kProbesPerRow = 128;                                                     // 아틀라스 한 줄
 		static constexpr UINT  kProbeIrradianceTexels = 8, kProbeDistanceTexels = 16;
@@ -853,19 +874,28 @@ namespace swc {
 		static constexpr float kProbeMaxDistance = 1000.0f;   // 프로브 레이 길이(m) — 설계 문서
 		static constexpr DXGI_FORMAT kProbeIrradianceFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;   // 설계 문서는 R11G11B10 — 0.97 섞기의 3 % 변화가 6비트 가수에 묻혀 수렴이 멈출 수 있어 16비트로
 		static constexpr DXGI_FORMAT kProbeDistanceFormat = DXGI_FORMAT_R16G16_FLOAT;
-		RenderTarget                probeRayData;       // 64 × 2048, rgb = 휘도 · a = 거리(뒷면이면 음수)
-		RenderTarget                probeIrradiance;    // 1024 × 512 (프로브 8×8 × 128 × 64)
-		RenderTarget                probeDistance;      // 2048 × 1024 (프로브 16×16 × 128 × 64)
-		RenderTarget                probeStates;        // 버퍼 int4 × 8192 — 월드 칸 · 세대 · 상태
+		RenderTarget                probeRayData;       // 64 × 2048, rgb = 휘도 · a = 거리(뒷면이면 음수) — 두 겹이 차례로 쓴다
+		RenderTarget                probeIrradiance;    // 1024 × 1024 (프로브 8×8 × 128 × 128, 10-28 두 겹으로 512 → 1024)
+		RenderTarget                probeDistance;      // 2048 × 2048 (프로브 16×16 × 128 × 128)
+		RenderTarget                probeStates;        // 버퍼 int4 × 16384 — 격자 칸 · 세대 · 상태 (가까운 겹 0 ~ 8191 · 먼 겹 8192 ~)
 		ComPtr<ID3D12PipelineState> giTracePso;
 		ComPtr<ID3D12PipelineState> giBlendDistancePso;
 		ComPtr<ID3D12PipelineState> giBlendIrradiancePso;
-		ComPtr<ID3D12Resource>      giCB;               // UPLOAD, 영속 매핑
+		ComPtr<ID3D12Resource>      giCB;               // UPLOAD, 영속 매핑 — 겹마다 512 B 칸(10-28)
 		uint8_t*                    giCBData = nullptr;
-		int32_t                     probeDims[3] = { 0, 0, 0 };   // 지금 격자 축별 수 — 바뀌면 세대 +1
-		uint32_t                    probeGeneration = 0;
-		uint32_t                    probeCursor = 0;              // 다음 프레임에 갱신할 첫 저장 번호
-		ProbeVolumeGpu              probeVolume{};                // 이번 프레임 라이팅 · 반사가 쓸 격자 (enabled 0 = 못 씀)
+		static constexpr UINT       kGiCBSlot = 512;    // GiConstants 400 B → CBV 256 배수
+		// 겹마다의 상태 (2026-10-28 두 겹, 예전 probeDims · probeGeneration · probeCursor · probeCycle)
+		struct ProbeLayer
+		{
+			uint32_t generation = 0;          // 격자 축(probeAxes)을 다시 맞추면 +1
+			uint32_t cursor = 0;              // 다음 프레임에 갱신할 첫 번호(겹 안)
+			uint32_t cycle = 0;               // 커서가 한 바퀴 돌 때마다 +1 (ProbeGI.hlsl ProbeOff 가 다시 잴 바퀴를 고른다)
+		};
+		ProbeLayer                  probeLayers[kProbeLayerCount];
+		XMFLOAT3                    probeAxes[3] = {};            // 2026-10-28 — 두 겹이 같이 쓰는 격자 축(X · Y = 지면 위쪽 · Z)
+		bool                        probeAxesValid = false;
+		ProbeVolumeGpu              probeVolume{};                // 이번 프레임 라이팅 · 반사 · 반투명이 쓸 가까운 겹 (enabled 0 = 못 씀)
+		ProbeVolumeGpu              probeVolumeFar{};             // 2026-10-28 — 먼 겹
 
 		// ── [2] AO (2026-10-27 렌더 8단계, AO.hlsl) ──
 		//  화면 공간으로 레이를 따라가다 «모름» 인 레이만 RayQuery — 사용자 생각(«기본 SSAO + 화면에 없는 부분만 RTAO»)을 레이 단위로.
@@ -1441,40 +1471,68 @@ namespace swc {
 		}
 
 		// ── [4c] GI 프로브 갱신 (2026-10-27 렌더 7단계) — 메인 패스, TLAS 빌드가 끝난 뒤 · [4a] 그림자 앞 ──
-		//  ① 격자: 위에 가장 가까운 월드 축이 짧은 축. 카메라가 있는 칸을 가운데로 두고 칸 단위로 스크롤한다.
+		//  ① 격자: 카메라가 있는 칸을 가운데로 두고 칸 단위로 스크롤한다.
 		//  ② 이번 프레임 1/4 프로브: 추적(CSProbeTrace) → 거리 섞기 → 조도 섞기 + 상태 (ProbeGI.hlsl)
 		//  끝나면 probeVolume.enabled = 1 — 라이팅 · 반사가 이 격자를 주변광으로 읽는다.
-		void UpdateProbes(const RenderView& view)
+		//  ★ 2026-10-28 두 겹 — 겹 0(가까운 겹 4 m) · 겹 1(먼 겹 16 m)에 차례로 ② 를 돌린다.
+		//    두 겹 다 카메라 칸을 가운데로 스크롤하고, 아틀라스 · 상태 버퍼는 같이 쓴다(먼 겹은 kProbeCount 번부터).
+		//    상수는 겹마다 giCB 의 512 B 칸 하나 — 두 겹 정보를 다 넣는다(맞은 점의 다중 반사가 두 겹을 차례로 읽는다).
+		//  ★ 2026-10-28 지면에 맞춘 격자 — 짧은 축(격자 Y) = 지면 위쪽. 예전에는 위쪽에 가장 가까운 «월드 축» 이라
+		//    행성 위에서 36 ~ 47° 비스듬했다(앞쪽 약 30 m 에서 GI 가 끊김). 격자 칸 = floor(dot(위치, 축) / 간격).
+		ProbeVolumeGpu MakeProbeVolume(int layer, const int32_t dims[3], float spacing, const XMFLOAT3& eyePosition) const
 		{
-			// ① 격자
-			const XMFLOAT3 up = view.up;
-			const float ax = std::fabs(up.x), ay = std::fabs(up.y), az = std::fabs(up.z);
-			const int shortAxis = (ay >= ax && ay >= az) ? 1 : (ax >= az ? 0 : 2);
-			int32_t dims[3] = { kProbeGridLong, kProbeGridLong, kProbeGridLong };
-			dims[shortAxis] = kProbeGridShort;
-			if (dims[0] != probeDims[0] || dims[1] != probeDims[1] || dims[2] != probeDims[2])
-			{
-				probeDims[0] = dims[0]; probeDims[1] = dims[1]; probeDims[2] = dims[2];
-				++probeGeneration;   // 저장 번호 배치가 바뀌었다 — 옛 데이터는 상태 검사에서 빠진다
-				probeCursor = 0;
-			}
-			const float eye[3] = { view.eyePosition.x, view.eyePosition.y, view.eyePosition.z };
+			const XMVECTOR eye = XMLoadFloat3(&eyePosition);
 			ProbeVolumeGpu volume = {};
+			float* axisOut[3] = { volume.axisX, volume.axisY, volume.axisZ };
 			for (int a = 0; a < 3; ++a)
 			{
-				volume.baseCell[a] = int32_t(std::floor(eye[a] / kProbeSpacing)) - dims[a] / 2;
+				const float coord = XMVectorGetX(XMVector3Dot(eye, XMLoadFloat3(&probeAxes[a])));   // 격자 좌표(m)
+				volume.baseCell[a] = int32_t(std::floor(coord / spacing)) - dims[a] / 2;
 				volume.dims[a] = dims[a];
+				axisOut[a][0] = probeAxes[a].x; axisOut[a][1] = probeAxes[a].y; axisOut[a][2] = probeAxes[a].z; axisOut[a][3] = 0.0f;
 			}
-			volume.generation = probeGeneration;
-			volume.spacing = kProbeSpacing;
+			volume.generation = probeLayers[layer].generation;
+			volume.spacing = spacing;
 			volume.normalBias = kProbeNormalBias;
 			volume.viewBias = kProbeViewBias;
 			volume.probesPerRow = kProbesPerRow;
 			volume.enabled = 1;
 			volume.irradianceAtlasSize[0] = float(kProbesPerRow * kProbeIrradianceTexels);
-			volume.irradianceAtlasSize[1] = float(kProbeCount / kProbesPerRow * kProbeIrradianceTexels);
+			volume.irradianceAtlasSize[1] = float(kProbeTotalCount / kProbesPerRow * kProbeIrradianceTexels);
 			volume.distanceAtlasSize[0] = float(kProbesPerRow * kProbeDistanceTexels);
-			volume.distanceAtlasSize[1] = float(kProbeCount / kProbesPerRow * kProbeDistanceTexels);
+			volume.distanceAtlasSize[1] = float(kProbeTotalCount / kProbesPerRow * kProbeDistanceTexels);
+			volume.storageOffset = (layer == 0) ? 0u : kProbeCount;
+			return volume;
+		}
+
+		void UpdateProbes(const RenderView& view)
+		{
+			// ① 격자 축 — 처음이거나 지면 위쪽이 격자 Y 축에서 kProbeReorientDegrees 넘게 기울면 다시 맞춘다.
+			//  Y = 위쪽, X = 위쪽과 월드 Z(위쪽이 Z 에 가까우면 월드 X)의 외적, Z = X × Y. 다시 맞추면 두 겹 다 세대 +1(새로 채움).
+			XMVECTOR up = XMLoadFloat3(&view.up);
+			up = XMVectorGetX(XMVector3LengthSq(up)) > 1.0e-12f ? XMVector3Normalize(up) : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+			const float reorientCos = std::cos(kProbeReorientDegrees * 3.14159265f / 180.0f);
+			if (!probeAxesValid || XMVectorGetX(XMVector3Dot(up, XMLoadFloat3(&probeAxes[1]))) < reorientCos)
+			{
+				const XMVECTOR ref = std::fabs(XMVectorGetZ(up)) > 0.9f ? XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f) : XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+				const XMVECTOR axisX = XMVector3Normalize(XMVector3Cross(up, ref));
+				const XMVECTOR axisZ = XMVector3Cross(axisX, up);
+				XMStoreFloat3(&probeAxes[0], axisX);
+				XMStoreFloat3(&probeAxes[1], up);
+				XMStoreFloat3(&probeAxes[2], axisZ);
+				probeAxesValid = true;
+				for (ProbeLayer& L : probeLayers)
+				{
+					++L.generation;   // 칸 배치(축)가 바뀌었다 — 옛 데이터는 상태 검사에서 빠진다
+					L.cursor = 0;
+				}
+			}
+			const int32_t dims[3] = { kProbeGridLong, kProbeGridShort, kProbeGridLong };   // 격자 Y(위쪽)가 짧은 축
+			const float layerSpacing[kProbeLayerCount] = { kProbeSpacing, kProbeFarSpacing };
+			const UINT  layerCount[kProbeLayerCount] = { kProbeCount, kProbeFarCount };
+			ProbeVolumeGpu volumes[kProbeLayerCount];
+			for (int layer = 0; layer < kProbeLayerCount; ++layer)
+				volumes[layer] = MakeProbeVolume(layer, dims, layerSpacing[layer], view.eyePosition);
 
 			// ② 상수 — 레이 방향은 프레임마다 무작위 회전(고정 방향 줄무늬 방지, 설계 문서 6.4)
 			auto hash = [](uint32_t v)   // PCG (RtCommon.hlsli PcgHash 와 같은 식)
@@ -1491,67 +1549,79 @@ namespace swc {
 			XMFLOAT4X4 rot;
 			XMStoreFloat4x4(&rot, rotation);
 
-			GiConstants gc = {};
-			gc.volume = volume;
-			gc.rayRotation[0] = XMFLOAT4(rot._11, rot._12, rot._13, 0.0f);
-			gc.rayRotation[1] = XMFLOAT4(rot._21, rot._22, rot._23, 0.0f);
-			gc.rayRotation[2] = XMFLOAT4(rot._31, rot._32, rot._33, 0.0f);
-			gc.sunDir = sunDir;
-			gc.firstProbe = probeCursor;
-			gc.sunIlluminance = sunIlluminance;
-			gc.probeCount = kProbeCount;
-			gc.rayDataUav = BindlessProbeRayDataUav;       gc.rayDataSrv = BindlessProbeRayDataSrv;
-			gc.irradianceUav = BindlessProbeIrradianceUav; gc.irradianceSrv = BindlessProbeIrradianceSrv;
-			gc.distanceUav = BindlessProbeDistanceUav;     gc.distanceSrv = BindlessProbeDistanceSrv;
-			gc.stateUav = BindlessProbeStateUav;           gc.stateSrv = BindlessProbeStateSrv;
-			gc.skySrv = BindlessSkySrv;
-			gc.skyIrradianceSrv = BindlessSkyIrradianceSrv;
-			gc.probesThisFrame = kProbesPerFrame;
-			gc.maxDistance = kProbeMaxDistance;
-			memcpy(giCBData, &gc, sizeof(gc));
-			probeCursor = (probeCursor + kProbesPerFrame) % kProbeCount;
-
 			ID3D12DescriptorHeap* heaps[] = { bindlessHeap.Get() };
 			commandList->SetDescriptorHeaps(1, heaps);
 			commandList->SetComputeRootSignature(computeRootSig.Get());
-			commandList->SetComputeRootConstantBufferView(0, giCB->GetGPUVirtualAddress());
 			commandList->SetComputeRootShaderResourceView(1, accel.TlasAddress());
 			commandList->SetComputeRootShaderResourceView(2, rtMaterials->GetGPUVirtualAddress());
 			commandList->SetComputeRootShaderResourceView(3, rtInstances->GetGPUVirtualAddress() +
 				UINT64(frameIndex % AccelStructure::kFrameSlots) * MaxInstances * sizeof(RtInstanceGpu));
 
-			// 추적 — 아틀라스 · 상태는 «읽기» (다중 반사: 맞은 점에서 지난 프로브를 읽는다)
-			TransitionTargets({
-				{ &probeRayData,    D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-				{ &probeIrradiance, kSkyReadState },
-				{ &probeDistance,   kSkyReadState },
-				{ &probeStates,     kSkyReadState } });
-			commandList->SetPipelineState(giTracePso.Get());
-			commandList->Dispatch(kProbesPerFrame, 1, 1);
+			for (int layer = 0; layer < kProbeLayerCount; ++layer)
+			{
+				ProbeLayer& L = probeLayers[layer];
+				GiConstants gc = {};
+				gc.nearVolume = volumes[0];
+				gc.farVolume = volumes[1];
+				gc.rayRotation[0] = XMFLOAT4(rot._11, rot._12, rot._13, 0.0f);
+				gc.rayRotation[1] = XMFLOAT4(rot._21, rot._22, rot._23, 0.0f);
+				gc.rayRotation[2] = XMFLOAT4(rot._31, rot._32, rot._33, 0.0f);
+				gc.sunDir = sunDir;
+				gc.firstProbe = L.cursor;
+				gc.sunIlluminance = sunIlluminance;
+				gc.probeCount = layerCount[layer];
+				gc.rayDataUav = BindlessProbeRayDataUav;       gc.rayDataSrv = BindlessProbeRayDataSrv;
+				gc.irradianceUav = BindlessProbeIrradianceUav; gc.irradianceSrv = BindlessProbeIrradianceSrv;
+				gc.distanceUav = BindlessProbeDistanceUav;     gc.distanceSrv = BindlessProbeDistanceSrv;
+				gc.stateUav = BindlessProbeStateUav;           gc.stateSrv = BindlessProbeStateSrv;
+				gc.skySrv = BindlessSkySrv;
+				gc.skyIrradianceSrv = BindlessSkyIrradianceSrv;
+				gc.probesThisFrame = kProbesPerFrame;
+				gc.maxDistance = kProbeMaxDistance;
+				gc.probeCycle = L.cycle;   // 2026-10-28 꺼 둔(비활성) 프로브는 이 바퀴 번호로 8 바퀴에 한 번만 다시 잰다
+				gc.layer = uint32_t(layer);
+				memcpy(giCBData + size_t(layer) * kGiCBSlot, &gc, sizeof(gc));
+				L.cursor = (L.cursor + kProbesPerFrame) % layerCount[layer];
+				if (L.cursor == 0)
+					++L.cycle;   // 그 겹을 한 번 다 돌았다 (겹의 프로브 수는 kProbesPerFrame 의 배수)
 
-			// 거리 섞기 — 상태는 읽기만 하지만 다음 단계와 같은 UAV 로 둔다
-			TransitionTargets({
-				{ &probeRayData,  kSkyReadState },
-				{ &probeDistance, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-				{ &probeStates,   D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
-			commandList->SetPipelineState(giBlendDistancePso.Get());
-			commandList->Dispatch(kProbesPerFrame, 1, 1);
+				commandList->SetComputeRootConstantBufferView(0, giCB->GetGPUVirtualAddress() + UINT64(layer) * kGiCBSlot);
 
-			// 조도 섞기 + 상태 쓰기 (거리 섞기가 «옛 상태» 를 다 읽은 뒤에 쓴다 — 아래 UAV 배리어)
-			D3D12_RESOURCE_BARRIER uavBarrier = {};
-			uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-			uavBarrier.UAV.pResource = probeStates.resource.Get();
-			commandList->ResourceBarrier(1, &uavBarrier);
-			TransitionTargets({
-				{ &probeDistance,   kSkyReadState },
-				{ &probeIrradiance, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
-			commandList->SetPipelineState(giBlendIrradiancePso.Get());
-			commandList->Dispatch(kProbesPerFrame, 1, 1);
+				// 추적 — 아틀라스 · 상태는 «읽기» (다중 반사: 맞은 점에서 지난 프로브를 읽는다)
+				//  레이 데이터는 두 겹이 차례로 쓴다 — 앞 겹의 섞기가 다 읽은 뒤(읽기 → UAV 전이) 다음 겹이 쓴다.
+				TransitionTargets({
+					{ &probeRayData,    D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+					{ &probeIrradiance, kSkyReadState },
+					{ &probeDistance,   kSkyReadState },
+					{ &probeStates,     kSkyReadState } });
+				commandList->SetPipelineState(giTracePso.Get());
+				commandList->Dispatch(kProbesPerFrame, 1, 1);
 
-			TransitionTargets({
-				{ &probeIrradiance, kSkyReadState },
-				{ &probeStates,     kSkyReadState } });
-			probeVolume = volume;   // 라이팅 · 반사가 이번 프레임에 읽는다
+				// 거리 섞기 — 상태는 읽기만 하지만 다음 단계와 같은 UAV 로 둔다
+				TransitionTargets({
+					{ &probeRayData,  kSkyReadState },
+					{ &probeDistance, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+					{ &probeStates,   D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+				commandList->SetPipelineState(giBlendDistancePso.Get());
+				commandList->Dispatch(kProbesPerFrame, 1, 1);
+
+				// 조도 섞기 + 상태 쓰기 (거리 섞기가 «옛 상태» 를 다 읽은 뒤에 쓴다 — 아래 UAV 배리어)
+				D3D12_RESOURCE_BARRIER uavBarrier = {};
+				uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+				uavBarrier.UAV.pResource = probeStates.resource.Get();
+				commandList->ResourceBarrier(1, &uavBarrier);
+				TransitionTargets({
+					{ &probeDistance,   kSkyReadState },
+					{ &probeIrradiance, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } });
+				commandList->SetPipelineState(giBlendIrradiancePso.Get());
+				commandList->Dispatch(kProbesPerFrame, 1, 1);
+
+				TransitionTargets({
+					{ &probeIrradiance, kSkyReadState },
+					{ &probeStates,     kSkyReadState } });
+			}
+			probeVolume = volumes[0];      // 라이팅 · 반사 · 반투명이 이번 프레임에 읽는다
+			probeVolumeFar = volumes[1];
 		}
 
 		// ── [8] HDR 컬러 → 백버퍼 (2026-10-27) ──
@@ -2042,7 +2112,7 @@ namespace swc {
 			// [4c] GI 프로브 자원 (2026-10-27 렌더 7단계) — 처음 상태 «읽기»(라이팅 t10 ~ t12 가 항상 가리킨다).
 			//  상태 버퍼는 0 으로 시작해야 한다(= 데이터 없음) — 기본 힙의 커밋 자원은 0 으로 채워져 나온다(CREATE_NOT_ZEROED 를 안 씀).
 			{
-				constexpr UINT probeRows = Impl::kProbeCount / Impl::kProbesPerRow;
+				constexpr UINT probeRows = Impl::kProbeTotalCount / Impl::kProbesPerRow;   // 10-28 두 겹 — 64 → 320 줄
 				const bool probeOk =
 					createSized(Impl::kProbeRays, Impl::kProbesPerFrame, DXGI_FORMAT_R16G16B16A16_FLOAT,
 						D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, Impl::kSkyReadState, impl->probeRayData) &&
@@ -2050,7 +2120,7 @@ namespace swc {
 						Impl::kProbeIrradianceFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, Impl::kSkyReadState, impl->probeIrradiance) &&
 					createSized(Impl::kProbesPerRow * Impl::kProbeDistanceTexels, probeRows * Impl::kProbeDistanceTexels,
 						Impl::kProbeDistanceFormat, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, Impl::kSkyReadState, impl->probeDistance);
-				D3D12_RESOURCE_DESC stateDesc = BufferDesc(UINT64(Impl::kProbeCount) * 16);
+				D3D12_RESOURCE_DESC stateDesc = BufferDesc(UINT64(Impl::kProbeTotalCount) * 16);
 				stateDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 				// 버퍼는 만들 때 상태를 무시하고 COMMON 으로 시작한다(디버그 레이어 #1328) — 그래서 COMMON 으로 만들고 그렇게 적어 둔다.
 				if (!probeOk || FAILED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &stateDesc,
@@ -2133,7 +2203,7 @@ namespace swc {
 				stateSrv.Format = DXGI_FORMAT_UNKNOWN;
 				stateSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 				stateSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				stateSrv.Buffer.NumElements = Impl::kProbeCount;
+				stateSrv.Buffer.NumElements = Impl::kProbeTotalCount;
 				stateSrv.Buffer.StructureByteStride = 16;
 				impl->device->CreateShaderResourceView(impl->probeStates.resource.Get(), &stateSrv, impl->TargetCpu(Impl::SlotProbeStateSrv));
 			}
@@ -2287,13 +2357,13 @@ namespace swc {
 						srv.Format = DXGI_FORMAT_UNKNOWN;
 						srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 						srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-						srv.Buffer.NumElements = Impl::kProbeCount;
+						srv.Buffer.NumElements = Impl::kProbeTotalCount;
 						srv.Buffer.StructureByteStride = 16;
 						impl->device->CreateShaderResourceView(impl->probeStates.resource.Get(), &srv, impl->BindlessCpu(Impl::BindlessProbeStateSrv));
 						D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 						uavDesc.Format = DXGI_FORMAT_UNKNOWN;
 						uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-						uavDesc.Buffer.NumElements = Impl::kProbeCount;
+						uavDesc.Buffer.NumElements = Impl::kProbeTotalCount;
 						uavDesc.Buffer.StructureByteStride = 16;
 						impl->device->CreateUnorderedAccessView(impl->probeStates.resource.Get(), nullptr, &uavDesc, impl->BindlessCpu(Impl::BindlessProbeStateUav));
 					}
@@ -2336,10 +2406,10 @@ namespace swc {
 				return false;
 		}
 
-		// [5] 라이팅 상수 버퍼 (UPLOAD, 영속 매핑, 2026-10-27) — CBV 는 256바이트 정렬
+		// [5] 라이팅 상수 버퍼 (UPLOAD, 영속 매핑, 2026-10-27) — CBV 는 256바이트 정렬. 10-28 GI 두 겹으로 304 B → 512 B
 		{
 			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-			D3D12_RESOURCE_DESC desc = BufferDesc(256);
+			D3D12_RESOURCE_DESC desc = BufferDesc(512);
 			D3D12_RANGE noRead = { 0, 0 };
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->lightingCB))) ||
@@ -2386,11 +2456,12 @@ namespace swc {
 			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
 			D3D12_RESOURCE_DESC instanceDesc = BufferDesc(UINT64(Impl::MaxInstances) * sizeof(RtInstanceGpu) * AccelStructure::kFrameSlots);
 			D3D12_RESOURCE_DESC cbDesc = BufferDesc(256);
+			D3D12_RESOURCE_DESC reflectionDesc = BufferDesc(512);   // 2026-10-28 GI 두 겹으로 반사 상수 224 → 320 B
 			D3D12_RANGE noRead = { 0, 0 };
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &instanceDesc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->rtInstances))) ||
 				FAILED(impl->rtInstances->Map(0, &noRead, reinterpret_cast<void**>(&impl->rtInstanceData))) ||
-				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
+				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &reflectionDesc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->reflectionCB))) ||
 				FAILED(impl->reflectionCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->reflectionCBData))) ||
 				// 5단계 — [4d] 노이즈 제거 상수 버퍼(208 B → 256 B 칸)
@@ -2403,15 +2474,17 @@ namespace swc {
 			}
 		}
 
-		// [6] 하늘 · [4c] GI 상수 버퍼 (2026-10-27 렌더 6 · 7단계) — UPLOAD 영속 매핑, 176 · 192 B → 256 B 칸
+		// [6] 하늘 · [4c] GI 상수 버퍼 (2026-10-27 렌더 6 · 7단계) — UPLOAD 영속 매핑.
+		//  하늘 176 B → 256 B 칸. GI 는 10-28 두 겹으로 겹마다 304 B → 512 B 칸 × 2 (kGiCBSlot).
 		{
 			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
 			D3D12_RESOURCE_DESC desc = BufferDesc(256);
+			D3D12_RESOURCE_DESC giDesc = BufferDesc(UINT64(Impl::kGiCBSlot) * Impl::kProbeLayerCount);
 			D3D12_RANGE noRead = { 0, 0 };
 			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->skyCB))) ||
 				FAILED(impl->skyCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->skyCBData))) ||
-				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+				FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &giDesc,
 					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->giCB))) ||
 				FAILED(impl->giCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->giCBData))))
 			{
@@ -3198,7 +3271,7 @@ namespace swc {
 				}
 				else
 				{
-					OutputDebugStringW(L"[GRenderer] [4c] GI 프로브 파이프라인 준비 (DDGI 32x8x32 · 4 m · 프레임당 2048개 x 64 레이)\n");
+					OutputDebugStringW(L"[GRenderer] [4c] GI 프로브 파이프라인 준비 (DDGI 두 겹: 32x8x32 · 4 m + 32x8x32 · 16 m, 지면에 맞춘 격자, 겹마다 프레임당 2048개 x 64 레이)\n");
 				}
 			}
 
@@ -4660,9 +4733,14 @@ namespace swc {
 		const bool giPass = rtActive && impl->giTracePso && impl->bindlessHeap && !impl->bindlessOverflow &&
 			impl->skyValid && impl->accel.InstanceCount() > 0;
 		if (giPass)
+		{
 			impl->UpdateProbes(view);
+		}
 		else
+		{
 			impl->probeVolume.enabled = 0;
+			impl->probeVolumeFar.enabled = 0;   // 2026-10-28 두 겹 (처음엔 중괄호 없이 붙여 매 프레임 먼 겹이 꺼졌다 — 고침)
+		}
 
 		// ── [4a] RT 그림자 — 픽셀마다 태양으로 그림자 레이 1개 (RtShadow.hlsl, 2026-10-27 렌더 2단계) ──
 		//  TLAS 는 이 함수 맨 앞에서 이번 프레임 인스턴스로 다시 빌드했다(UAV 배리어까지 끝남).
@@ -4766,6 +4844,7 @@ namespace swc {
 			rc.sunIlluminance = impl->sunIlluminance;                 // 6단계 — 맞은 점의 태양
 			rc.skyIrradianceIndex = Impl::BindlessSkyIrradianceSrv;   // 6단계 — 맞은 점의 주변광(프로브를 못 쓸 때)
 			rc.probeVolume = impl->probeVolume;                       // 7단계 — 맞은 점의 주변광 = GI 프로브
+			rc.probeVolumeFar = impl->probeVolumeFar;                 // 2026-10-28 — 먼 겹
 			rc.probeIrradianceIndex = Impl::BindlessProbeIrradianceSrv;
 			rc.probeDistanceIndex = Impl::BindlessProbeDistanceSrv;
 			rc.probeStateIndex = Impl::BindlessProbeStateSrv;
@@ -4958,6 +5037,7 @@ namespace swc {
 		lc.sunIlluminance = impl->sunIlluminance;   // 6단계
 		lc.skyEnabled = impl->skyValid ? 1u : 0u;   // 6단계 — 하늘 조도 텍스처가 만들어져 있으면 주변광으로 읽는다
 		lc.probeVolume = impl->probeVolume;         // 7단계 — [4c] GI 프로브 (enabled 0 이면 하늘 조도)
+		lc.probeVolumeFar = impl->probeVolumeFar;   // 2026-10-28 — 먼 겹
 		memcpy(impl->lightingCBData, &lc, sizeof(lc));
 
 		commandList->SetDescriptorHeaps(1, targetHeaps);
@@ -5056,6 +5136,7 @@ namespace swc {
 			tc.probeDistanceSrv = Impl::BindlessProbeDistanceSrv;
 			tc.probeStateSrv = Impl::BindlessProbeStateSrv;
 			tc.probeVolume = impl->probeVolume;
+			tc.probeVolumeFar = impl->probeVolumeFar;   // 2026-10-28 — 먼 겹
 			memcpy(impl->transparentCBData, &tc, sizeof(tc));
 
 			impl->TransitionTargets({

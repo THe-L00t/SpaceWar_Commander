@@ -15,23 +15,49 @@
 //  ★ 투과 재질(얼음)은 GI 에서 불투명으로 본다(설계 문서 「행성별 특징」 3.4 의 4번과 같은 선택).
 //    2026-10-28 알파 마스크 — 전에는 RAY_FLAG_FORCE_OPAQUE 였다. 이제 후보 루프에서 마스크로 빈 곳은 지나가고,
 //    그 밖의 비불투명 후보(마스크의 있는 곳 · 얼음)는 확정한다(RtCommon.hlsli CandidateIsSolid) → 얼음은 예전과 같다.
+//  ★ 2026-10-28 꺼 둔 프로브 — 비활성(벽 · 땅 속) 프로브는 추적 · 두 섞기를 모두 건너뛴다(Majercik 외 2021 의 «Off»).
+//    비활성은 원래 샘플에서도 빠지므로 화면은 같고 레이만 줄어든다. 상태는 «비활성» 그대로 남는다.
+//    다만 움직이는 물체(캐릭터 등) 때문에 잘못 비활성이 된 프로브가 계속 꺼져 있지 않도록,
+//    kProbeOffRecheck 바퀴(바퀴 = 그 겹 프로브를 한 번 다 도는 프레임 수)마다 한 번은 다시 잰다. 칸마다 다른 바퀴에 나눠 잰다.
+//  ★ 2026-10-28 두 겹 — GRenderer 가 겹마다(가까운 겹 → 먼 겹) 세 진입점을 한 번씩 돌린다. gLayer 가 이번 겹이고,
+//    두 겹 정보(gNearVolume · gFarVolume)를 다 받는다 — 맞은 점의 다중 반사는 두 겹을 차례로 읽는다(Probes.hlsli SampleProbeLayers).
+//    프로브 번호 probe 는 겹 안의 번호, 아틀라스 · 상태 버퍼 번호는 storageOffset + probe (SlotOf).
 // ============================================================
 
 #include "Probes.hlsli"
 #include "RtSurface.hlsli"
 #include "Sky.hlsli"
 
-// GRenderer.cpp 의 GiConstants 와 같은 배치 (192바이트)
+// GRenderer.cpp 의 GiConstants 와 같은 배치 (400바이트 — 10-28 바퀴 번호 줄 192 → 208, 두 겹 → 304, 지면에 맞춘 축 → 400)
 cbuffer GiCB : register(b0)
 {
-	ProbeVolume gVolume;                              // 64
+	ProbeVolume gNearVolume;                          // 128 — 가까운 겹
+	ProbeVolume gFarVolume;                           // 128 — 먼 겹 (2026-10-28)
 	float4  gRayRotation0;  float4 gRayRotation1;  float4 gRayRotation2;   // 이번 프레임 레이 회전(행 3개)
-	float3  gSunDir;          uint gFirstProbe;      // 이번 프레임에 갱신하는 첫 저장 번호
-	float3  gSunIlluminance;  uint gProbeCount;      // 전체 프로브 수
+	float3  gSunDir;          uint gFirstProbe;      // 이번 프레임에 갱신하는 첫 번호(겹 안)
+	float3  gSunIlluminance;  uint gProbeCount;      // 이번 겹의 프로브 수
 	uint    gRayDataUav;      uint gRayDataSrv;      uint gIrradianceUav;   uint gIrradianceSrv;   // ↓ 바인드리스 번호
 	uint    gDistanceUav;     uint gDistanceSrv;     uint gStateUav;        uint gStateSrv;
 	uint    gSkySrv;          uint gSkyIrradianceSrv; uint gProbesThisFrame; float gMaxDistance;
+	uint    gProbeCycle;      uint gLayer;           uint2 _pad0;   // 이번 겹을 다 돈 횟수 · 이번 겹(0 가까운 · 1 먼)
 };
+
+// 이번 겹의 격자 — 진입점마다 맨 처음 SelectLayer 로 채운다(스레드마다 같은 값)
+static ProbeVolume gVolume;
+
+void SelectLayer()
+{
+	if (gLayer == 0)
+		gVolume = gNearVolume;
+	else
+		gVolume = gFarVolume;
+}
+
+// 겹 안의 번호 → 아틀라스 · 상태 버퍼 번호
+uint SlotOf(uint probe)
+{
+	return gVolume.storageOffset + probe;
+}
 
 RaytracingAccelerationStructure gScene       : register(t0);
 StructuredBuffer<RtMaterial>    gRtMaterials : register(t1);
@@ -58,12 +84,32 @@ uint ProbeOfGroup(uint group)
 	return (gFirstProbe + group) % gProbeCount;
 }
 
+// ── 꺼 둔 프로브 (2026-10-28) ──
+//  이 칸 · 이 세대에서 이미 «비활성» 으로 잰 프로브는 이번 바퀴에 건너뛴다. 단 kProbeOffRecheck 바퀴에 한 번은 다시 잰다.
+//  세 진입점이 같은 «옛 상태» 를 읽고 같은 답을 낸다 — 상태는 조도 섞기만 쓰고, 건너뛰면 그것도 안 쓴다.
+static const uint kProbeOffRecheck = 8;   // 8 바퀴 = 32 프레임(60 fps 에서 약 0.5 초)
+
+bool ProbeOff(int4 state, int3 cell)
+{
+	const bool inactive = all(state.xyz == cell) && (uint(state.w) >> 2) == gVolume.generation &&
+		(uint(state.w) & 3u) == kProbeStateInactive;
+	if (!inactive)
+		return false;
+	// 다시 잴 바퀴를 칸마다 흩는다(한 바퀴에 몰리지 않게) — 공간 해시(Teschner 외 2003 의 세 소수)
+	const uint h = (uint(cell.x) * 73856093u) ^ (uint(cell.y) * 19349663u) ^ (uint(cell.z) * 83492791u);
+	return (gProbeCycle + h) % kProbeOffRecheck != 0;
+}
+
 // ── ① 추적 ──
 [numthreads(64, 1, 1)]
 void CSProbeTrace(uint ray : SV_GroupThreadID, uint3 group : SV_GroupID)
 {
+	SelectLayer();
 	const uint   probe = ProbeOfGroup(group.x);
 	const int3   cell  = ProbeCellFromStorage(probe, gVolume);
+	StructuredBuffer<int4> states = ResourceDescriptorHeap[gStateSrv];
+	if (ProbeOff(states[SlotOf(probe)], cell))
+		return;   // 2026-10-28 꺼 둔 프로브 — 레이 데이터를 쓰지 않는다(두 섞기도 같은 판단으로 건너뛴다)
 	const float3 O     = ProbeWorldPosition(cell, gVolume);
 	const float3 D     = ProbeRayDirection(ray);
 
@@ -110,9 +156,11 @@ void CSProbeTrace(uint ray : SV_GroupThreadID, uint3 group : SV_GroupID)
 			// 다중 반사 — 맞은 점의 간접 조도 = 지난 프레임까지의 프로브 (없으면 하늘 조도)
 			Texture2D<float4>      irradiance = ResourceDescriptorHeap[gIrradianceSrv];
 			Texture2D<float2>      distance   = ResourceDescriptorHeap[gDistanceSrv];
-			StructuredBuffer<int4> states     = ResourceDescriptorHeap[gStateSrv];
 			float weightSum;
-			float3 indirect = SampleProbes(irradiance, distance, states, gClampSampler, gVolume, P, N, -D, weightSum);
+			uint  layerUsed;
+			// 2026-10-28 두 겹 — 가까운 겹 → 먼 겹 순서(먼 겹 프로브의 레이도 가까운 겹 안을 맞으면 그 값을 쓴다)
+			float3 indirect = SampleProbeLayers(irradiance, distance, states, gClampSampler, gNearVolume, gFarVolume,
+				P, N, -D, weightSum, layerUsed);
 			if (weightSum <= 0.0)
 			{
 				Texture2D<float4> skyIrradiance = ResourceDescriptorHeap[gSkyIrradianceSrv];
@@ -166,9 +214,13 @@ static const float kHysteresis = 0.97;   // 설계 문서 6.4
 [numthreads(16, 16, 1)]
 void CSProbeBlendDistance(uint3 tid : SV_GroupThreadID, uint3 group : SV_GroupID)
 {
+	SelectLayer();
 	const uint probe = ProbeOfGroup(group.x);
 	const int3 cell  = ProbeCellFromStorage(probe, gVolume);
+	const uint slot  = SlotOf(probe);   // 아틀라스 · 상태 번호
 	RWStructuredBuffer<int4> states  = ResourceDescriptorHeap[gStateUav];
+	if (ProbeOff(states[slot], cell))
+		return;   // 2026-10-28 꺼 둔 프로브 — 추적이 레이 데이터를 쓰지 않았다
 	Texture2D<float4>        rayData = ResourceDescriptorHeap[gRayDataSrv];
 	RWTexture2D<float2>      target  = ResourceDescriptorHeap[gDistanceUav];
 
@@ -187,8 +239,8 @@ void CSProbeBlendDistance(uint3 tid : SV_GroupThreadID, uint3 group : SV_GroupID
 	}
 	const float2 value = weightSum > 1.0e-6 ? sum / weightSum : float2(maxDistance, maxDistance * maxDistance);
 
-	const uint2 texel = uint2(probe % gVolume.probesPerRow, probe / gVolume.probesPerRow) * kProbeDistanceTexels + tid.xy;
-	const float hysteresis = ProbeHasHistory(states[probe], cell) ? kHysteresis : 0.0;
+	const uint2 texel = uint2(slot % gVolume.probesPerRow, slot / gVolume.probesPerRow) * kProbeDistanceTexels + tid.xy;
+	const float hysteresis = ProbeHasHistory(states[slot], cell) ? kHysteresis : 0.0;
 	target[texel] = lerp(value, target[texel], hysteresis);
 }
 
@@ -198,13 +250,18 @@ groupshared uint gsBackfaces;
 [numthreads(8, 8, 1)]
 void CSProbeBlendIrradiance(uint3 tid : SV_GroupThreadID, uint gi : SV_GroupIndex, uint3 group : SV_GroupID)
 {
+	SelectLayer();
 	const uint probe = ProbeOfGroup(group.x);
 	const int3 cell  = ProbeCellFromStorage(probe, gVolume);
+	const uint slot  = SlotOf(probe);   // 아틀라스 · 상태 번호
 	RWStructuredBuffer<int4> states  = ResourceDescriptorHeap[gStateUav];
 	Texture2D<float4>        rayData = ResourceDescriptorHeap[gRayDataSrv];
 	RWTexture2D<float4>      target  = ResourceDescriptorHeap[gIrradianceUav];
 
-	const bool hasHistory = ProbeHasHistory(states[probe], cell);   // 모두 쓰기 전에 읽는다
+	const int4 oldState = states[slot];   // 모두 쓰기 전에 읽는다
+	if (ProbeOff(oldState, cell))
+		return;   // 2026-10-28 꺼 둔 프로브 — 그룹 전체가 같은 판단(상태 «비활성» 그대로 둔다)
+	const bool hasHistory = ProbeHasHistory(oldState, cell);
 	if (gi == 0) gsBackfaces = 0;
 	GroupMemoryBarrierWithGroupSync();
 
@@ -226,12 +283,12 @@ void CSProbeBlendIrradiance(uint3 tid : SV_GroupThreadID, uint gi : SV_GroupInde
 
 	const bool inside = gsBackfaces * 4 >= kProbeRays;   // 25 % 이상 뒷면
 	if (gi == 0)
-		states[probe] = int4(cell, int((gVolume.generation << 2) | (inside ? kProbeStateInactive : kProbeStateActive)));
+		states[slot] = int4(cell, int((gVolume.generation << 2) | (inside ? kProbeStateInactive : kProbeStateActive)));
 	if (inside)
 		return;   // 벽 · 땅 속 — 섞지 않는다(샘플에서도 빠진다)
 
 	const float3 value = weightSum > 1.0e-6 ? sum / weightSum : float3(0.0, 0.0, 0.0);
-	const uint2  texel = uint2(probe % gVolume.probesPerRow, probe / gVolume.probesPerRow) * kProbeIrradianceTexels + tid.xy;
+	const uint2  texel = uint2(slot % gVolume.probesPerRow, slot / gVolume.probesPerRow) * kProbeIrradianceTexels + tid.xy;
 	const float  hysteresis = hasHistory ? kHysteresis : 0.0;
 	target[texel] = float4(lerp(value, target[texel].rgb, hysteresis), 1.0);
 }
