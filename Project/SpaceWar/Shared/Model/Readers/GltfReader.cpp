@@ -1313,6 +1313,13 @@ namespace Shared {
 				}
 				material.doubleSided = source["doubleSided"].AsBool();
 
+				// ── 알파 마스크 (2026-10-28) — glTF alphaMode · alphaCutoff ──
+				//  MASK: 알파 ≥ alphaCutoff 면 불투명, 아니면 완전 투명(기본값 0.5, 1 보다 크면 전부 투명).
+				//  BLEND 는 렌더러에 섞기 패스가 없어 지금은 불투명으로 둔다(리소스에 BLEND 재질 0개, 10-28 확인).
+				material.alphaMask = source["alphaMode"].AsString() == "MASK";
+				const double alphaCutoff = source["alphaCutoff"].AsNumber(0.5);
+				material.alphaCutoff = (std::isfinite(alphaCutoff) && alphaCutoff >= 0.0) ? static_cast<float>(alphaCutoff) : 0.5f;
+
 				// ★ glTF 는 금속도와 거칠기를 한 텍스처(B=금속, G=거칠기)에 담는다.
 				//   우리 셰이더는 슬롯이 따로라 같은 이미지를 두 슬롯에 걸어 둔다.
 				//   채널 선택은 셰이더가 하지 않으므로, 분리 텍스처를 쓰려면 굽는 단계에서 나눠야 한다.

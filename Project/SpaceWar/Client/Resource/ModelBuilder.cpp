@@ -171,6 +171,9 @@ namespace swc {
 			material.roughness = sourceMaterial.roughness;
 			material.metallic = sourceMaterial.metallic;
 			material.doubleSided = sourceMaterial.doubleSided;
+			// 알파 마스크 (2026-10-28) — 이름 · 뜻 · 기본값이 같아 그대로 옮긴다
+			material.alphaMask = sourceMaterial.alphaMask;
+			material.alphaCutoff = sourceMaterial.alphaCutoff;
 
 			for (size_t slot = 0; materialUsed[materialIndex] && slot < kMaterialTextureCount; ++slot)
 			{

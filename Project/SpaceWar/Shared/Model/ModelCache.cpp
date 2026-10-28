@@ -220,6 +220,8 @@ namespace Shared {
 				w.Pod(material.roughness);
 				w.Pod(material.metallic);
 				w.Pod(material.doubleSided);
+				w.Pod(material.alphaMask);             // 4 = 알파 마스크 (2026-10-28)
+				w.Pod(material.alphaCutoff);
 				for (const std::string& path : material.texturePaths) w.String(path);
 				w.Pod(material.embeddedImages);
 			}
@@ -313,6 +315,8 @@ namespace Shared {
 				r.Pod(material.roughness);
 				r.Pod(material.metallic);
 				r.Pod(material.doubleSided);
+				r.Pod(material.alphaMask);             // 4 = 알파 마스크 (2026-10-28)
+				r.Pod(material.alphaCutoff);
 				for (std::string& path : material.texturePaths) r.String(path);
 				r.Pod(material.embeddedImages);
 				if (!r.ok) return false;

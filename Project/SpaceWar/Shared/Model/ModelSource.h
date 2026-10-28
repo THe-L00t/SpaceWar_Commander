@@ -67,6 +67,12 @@ namespace Shared {
 		// glTF doubleSided. 참이면 렌더러가 뒷면을 제거하지 않는다 (client2 2f15728). OBJ 는 늘 거짓.
 		bool  doubleSided = false;
 
+		// ── 알파 마스크 (2026-10-28) — glTF alphaMode · alphaCutoff ──
+		//  MASK 면 «baseColor 알파 ≥ alphaCutoff» 인 곳만 있고, 나머지는 없는 것(완전 투명)이다.
+		//  OPAQUE · BLEND 는 지금 alphaMask = false(BLEND 는 리소스에 없어 불투명으로 둔다). OBJ 는 늘 거짓.
+		bool  alphaMask = false;
+		float alphaCutoff = 0.5f;                                               // glTF 기본값 0.5
+
 		// 모델 파일이 있는 폴더 기준 상대 경로. 빈 문자열이면 그 슬롯은 없다.
 		// glTF 의 내장 이미지(.glb buffer / base64)는 ModelBuilder 가 쓸 수 있도록
 		// 아래 embeddedImage 로 따로 들어온다.
