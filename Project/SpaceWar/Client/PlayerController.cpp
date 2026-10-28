@@ -1,7 +1,8 @@
 #include "PlayerController.h"
-#include "Input.h"
+#include "InputManager.h"
 #include "Camera.h"
 #include "Shared/Units.h"
+#include "Shared/PlanetConst.h"
 #include <cmath>
 
 using namespace DirectX;
@@ -27,8 +28,8 @@ namespace {
 	constexpr float kJumpSpeed   = 7.0_mps;     // 중력 18 기준 약 1.4m 도약
 
 	// position 은 몸통 중심이다. 발이 지면에 닿으려면 그만큼 띄워야 한다.
-	// (더미 큐브가 2m 이므로 1m. 실제 캐릭터가 들어오면 그 반높이로 교체)
-	constexpr float kGroundOffset = 1.0_m;
+	// ★ 서버가 같은 값으로 위치를 검사하므로 Shared 에서 가져온다 (실제 캐릭터가 들어오면 거기서 교체)
+	constexpr float kGroundOffset = float(Shared::kGroundOffset);
 
 	// 내리막 스텝다운 — 이 낙차까지는 땅에 붙어 내려간다. 이보다 크면(절벽) 실제로 떨어진다.
 	// 없으면 g·dt²(60fps 에서 5mm)보다 빨리 낮아지는 경사(질주 시 1.6도)마다 공중 판정이 나고,
@@ -46,8 +47,9 @@ namespace swc {
 		// ★ 지형 높이 위에 놓는다.
 		//   0 중심화 때문에 타일 중앙의 지형 높이가 0이라는 보장이 없다.
 		//   고도를 고정값으로 두면 스폰하자마자 솟거나 떨어진다.
-		altitude = (planet ? planet->SurfaceHeight(up) : 0.0) + kGroundOffset;
-		position = planet ? planet->PositionAt(up, altitude) : worldPosition;
+		const Vec3d surfacePoint = Shared::kUsePlanarMap ? worldPosition : up;
+		altitude = (planet ? planet->SurfaceHeight(surfacePoint) : 0.0) + kGroundOffset;
+		position = planet ? planet->PositionAt(surfacePoint, altitude) : worldPosition;
 
 		facing = ProjectOntoPlane(facingDirection, up);
 		velocity = { 0.0, 0.0, 0.0 };
@@ -56,7 +58,7 @@ namespace swc {
 		speed = 0.0f;
 	}
 
-	void PlayerController::Update(float dt, const Input& input, const Camera& camera)
+	void PlayerController::Update(float dt, const InputManager& input, const Camera& camera)
 	{
 		if (dt <= 0.0f || !planet) return;
 
@@ -114,10 +116,10 @@ namespace swc {
 			delta = delta * (step / deltaLen);
 		velocity = velocity + delta;
 
-		// ⑤ 접평면을 따라 직선 이동 (⑧에서 구면에 다시 붙인다)
+		// ⑤ 이동 평면을 따라 직선 이동 (⑧에서 지면 좌표와 고도를 결합한다)
 		position = position + velocity * dt;
 
-		// ⑥ 점프 / 중력 — 고도는 기준구 기준이라 공중에서는 순수 포물선이다
+		// ⑥ 점프 / 중력 — 지형 높이와 고도를 분리해 공중에서는 포물선을 유지한다
 		if (grounded && input.WasPressed(VK_SPACE))
 		{
 			verticalSpeed = kJumpSpeed;
@@ -127,8 +129,9 @@ namespace swc {
 		altitude += verticalSpeed * dt;
 
 		// ⑦ 착지 판정 — 지형 높이는 여기서만 쓴다
-		const Vec3d newUp = Normalize(position - planet->center);
-		const double groundAltitude = planet->SurfaceHeight(newUp) + kGroundOffset;
+		const Vec3d newUp = planet->Up(position);
+		const Vec3d surfacePoint = Shared::kUsePlanarMap ? position : newUp;
+		const double groundAltitude = planet->SurfaceHeight(surfacePoint) + kGroundOffset;
 		const bool wasGrounded = grounded;   // 점프한 프레임은 이미 false 라 스텝다운에 안 걸린다
 		if (altitude <= groundAltitude)
 		{
@@ -147,8 +150,8 @@ namespace swc {
 			grounded = false;
 		}
 
-		// ⑧ 구면 재투영 — 접선 이동으로 생긴 미세 상승도 여기서 제거된다
-		position = planet->PositionAt(newUp, altitude);
+		// ⑧ 지면 방향과 고도 결합 — 현재 구면 또는 평면 규약으로 재투영한다.
+		position = planet->PositionAt(surfacePoint, altitude);
 		up = newUp;
 		facing = ProjectOntoPlane(facing, up);
 		velocity = velocity - up * Dot(velocity, up);

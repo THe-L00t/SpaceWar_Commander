@@ -21,3 +21,10 @@
 *.mp4 filter=lfs diff=lfs merge=lfs -text
 *.mov filter=lfs diff=lfs merge=lfs -text
 *.obj filter=lfs diff=lfs merge=lfs -text
+
+# ── 예외: 파서 점검용 텍스트 픽스처 (2026-10-06, 파서 2단계) ──
+#  cube_test.obj/.mtl 은 미술 에셋이 아니라 «파서가 무엇을 처리해야 하는지» 적어 둔
+#  1KB 짜리 텍스트다. LFS 로 가면 리뷰에서 내용과 diff 가 안 보여 점검 의미가 사라진다.
+#  실제 모델(.obj) 은 위 규칙대로 LFS 로 간다.
+#  diff 는 켜 둔다 — `-diff` 로 끄면 git 이 바이너리로 취급해 내용이 안 보인다(그게 목적이었다).
+Project/assets/model/cube_test.obj -filter -merge text diff
