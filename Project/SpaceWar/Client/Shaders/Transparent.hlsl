@@ -122,7 +122,7 @@ float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target
 	Texture2D roughTex    = ResourceDescriptorHeap[mat.textures.z];
 	Texture2D emissiveTex = ResourceDescriptorHeap[mat.emissiveTexture];
 	const float3 tint     = baseTex.Sample(gWrapSampler, i.uv).rgb * mat.baseColor.rgb * i.col;   // glTF: 투과광을 물들이는 baseColor
-	const float  rough    = clamp(mat.roughness * roughTex.Sample(gWrapSampler, i.uv).r, kMinRoughness, 1.0);
+	const float  rough    = clamp(mat.roughness * roughTex.Sample(gWrapSampler, i.uv).g, kMinRoughness, 1.0);   // glTF: 거칠기 = G (2026-10-28)
 	const float3 emissive = mat.emissive * emissiveTex.Sample(gWrapSampler, i.uv).rgb;
 
 	float3 N = normalize(i.nrm);

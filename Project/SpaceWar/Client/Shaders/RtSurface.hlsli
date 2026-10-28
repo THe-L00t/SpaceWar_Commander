@@ -51,8 +51,9 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 	// 법선은 월드 → 물체 행렬로 옮긴다(역전치와 같다 — 비균일 배율에도 맞다)
 	s.N        = normalize(mul(n, (float3x3)worldToObject));
 	s.albedo   = baseTex.SampleLevel(textureSampler, uv, 0).rgb * mat.baseColor.rgb * c;
-	s.rough    = clamp(mat.roughness * roughTex.SampleLevel(textureSampler, uv, 0).r, kMinRoughness, 1.0);
-	s.metallic = saturate(mat.metallic * metalTex.SampleLevel(textureSampler, uv, 0).r);
+	// glTF metallicRoughness: 거칠기 = G, 금속성 = B (2026-10-28 — Forward.hlsl SampleSurface 와 같은 규약)
+	s.rough    = clamp(mat.roughness * roughTex.SampleLevel(textureSampler, uv, 0).g, kMinRoughness, 1.0);
+	s.metallic = saturate(mat.metallic * metalTex.SampleLevel(textureSampler, uv, 0).b);
 	s.emissive = mat.emissive * emissiveTex.SampleLevel(textureSampler, uv, 0).rgb;
 	return s;
 }

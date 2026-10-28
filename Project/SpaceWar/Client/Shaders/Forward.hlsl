@@ -158,8 +158,11 @@ Surface SampleSurface(VOut i, bool frontFace)
 	Surface s;
 	float4 baseTex = gBaseColorMap.Sample(gSampler, i.uv);
 	s.albedo   = baseTex.rgb * gBaseColor.rgb * i.col;
-	s.rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).r, kMinRoughness, 1.0);
-	s.metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).r);
+	// ★ 2026-10-28 — glTF metallicRoughness 텍스처는 거칠기 = G, 금속성 = B 다(R 은 차폐 — ORM 묶음).
+	//   로더는 같은 이미지를 거칠기 · 금속성 두 슬롯에 건다. 전에는 둘 다 R(차폐)을 읽어 비금속 땅이 금속으로 그려졌다.
+	//   따로 된 흑백 맵(OBJ map_Pr · map_Pm)은 세 채널이 같아 그대로 맞다. RtSurface.hlsli · Transparent.hlsl 도 같다.
+	s.rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).g, kMinRoughness, 1.0);
+	s.metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).b);
 	s.emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
 
 	s.N = normalize(i.nrm);
