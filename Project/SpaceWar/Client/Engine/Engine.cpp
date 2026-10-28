@@ -132,6 +132,13 @@ namespace
 		return m;
 	}
 
+	// 예시 행성 디버그 씬의 창 제목 몫 (2026-10-28)
+	std::wstring DebugPlanetStatus(size_t index, const swc::PlanetDebugScene& planet)
+	{
+		return L"디버그 행성 " + std::to_wstring(index + 1) + L" " + swc::PlanetDebugScene::Name(index) +
+			L" — " + planet.Status();
+	}
+
 	// 로딩 중 임시 메모리와 실행 후 상주량을 구분한다 (client2 2f15728).
 	// 우리 로그(Client/Log.h)로 찍는다 — 콘솔 창과 VS 출력창에 함께 나온다.
 	void LogMemory(const wchar_t* stage, size_t cachedModels, const swc::ModelData* model = nullptr)
@@ -333,13 +340,14 @@ namespace swc {
 				LogMemory(L"map GPU uploaded", resources.ModelCount(), planetData);
 				resources.ReleaseModel(loaded.model);
 				LogMemory(L"map CPU released", resources.ModelCount());
-				const NodeHandle planetNode = planetModel.Instantiate(scene);
-				if (planetNode == kInvalidNode)
+				// 루트를 기억해 둔다 — 디버그 행성에 들어가면 숨긴다(EnterDebugPlanet, 2026-10-28).
+				gameMapNode = planetModel.Instantiate(scene);
+				if (gameMapNode == kInvalidNode)
 				{
 					batch.SetFailureDetail(L"행성 모델을 장면에 등록하지 못했습니다.");
 					return false;
 				}
-				scene.SetLocalTransform(planetNode,
+				scene.SetLocalTransform(gameMapNode,
 					XMMatrixTranslation(float(planet.center.x), float(planet.center.y), float(planet.center.z)));
 				return true;
 			},
@@ -496,8 +504,12 @@ namespace swc {
 				MessageBox(hwnd, sceneManager.LoadError().c_str(), L"로딩 실패", MB_OK | MB_ICONERROR);
 				break;
 			}
-			if (sceneManager.TakeEntered() == SceneId::Game)
+			const SceneId entered = sceneManager.TakeEntered();
+			size_t debugPlanet = 0;
+			if (entered == SceneId::Game)
 				EnterGame();
+			else if (IsDebugPlanetScene(entered, debugPlanet))
+				EnterDebugPlanet(debugPlanet);
 
 			if (sceneManager.IsLoading())
 			{
@@ -508,6 +520,7 @@ namespace swc {
 
 			HandleSystemKeys();
 			UpdatePlayer(dt);
+			UpdateDebugPlanetObjects();
 			UpdateFire(dt);
 			UpdateNetwork(dt);
 
@@ -568,6 +581,187 @@ namespace swc {
 			p.enabled = !p.enabled;
 			renderer.SetRayTracingParams(p);
 		}
+
+		HandleDebugPlanetKeys();
+	}
+
+	// ── 예시 행성 디버그 씬 (2026-10-28) ─────────────────────────
+	//  숫자키 1~5 = Verdant · Neon · Ruin · Volcanic · Glacier (PlanetDebugScene.h).
+	//  처음 고르면 로딩 씬을 띄우고 맵을 읽는다. 한 번 읽은 행성은 묶음 없이 바로 넘어간다.
+	//  게임 맵으로 돌아가는 키는 없다(지시 범위 밖).
+	void Engine::HandleDebugPlanetKeys()
+	{
+		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
+		{
+			if (!input.WasPressed('1' + int(i))) continue;
+			if (i == activeDebugPlanet) return;   // 이미 그 행성이다
+
+			loadStart = std::chrono::steady_clock::now();
+			const SceneId next = DebugPlanetSceneId(i);
+			if (sceneManager.DebugPlanet(i).Loaded())
+			{
+				sceneManager.ChangeScene(next, nullptr, resources);
+				return;
+			}
+			std::unique_ptr<LoadBatch> load = std::make_unique<LoadBatch>(
+				std::wstring(L"디버그 행성 ") + PlanetDebugScene::Name(i));
+			BuildDebugPlanetLoad(*load, i);
+			sceneManager.ChangeScene(next, std::move(load), resources);
+			return;
+		}
+	}
+
+	// 게임 맵(BuildGameLoad)과 같은 길 — 맵 glb 를 로딩 스레드에서 한 번 파싱해 렌더 메시와 접지면을 함께 얻고,
+	// 메인에서 GPU 에 올린 뒤 RAM 사본을 버린다. 배치 JSON 은 읽지 않는다(PlanetDebugScene.h).
+	void Engine::BuildDebugPlanetLoad(LoadBatch& batch, size_t index)
+	{
+		ModelRequestOptions options;
+		options.collectObject = &Shared::PlanetSurface::IsGroundObject;
+		options.cacheTag = Shared::PlanetSurface::kGroundRuleTag;
+		auto parsedGround = std::make_shared<Shared::PlanetSurface>();   // 로딩 스레드의 결과 슬롯
+		options.onParsed = [parsedGround](Shared::ModelSource& source, std::wstring& error)
+		{
+			return parsedGround->Build(source.collected, error);
+		};
+
+		resources.RequestModelFile(batch, AssetPath(PlanetDebugScene::Asset(index)),
+			[this, &batch, index, parsedGround](const ModelFileResources& loaded)
+			{
+				const std::wstring name = PlanetDebugScene::Name(index);
+				const ModelData* data = resources.Get(loaded.model);
+				if (!data)
+				{
+					batch.SetFailureDetail(name + L" 맵 로드 실패: " + resources.LastError());
+					return false;
+				}
+				std::wstring error;
+				const bool built = sceneManager.DebugPlanet(index).Build(*data, std::move(*parsedGround),
+					renderer, scene, planet.center, error);
+				// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다(실패해도 버린다).
+				resources.ReleaseModel(loaded.model);
+				if (!built)
+				{
+					batch.SetFailureDetail(name + L": " + error);
+					return false;
+				}
+				LogMemory(L"debug planet CPU released", resources.ModelCount());
+				return true;
+			},
+			std::move(options));
+
+		// ── 배치 JSON → 오브젝트 모델 (2026-10-28) ──
+		//  JSON 은 로딩 스레드에서 읽고(PlanetDebugScene::ReadPlacement), 메인에서 씬에 넘긴다.
+		//  오브젝트 목록은 JSON 을 읽어야 알 수 있어서, 이 finish 안에서 NextStage + RequestModelFile 로 다음 단계를 덧붙인다.
+		//  (LoadBatch 는 앞 단계가 메인에서 다 끝나야 다음 단계를 내므로, 아직 내지 않은 뒤 단계에 더하는 것은 안전하다.)
+		//  JSON 이나 오브젝트 하나를 못 읽어도 맵은 띄운다 — 디버깅용이라 그 종류만 빼고 로그를 남긴다.
+		auto placement = std::make_shared<PlanetPlacement>();   // 로딩 스레드의 결과 슬롯
+		const std::wstring placementPath = AssetPath(PlanetDebugScene::PlacementAsset(index));
+		batch.Add(L"배치 JSON",
+			[placement, placementPath]()
+			{
+				return PlanetDebugScene::ReadPlacement(placementPath, *placement);
+			},
+			[this, &batch, index, placement](bool ok)
+			{
+				if (!ok)
+				{
+					Log(L"[디버그 행성] 배치 JSON 을 못 읽어 오브젝트 없이 띄운다 — %s", placement->error.c_str());
+					return true;
+				}
+				PlanetDebugScene& target = sceneManager.DebugPlanet(index);
+				target.SetPlacement(std::move(*placement));
+
+				batch.NextStage();
+				for (size_t type = 0; type < target.ObjectTypeCount(); ++type)
+				{
+					const std::wstring asset = target.ObjectAsset(type);
+					resources.RequestModelFile(batch, AssetPath(asset.c_str()),
+						[this, index, type, asset](const ModelFileResources& loaded)
+						{
+							const ModelData* data = resources.Get(loaded.model);
+							if (!data)
+							{
+								Log(L"[디버그 행성] 오브젝트 건너뜀 — %s: %s", asset.c_str(), resources.LastError().c_str());
+								return true;
+							}
+							std::wstring error;
+							if (!sceneManager.DebugPlanet(index).AddObjectModel(type, *data, renderer, error))
+								Log(L"[디버그 행성] 오브젝트 건너뜀 — %s: %s", asset.c_str(), error.c_str());
+							// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다.
+							resources.ReleaseModel(loaded.model);
+							return true;
+						});
+				}
+				return true;
+			});
+	}
+
+	void Engine::EnterDebugPlanet(size_t index)
+	{
+		PlanetDebugScene& target = sceneManager.DebugPlanet(index);
+		if (!target.Loaded()) return;
+
+		// 보이는 맵을 바꿔 끼운다 — 모든 맵이 같은 자리(행성 중심)에 겹쳐 있으므로 하나만 켠다.
+		if (gameMapNode != kInvalidNode)
+			scene.SetVisible(gameMapNode, false);
+		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
+		{
+			const PlanetDebugScene& other = sceneManager.DebugPlanet(i);
+			if (other.Loaded())
+				scene.SetVisible(other.Root(), i == index);
+		}
+
+		// 접지면도 바꾼다 — 이동 · 착지 · 카메라가 모두 Planet::SurfaceHeight 하나로 지형을 본다(Planet.h).
+		terrain.Configure(&target.Ground(), planet.radius);
+		planet.terrain = &terrain;
+
+		// 서버 세계는 게임 맵이다. 받아 둔 원격 플레이어 · NPC 를 치운다(이 씬에서는 UpdateNetwork 가 돌지 않는다).
+		ParkNetworkNodes();
+
+		// 착륙 지점 L1 에 다시 세운다. 높이는 Spawn 이 새 접지면에서 잰다.
+		controller.Spawn(planet.PositionAt(target.SpawnUp(), Shared::kGroundOffset), controller.Facing());
+		spawnPosition = controller.Position();
+		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+		scene.SetLocalTransform(player, controller.WorldMatrix());
+
+		// 스폰 자리 주변 오브젝트를 바로 고른다(이후는 UpdateDebugPlanetObjects 가 움직일 때마다).
+		target.StreamObjects(scene, controller.Position() - planet.center, true);
+		terrainStatus = DebugPlanetStatus(index, target);
+
+		activeDebugPlanet = index;
+		titleTimer = 0.0f;
+
+		const double seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - loadStart).count();
+		Log(L"[디버그 행성] %zu %s 입장 — %.2fs · %s", index + 1, PlanetDebugScene::Name(index),
+			seconds, terrainStatus.c_str());
+	}
+
+	// 플레이어 주변 배치 오브젝트를 다시 고른다 — 15 m 움직일 때마다(PlanetDebugScene::StreamObjects).
+	void Engine::UpdateDebugPlanetObjects()
+	{
+		if (!InDebugPlanet()) return;
+		PlanetDebugScene& target = sceneManager.DebugPlanet(activeDebugPlanet);
+		if (target.StreamObjects(scene, controller.Position() - planet.center, false))
+			terrainStatus = DebugPlanetStatus(activeDebugPlanet, target);
+	}
+
+	// 원격 플레이어 · NPC 노드를 화면 밖으로 치우고 빈 노드 목록으로 돌린다(노드는 지우지 않고 재사용한다).
+	void Engine::ParkNetworkNodes()
+	{
+		const XMMATRIX parked = ParkedTransform();
+		for (const auto& entry : remoteNodes)
+		{
+			scene.SetLocalTransform(entry.second, parked);
+			freeRemoteNodes.push_back(entry.second);
+		}
+		remoteNodes.clear();
+		for (const auto& entry : npcNodes)
+		{
+			scene.SetLocalTransform(entry.second, parked);
+			freeNpcNodes.push_back(entry.second);
+		}
+		npcNodes.clear();
 	}
 
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
@@ -618,7 +812,8 @@ namespace swc {
 		const Vec3d aim = camera.LookDirection();
 
 		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
-		if (network.Connected())
+		// 디버그 행성에서는 보내지 않는다 — 서버 세계(게임 맵)와 좌표가 맞지 않는다.
+		if (network.Connected() && !InDebugPlanet())
 		{
 			const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
 			const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
@@ -678,7 +873,8 @@ namespace swc {
 	//   송신은 Class Bridge → Network(9절), 수신은 Network → State Manager → OtherPlayer · NPC(6.13) 로 옮길 대상이다.
 	void Engine::UpdateNetwork(float dt)
 	{
-		if (!network.Connected())
+		// 디버그 행성에서는 돌리지 않는다 — 서버 세계는 게임 맵이라 위치 · 리스폰 · 원격 좌표가 맞지 않는다.
+		if (!network.Connected() || InDebugPlanet())
 			return;
 
 		// ★ 좌표 송신은 1/30초마다. 렌더 프레임률과 분리한다.

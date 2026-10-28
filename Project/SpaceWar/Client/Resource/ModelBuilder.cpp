@@ -171,6 +171,13 @@ namespace swc {
 			material.roughness = sourceMaterial.roughness;
 			material.metallic = sourceMaterial.metallic;
 			material.doubleSided = sourceMaterial.doubleSided;
+			// 투과 · 부피 · 굴절률 (2026-10-28) — 이름 · 뜻 · 기본값이 같아 그대로 옮긴다(ModelSource.h).
+			material.transmission = sourceMaterial.transmission;
+			material.thickness = sourceMaterial.thickness;
+			material.attenuationDistance = sourceMaterial.attenuationDistance;
+			material.attenuationColor = { sourceMaterial.attenuationColor.x, sourceMaterial.attenuationColor.y,
+				sourceMaterial.attenuationColor.z };
+			material.ior = sourceMaterial.ior;
 			// 알파 마스크 (2026-10-28) — 이름 · 뜻 · 기본값이 같아 그대로 옮긴다
 			material.alphaMask = sourceMaterial.alphaMask;
 			material.alphaCutoff = sourceMaterial.alphaCutoff;

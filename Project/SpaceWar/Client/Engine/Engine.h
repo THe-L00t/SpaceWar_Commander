@@ -70,6 +70,18 @@ namespace swc {
 		void UpdateLoadingTitle(float);
 
 		void HandleSystemKeys();
+
+		// ── 예시 행성 디버그 씬 (2026-10-28, PlanetDebugScene.h) ──
+		//  숫자키 1~5 로 행성을 고른다. 처음이면 로드 묶음을 만들어 로딩 씬을 거치고,
+		//  씬에 들어가면 보이는 맵 · 접지면 · 스폰을 그 행성으로 바꿔 끼운다.
+		//  서버 세계는 게임 맵이라 디버그 행성에서는 네트워크를 돌리지 않는다.
+		void HandleDebugPlanetKeys();
+		void BuildDebugPlanetLoad(LoadBatch&, size_t index);
+		void EnterDebugPlanet(size_t index);
+		void UpdateDebugPlanetObjects();
+		void ParkNetworkNodes();
+		bool InDebugPlanet() const { return activeDebugPlanet != kNoDebugPlanet; }
+
 		void UpdatePlayer(float);
 		void UpdateFire(float);
 		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim);
@@ -119,7 +131,12 @@ namespace swc {
 		// 명세 1절에 Model 자리가 없다 — 리소스(ModelData)를 GPU 자원 + Scene 노드로 펼치는 어댑터다.
 		Model                  characterModel;
 		Model                  planetModel;       // 정적 맵 메시/재질. GLB 노드는 같은 GPU 메시를 공유한다.
+		NodeHandle             gameMapNode = kInvalidNode;   // 게임 맵의 루트 — 디버그 행성에 들어가면 숨긴다
 		SkyPlanet              skyPlanet;         // 충돌 맵과 분리한 하늘 행성의 LOD 표시.
+
+		// 지금 보이는 예시 행성 디버그 씬 번호(0 ~ 4). 게임 맵이면 kNoDebugPlanet.
+		static constexpr size_t kNoDebugPlanet = static_cast<size_t>(-1);
+		size_t                 activeDebugPlanet = kNoDebugPlanet;
 
 		// 플레이어 캐릭터의 재생 인스턴스 (명세 §14). 스킨이 있는 모델(.glb)일 때만 유효하다.
 		// 지금 캐릭터는 OBJ(뼈 없음)라 무효로 남고, Animator 는 아무 일도 하지 않는다.

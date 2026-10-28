@@ -105,6 +105,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="Scene\SceneManager.cpp" />
     <ClCompile Include="Scene\Scene.cpp" />
     <ClCompile Include="Scene\LoadingScene.cpp" />
+    <ClCompile Include="Scene\PlanetDebugScene.cpp" />
     <ClCompile Include="UI\UI.cpp" />
     <ClCompile Include="Bridge\ClassBridge.cpp" />
     <ClCompile Include="State\StateManager.cpp" />
@@ -178,6 +179,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="Scene\SceneManager.h" />
     <ClInclude Include="Scene\Scene.h" />
     <ClInclude Include="Scene\LoadingScene.h" />
+    <ClInclude Include="Scene\PlanetDebugScene.h" />
     <ClInclude Include="UI\UI.h" />
     <ClInclude Include="UISprite.h" />
     <ClInclude Include="Log.h" />
@@ -235,6 +237,51 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
         <TargetFolder>sky_planet\LOD3</TargetFolder>
       </ModelAsset>
+      <!-- 예시 행성 디버그 씬 1~5 (2026-10-28) — 파일명이 Client/Scene/PlanetDebugScene.cpp 에도 적혀 있다. 바꿀 때 두 곳. -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet.glb">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet.glb">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet.glb">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet.glb">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet.glb">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 디버그 씬의 배치 JSON (오브젝트 종류 · 인스턴스) -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Placement.json">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Placement.json">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Placement.json">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Placement.json">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 배치 JSON 이 가리키는 오브젝트 glb (텍스처는 glb 안에 내장 — 옆의 png 는 복사하지 않는다). 폴더 구조를 그대로 둔다. -->
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\prop\**\*.glb">
+        <Category>prop</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\light\**\*.glb">
+        <Category>light</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\structure\**\*.glb">
+        <Category>structure</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\vegetation\**\*.glb">
+        <Category>vegetation</Category>
+      </ObjectAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다." />
@@ -242,6 +289,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb')" Text="하늘 행성 LOD2의 future_ruins_fps_lod2.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb')" Text="하늘 행성 LOD3의 future_ruins_fps_lod3.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(TargetFolder)\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ObjectAsset)" DestinationFiles="@(ObjectAsset->'$(OutDir)assets\model\%(Category)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

@@ -93,6 +93,9 @@
     <Filter Include="클래스 목록\LoadingScene">
       <UniqueIdentifier>{b4e71c2a-6d39-4f80-a5c2-1e9d7f3b8a64}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\PlanetDebugScene">
+      <UniqueIdentifier>{6c3f9a2e-41d7-4b58-9e0a-7d2c5b8f1e43}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\LoadQueue">
       <UniqueIdentifier>{5a2d9e47-c81b-4b36-9f0e-7c3a64d1e2b9}</UniqueIdentifier>
     </Filter>
@@ -187,6 +190,9 @@
     </ClCompile>
     <ClCompile Include="Scene\LoadingScene.cpp">
       <Filter>클래스 목록\LoadingScene</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\PlanetDebugScene.cpp">
+      <Filter>클래스 목록\PlanetDebugScene</Filter>
     </ClCompile>
     <ClCompile Include="Resource\LoadQueue.cpp">
       <Filter>클래스 목록\LoadQueue</Filter>
@@ -318,6 +324,9 @@
     </ClInclude>
     <ClInclude Include="Scene\LoadingScene.h">
       <Filter>클래스 목록\LoadingScene</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\PlanetDebugScene.h">
+      <Filter>클래스 목록\PlanetDebugScene</Filter>
     </ClInclude>
     <ClInclude Include="Resource\LoadQueue.h">
       <Filter>클래스 목록\LoadQueue</Filter>

@@ -1,0 +1,144 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+#include "Client/Scene/Scene.h"
+#include "Client/Model.h"
+#include "Client/Vec3d.h"
+#include "Shared/Terrain/PlanetSurface.h"
+
+// ============================================================
+//  Client/Scene/PlanetDebugScene.h — 예시 행성 디버그 씬 (2026-10-28)
+//
+//  resource 브랜치에서 만든 예시 행성 5개를 하나씩 띄워 보는 임시 디버깅용 씬.
+//  사용자 지시(2026-10-28): «행성별 씬 1~5, 임시 디버깅용이니 최대한 가볍게, 숫자키 1~5 로 바로 전환»,
+//  이어서 «오브젝트는 json 읽어서 안 가져와? 그것도 작업해줘».
+//  숫자키 처리와 맵 바꿔 끼우기는 Engine 이 한다(Engine::HandleDebugPlanetKeys · EnterDebugPlanet).
+//
+//  ★ 맵 glb + 배치 JSON(Placement.json)의 오브젝트
+//    맵 = 지형 · 보행로 · 착륙장 · 유물 자리 · 용암 · 얼어붙은 호수.
+//    오브젝트 = JSON 의 objects(종류별 glb)와 instances([id, x, y, z, qx, qy, qz, qw, scale], glTF 좌표 · 행성 중심 기준).
+//  ★ 오브젝트는 «화면에 크게 보이는 것부터» 예산만큼만 장면에 올린다 (StreamObjects)
+//    행성마다 8만 ~ 37만 개인데 렌더러 상한이 패스당 인스턴스 8192 · TLAS 4096 이다(GRenderer.cpp Impl).
+//    전부 넣으면 상한을 넘는 것은 버려지고(RT 에서는 4096 뒤가 사라짐), 노드 수백만 개를 매 프레임 훑게 된다.
+//    그래서 점수 = 반지름 × 배율 ÷ 거리(화면 크기 근사)가 큰 순으로 메시 kObjectMeshBudget 개까지만 놓는다.
+//    큰 건물 · 바위는 멀리서도, 풀은 가까이서만 보인다. kRestreamDistance 만큼 움직이면 다시 고른다.
+//    한 번 만든 노드는 종류별로 숨겨 두었다가 다시 쓴다(LegacyScene 에 노드 삭제가 없다).
+//  ★ 게임 씬과 같은 플레이어 · 카메라 · LegacyScene 을 쓴다
+//    게임 씬이 아직 Engine 안에 있어서(Engine.h «아직 자리로 옮기지 않은 것») 이 씬은
+//    «맵 + 접지면 + 스폰 방향 + 배치» 만 들고, 들어갈 때 Engine 이 맵과 접지면을 바꿔 끼운다.
+//  ★ 한 번 올린 행성은 지우지 않고 숨겨 둔다
+//    렌더러에 GPU 자원을 지우는 API 가 없다. 다시 고르면 다시 읽지 않고 보이기만 바꾼다(VRAM 은 고른 행성 수만큼 쌓인다).
+//  ★ 좌표는 게임 맵과 같은 규약이다 — glb 원점 = 행성 중심, 기준 반경 650 m, 중심 (0,-R,0) 에 놓는다(PlanetConst.h).
+//    접지 노드 이름 규칙(COL_Expedition_Planet_Terrain · Walkable_Path_* · Landing_L*_Platform)도 같아서
+//    PlanetSurface::IsGroundObject 를 그대로 쓴다. 오브젝트는 접지면에 넣지 않는다(밟을 수 없다).
+//  ★ 메인 스레드 소유. 소유자는 SceneManager 다(명세 5절). ReadPlacement 만 로딩 스레드에서 부른다.
+// ============================================================
+
+namespace swc {
+
+	class GRenderer;
+	class LegacyScene;
+
+	// 배치 JSON 을 읽은 결과 — 로딩 스레드가 채우고 메인이 PlanetDebugScene::SetPlacement 로 넘겨받는다.
+	struct PlanetPlacement
+	{
+		struct Type
+		{
+			std::string name;
+			std::string file;   // assets\model 기준 상대 경로 (JSON 그대로 — UTF-8, '/')
+		};
+		struct Instance
+		{
+			uint32_t type = 0;              // types 번호 (JSON 의 id 가 아니다)
+			float    position[3] = {};      // glTF 좌표, 행성 중심 기준 (오브젝트 원점 = 바닥 가운데)
+			float    rotation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };   // 쿼터니언 x y z w
+			float    scale = 1.0f;          // 균일 배율
+		};
+
+		std::vector<Type>     types;
+		std::vector<Instance> instances;
+		size_t                skipped = 0;   // 모르는 id · 잘못된 숫자로 건너뛴 인스턴스 수
+		std::wstring          error;         // 실패 원인 (로딩 스레드 → 메인)
+	};
+
+	class PlanetDebugScene : public Scene
+	{
+	public:
+		static constexpr size_t kCount = 5;
+
+		// 장면에 올리는 오브젝트 메시 노드 상한. TLAS 4096 에서 맵(최대 약 90) · 캐릭터 · 예광탄 몫을 뺀 값.
+		static constexpr size_t kObjectMeshBudget = 3500;
+		// 마지막으로 고른 자리에서 이만큼(m) 움직이면 다시 고른다.
+		static constexpr double kRestreamDistance = 15.0;
+
+		// 0 ~ 4 = 숫자키 1 ~ 5. 순서 = 만든 순서(Verdant · Neon · Ruin · Volcanic · Glacier).
+		static const wchar_t* Name(size_t index);
+		// exe 옆 assets\ 기준. ★ Client.vcxproj 의 CopyModelAssets 에도 적혀 있다 — 바꿀 때 두 곳.
+		static const wchar_t* Asset(size_t index);
+		static const wchar_t* PlacementAsset(size_t index);
+
+		// 로딩 스레드에서 부른다(멤버를 건드리지 않는다). 실패하면 out.error 에 원인.
+		static bool ReadPlacement(const std::wstring& path, PlanetPlacement& out);
+
+		bool Loaded() const { return loaded; }
+
+		// 메인 스레드. 로딩 스레드가 파싱한 맵을 GPU 에 올리고 LegacyScene 에 «숨긴 채로» 놓는다.
+		// ground = 같은 파싱에서 로딩 스레드가 만든 접지면(넘겨받는다).
+		bool Build(const ModelData& data, Shared::PlanetSurface&& ground, GRenderer& renderer,
+			LegacyScene& scene, const Vec3d& planetCenter, std::wstring& error);
+
+		// ── 배치 오브젝트 (메인 스레드) ──
+		void SetPlacement(PlanetPlacement&& placement);
+		size_t ObjectTypeCount() const { return objectTypes.size(); }
+		// exe 옆 assets\ 기준 경로(L"model\\prop\\...\\X.glb")
+		std::wstring ObjectAsset(size_t type) const;
+		// 종류 하나의 모델을 GPU 에 올린다. 실패한 종류의 인스턴스는 놓지 않는다.
+		bool AddObjectModel(size_t type, const ModelData& data, GRenderer& renderer, std::wstring& error);
+
+		// 매 프레임. eye = 행성 중심 기준 위치(glTF 좌표 = 월드 − 행성 중심).
+		// 처음 · force · kRestreamDistance 이상 움직였을 때만 다시 고른다. 다시 골랐으면 true.
+		bool StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force);
+
+		// 창 제목용 — «지형 N 삼각형 · 오브젝트 보임 k / 배치 M · 종류 a/b»
+		std::wstring Status() const;
+
+		const Shared::PlanetSurface& Ground() const { return ground; }
+		NodeHandle Root() const { return root; }
+
+		// 스폰 방향(행성 중심 기준 단위 벡터) = 착륙 지점 L1. 게임 맵과 같은 규칙이다(PlanetConst.h kPlanetSpawnUp).
+		const Vec3d& SpawnUp() const { return spawnUp; }
+
+	private:
+		struct ObjectType
+		{
+			std::string             name;
+			std::string             file;
+			Model                   model;
+			float                   radius = 0.0f;     // 모델 바운드의 반지름(m) — 점수에 쓴다
+			uint32_t                meshCount = 0;     // 인스턴스 하나가 차지하는 메시 노드 수
+			bool                    loaded = false;
+			std::vector<NodeHandle> freeSlots;         // 숨겨 둔 인스턴스 루트(다시 쓴다)
+		};
+
+		Model                 model;
+		Shared::PlanetSurface ground;
+		NodeHandle            root = kInvalidNode;
+		Vec3d                 spawnUp{ 0.0, 1.0, 0.0 };
+		bool                  loaded = false;
+
+		std::vector<ObjectType>                 objectTypes;
+		std::vector<PlanetPlacement::Instance>  instances;
+		size_t                                  skippedInstances = 0;
+		std::vector<NodeHandle>                 liveSlot;      // 인스턴스 → 보이는 루트(없으면 kInvalidNode)
+		std::vector<uint32_t>                   liveList;      // 지금 보이는 인스턴스 번호
+		std::vector<uint32_t>                   selectStamp;   // 이번에 골랐는가(stamp 와 같으면)
+		uint32_t                                stamp = 0;
+		std::vector<std::pair<float, uint32_t>> scratch;       // (점수, 인스턴스) — 고를 때마다 다시 쓴다
+		Vec3d                                   lastStreamEye;
+		bool                                    streamed = false;
+	};
+
+} // namespace swc
