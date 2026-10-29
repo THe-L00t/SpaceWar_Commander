@@ -2,7 +2,7 @@
 //  RtCommon.hlsli — RT 단계 공용 (2026-10-27 렌더 4단계)
 //
 //  [4a] RtShadow.hlsl (그림자, 컴퓨트 RayQuery) 와 [4b] RtReflection.hlsl (반사, DispatchRays) 가 같이 쓴다.
-//    · RtMaterial  : 재질 표 한 칸 — GRenderer.cpp 의 RtMaterialGpu 와 같은 배치(96바이트 → 9단계에서 128바이트)
+//    · RtMaterial  : 재질 표 한 칸 — GRenderer.cpp 의 RtMaterialGpu 와 같은 배치(96바이트 → 9단계 128 → 10-29 144바이트)
 //    · RtInstance  : TLAS 인스턴스 표 한 칸 — GRenderer.cpp 의 RtInstanceGpu 와 같은 배치(16바이트)
 //    · TraceSunVisibility : 태양 가시도(RGB). 2단계 RtShadow.hlsl 의 루프를 옮겨 왔다 —
 //                           반사 히트 지점의 그림자도 같은 규칙(투과 물체는 한 번씩 곱함)으로 구하려고.
@@ -22,11 +22,13 @@ struct RtMaterial
 	//    baseColor = 레이어별 높이 계수 · roughness = 경계 폭 · metallic = 노멀 세기 · emissive.xy = 4단계 색 흔들림 세기 · 바탕
 	//    textures = 배열 4개(색 · 노멀 · ORM · 높이) · emissiveTexture = 레이어 마스크  (RtSurface.hlsli FetchHitSurface)
 	uint4  textures;          // x = BaseColor  y = Normal  z = Roughness  w = Metallic
-	uint   emissiveTexture;   uint3 _pad1;
+	uint   emissiveTexture;   float3 terrainOrigin;   // 2026-10-29 (예전 _pad1) — 지형: 레이어 좌표의 원점 = 월드의 행성 중심
 	float3 transmittance;     uint  transmissive;     // 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2단계)
 	// 9단계 — [7] 반투명 패스가 읽는 투과 · 부피 값 (glTF KHR_materials_transmission · volume · ior 그대로)
 	float  transmission;      float ior;              float thickness;     float attenuationDistance;
 	float3 attenuationColor;  float alphaCutoff;      // 2026-10-28 — 알파 마스크 기준(glTF alphaCutoff). 0 = 마스크 아님
+	// 2026-10-29 — 물가 페이드 폭(m, 0 = 안 함). Transparent.hlsl PSIce ⑥ (GRenderer::SetMaterialEdgeFade)
+	float  edgeFade;          float3 _pad2;
 };
 
 // TLAS 인스턴스 표 — 인스턴스 순번(InstanceIndex / CandidateInstanceIndex)으로 찾는다. 프레임마다 다시 채운다.

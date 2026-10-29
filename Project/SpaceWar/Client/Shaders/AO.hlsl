@@ -63,7 +63,7 @@ bool LoadSurface(uint2 q, out float3 P, out float3 N)
 	N = float3(0.0, 0.0, 1.0);
 	if (depth >= 1.0)
 		return false;
-	P = ReconstructWorldPosition(q, depth, gSize, gInvViewProj);
+	P = ReconstructWorldPosition(q, depth, gSize, gInvViewProj, gEyePos);
 	N = DecodeNormalOct(normalTex[q]);
 	return true;
 }
@@ -110,14 +110,14 @@ void CSAoTrace(uint3 id : SV_DispatchThreadID)
 	{
 		const float  t    = gRadius * (s + jitter) / kAoSteps;
 		const float3 p    = origin + dir * max(t, 0.01);
-		const float4 clip = mul(float4(p, 1.0), gViewProj);
+		const float4 clip = mul(float4(p - gEyePos, 1.0), gViewProj);   // 2026-10-29 — gViewProj 는 카메라 기준(GRenderer CameraRelativeViewProj)
 		if (clip.w <= 1.0e-4) { verdict = kAoUnknown; break; }
 		const float2 uv = ClipToUv(clip);
 		if (any(uv < 0.0) || any(uv >= 1.0)) { verdict = kAoUnknown; break; }   // 화면 밖
 		const uint2  q  = uint2(uv * float2(gSize));
 		const float  sd = depthTex[q];
 		if (sd >= 1.0) continue;                                            // 그 자리에 물체 없음(하늘) — 비어 있다
-		const float3 Ps   = ReconstructWorldPosition(q, sd, gSize, gInvViewProj);
+		const float3 Ps   = ReconstructWorldPosition(q, sd, gSize, gInvViewProj, gEyePos);
 		const float  dRay = length(p - gEyePos);
 		const float  dSrf = length(Ps - gEyePos);
 		const float  bias = 0.02 + dSrf * 0.002;                            // 깊이에서 되살린 위치의 오차 몫
@@ -199,7 +199,7 @@ void CSAoTemporal(uint3 id : SV_DispatchThreadID)
 			if (q.x < 0 || q.y < 0 || q.x >= int(gSize.x) || q.y >= int(gSize.y)) continue;
 			const float pd = prevDepthTex[q];
 			if (pd >= 1.0) continue;
-			const float3 Pp = ReconstructWorldPosition(uint2(q), pd, gSize, gPrevInvViewProj);
+			const float3 Pp = ReconstructWorldPosition(uint2(q), pd, gSize, gPrevInvViewProj, gEyePos);
 			const float3 Np = DecodeNormalOct(prevNormalTex[q]);
 			if (abs(dot(N, Pp - P)) > tol || dot(N, Np) < kNormalThreshold) continue;
 			const float2 h = historyIn[q];

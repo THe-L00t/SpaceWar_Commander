@@ -308,8 +308,8 @@ void CSDrawSky(uint3 id : SV_DispatchThreadID)
 	Texture2D<float4>   sky = ResourceDescriptorHeap[gSkySrv];
 	RWTexture2D<float4> hdr = ResourceDescriptorHeap[gHdrUav];
 
-	const float3 nearPoint = ReconstructWorldPosition(id.xy, 0.0, gScreenSize, gInvViewProj);
-	const float3 farPoint  = ReconstructWorldPosition(id.xy, 1.0, gScreenSize, gInvViewProj);
+	const float3 nearPoint = ReconstructWorldPosition(id.xy, 0.0, gScreenSize, gInvViewProj, gEyePos);
+	const float3 farPoint  = ReconstructWorldPosition(id.xy, 1.0, gScreenSize, gInvViewProj, gEyePos);
 	const float3 dir = normalize(farPoint - nearPoint);
 
 	float3 L = SampleSkyRadiance(sky, gSkySampler, dir);

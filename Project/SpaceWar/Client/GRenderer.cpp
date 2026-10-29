@@ -209,6 +209,80 @@ namespace {
 		}
 		return XMFLOAT3(float(std::exp(-depth[0])), float(std::exp(-depth[1])), float(std::exp(-depth[2])));
 	}
+
+	// ── 카메라 기준 역 view·proj (2026-10-29 — 먼 땅 검은 점 · 깜빡임 원인) ──
+	//  셰이더는 깊이로 위치를 되살린다: P = (NDC × M).xyz / w (GBuffer.hlsli ReconstructWorldPosition).
+	//  M 을 «월드» 역행렬로 두면 카메라가 원점에서 멀 때(예시 행성 중심 (0, −650, 0) → 카메라 수백 m ~ 1 km)
+	//  M 의 값이 카메라 위치 × (1 / near) 만큼 커지고, 셰이더가 그 큰 값끼리 float 로 빼면서 위치 오차가 거리에 비례해 커진다
+	//  (30 m 에서 약 2 ~ 3 cm — 그림자 레이를 띄우는 2 cm 를 넘어 레이가 자기 땅에 맞았다. 카메라가 움직이면 반올림이 바뀌어 깜빡였다).
+	//  → 카메라를 원점으로 옮긴 행렬 T(eye) × viewProj 의 역행렬을 올리고, 셰이더가 결과에 eye 를 더한다
+	//    (UE 의 «Translated World» 와 같은 방식 — 카메라 기준 좌표로 계산한 뒤 카메라 위치를 더한다).
+	//  T(eye) × viewProj 의 넷째 행 = eye · (1~3행) + 4행 — 큰 값의 뺄셈이라 double 로 하고, 역행렬도 double 로 구한다.
+	//  eye 는 «이번 프레임» 카메라다. 이전 프레임 viewProj 를 넘기면 «이번 카메라 기준의 이전 프레임 역행렬» 이 된다
+	//  (셰이더가 같은 eye 를 더하면 이전 프레임 월드 위치가 나온다 — 이전 카메라 위치를 따로 넘길 필요가 없다).
+	//  반환값은 셰이더 행벡터 규약(mul(v, M))에 맞게 전치해서 올리는 꼴이다(예전 XMMatrixTranspose(XMMatrixInverse(...)) 와 같은 자리).
+	// ── 카메라 기준 viewProj (2026-10-29 — 위 역행렬과 짝) ──
+	//  정점 셰이더 · AO 화면 추적 · 반투명이 «(월드 위치 − eye) × 이 행렬» 로 클립 좌표를 구한다.
+	//  월드 viewProj 를 그대로 곱하면 넷째 행(카메라 위치 × 투영)의 큰 값 때문에 깊이 버퍼에 쓰는 깊이부터 어긋났다
+	//  (float 계산 흉내: 카메라가 원점에서 650 ~ 1300 m 일 때 30 m 0.4 ~ 0.85 cm · 60 m 0.9 ~ 1.7 cm · 120 m 1.8 ~ 3.5 cm →
+	//   카메라 기준이면 0.03 · 0.12 · 0.4 ~ 0.5 cm). 이 어긋남이 그림자 레이 띄움(2 ~ 3.4 cm)을 넘어 먼 땅에 검은 점이 생겼다.
+	//  넷째 행 = eye · (1~3행) + 4행 을 double 로 계산한다(큰 값의 뺄셈). 전치해서 올리는 꼴로 돌려준다.
+	//  이전 프레임 viewProj 를 넘기면 «이번 카메라 기준 이전 프레임 행렬» — 셰이더가 같은 eye 를 빼면 이전 프레임 클립이 나온다.
+	XMFLOAT4X4 CameraRelativeViewProj(const XMFLOAT4X4& viewProj, const XMFLOAT3& eye)
+	{
+		XMFLOAT4X4 out;   // 전치해서 담는다
+		for (int c = 0; c < 4; ++c)
+		{
+			for (int r = 0; r < 3; ++r)
+				out.m[c][r] = viewProj.m[r][c];
+			out.m[c][3] = float(double(eye.x) * viewProj.m[0][c] + double(eye.y) * viewProj.m[1][c] +
+				double(eye.z) * viewProj.m[2][c] + double(viewProj.m[3][c]));
+		}
+		return out;
+	}
+
+	XMFLOAT4X4 CameraRelativeInverseViewProj(const XMFLOAT4X4& viewProj, const XMFLOAT3& eye)
+	{
+		double m[4][8];
+		for (int r = 0; r < 4; ++r)
+			for (int c = 0; c < 4; ++c)
+			{
+				m[r][c] = double(viewProj.m[r][c]);
+				m[r][c + 4] = (r == c) ? 1.0 : 0.0;
+			}
+		for (int c = 0; c < 4; ++c)   // T(eye) × viewProj — 행벡터 규약에서 넷째 행에 eye 만큼 1~3행을 더한다
+			m[3][c] += double(eye.x) * m[0][c] + double(eye.y) * m[1][c] + double(eye.z) * m[2][c];
+
+		// 가우스-요르단 (부분 피벗) — 오른쪽 4열이 역행렬이 된다
+		for (int col = 0; col < 4; ++col)
+		{
+			int pivot = col;
+			for (int r = col + 1; r < 4; ++r)
+				if (std::fabs(m[r][col]) > std::fabs(m[pivot][col])) pivot = r;
+			if (std::fabs(m[pivot][col]) < 1e-300)
+			{
+				XMFLOAT4X4 identity;
+				XMStoreFloat4x4(&identity, XMMatrixIdentity());
+				return identity;   // 특이 행렬 — 일어나지 않는다(원근 투영)
+			}
+			if (pivot != col)
+				for (int c = 0; c < 8; ++c) std::swap(m[pivot][c], m[col][c]);
+			const double inv = 1.0 / m[col][col];
+			for (int c = 0; c < 8; ++c) m[col][c] *= inv;
+			for (int r = 0; r < 4; ++r)
+			{
+				if (r == col) continue;
+				const double f = m[r][col];
+				if (f == 0.0) continue;
+				for (int c = 0; c < 8; ++c) m[r][c] -= f * m[col][c];
+			}
+		}
+		XMFLOAT4X4 out;   // 전치해서 담는다
+		for (int r = 0; r < 4; ++r)
+			for (int c = 0; c < 4; ++c)
+				out.m[c][r] = float(m[r][c + 4]);
+		return out;
+	}
 }
 
 namespace swc {
@@ -269,13 +343,16 @@ namespace swc {
 		//    baseColor = 레이어별 높이 계수 · roughness = 경계 폭 · metallic = 노멀 세기 · textures = 배열 4개 · emissiveTexture = 마스크
 		//    · emissive.xy = 4단계 색 흔들림 세기 · 바탕
 		uint32_t textures[4];   // BaseColor · Normal · Roughness · Metallic
-		uint32_t emissiveTexture; uint32_t pad1[3];
+		uint32_t emissiveTexture;
+		XMFLOAT3 terrainOrigin;   // 2026-10-29 (예전 pad1) — 지형: 레이어 좌표의 원점 = 월드의 행성 중심(TerrainMaterialData::origin)
 		XMFLOAT3 transmittance; uint32_t transmissive;
 		// 9단계 — [7] 반투명 패스가 읽는 투과 · 부피 · 굴절률 (MaterialData 그대로)
 		float    transmission;  float ior;  float thickness;  float attenuationDistance;
 		XMFLOAT3 attenuationColor; float alphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님), 예전 pad2 자리
+		// 2026-10-29 — 물가 페이드 폭(m, 0 = 안 함). [7] 반투명 패스가 둘레의 땅(면 위로 올라온 표면) 비율로 옅게 한다(SetMaterialEdgeFade)
+		float    edgeFade;      float pad2[3];
 	};
-	static_assert(sizeof(RtMaterialGpu) == 128, "RtMaterial 은 128바이트 (9단계에서 96 → 128)");
+	static_assert(sizeof(RtMaterialGpu) == 144, "RtMaterial 은 144바이트 (9단계 128 → 10-29 물가 페이드 144)");
 	//  인스턴스 표: TLAS 인스턴스 순번(InstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
 	struct RtInstanceGpu
 	{
@@ -472,7 +549,7 @@ namespace swc {
 		float    bumpDistance;                    //          범프 1(섞은 높이맵) Distance(m)
 		float    reliefDistance;                  //          범프 2(지면 요철) Distance(m)
 		float    reliefStrength;                  //          범프 2 Strength
-		float    pad[3];
+		XMFLOAT3 origin;                          // 2026-10-29 (예전 pad) — 레이어 좌표의 원점 = 월드의 행성 중심
 	};
 	constexpr UINT kMaterialRootConstants = 20;   // 루트 파라미터 2 의 DWORD 수 = 두 상수 중 큰 쪽
 	static_assert(sizeof(TerrainConstants) == kMaterialRootConstants * sizeof(uint32_t), "지형 상수 = 재질 루트 상수 20 DWORD");
@@ -1405,7 +1482,7 @@ namespace swc {
 			XMStoreFloat3(&toSunF, toSun);
 
 			SkyConstants sc = {};
-			XMStoreFloat4x4(&sc.invViewProj, XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj))));
+			sc.invViewProj = CameraRelativeInverseViewProj(view.viewProj, view.eyePosition);   // 2026-10-29 카메라 기준(셰이더가 eye 를 더한다)
 			sc.eyePos = view.eyePosition;
 			sc.sunIlluminanceTop = kSunIlluminanceTop;
 			sc.toSun = toSunF;
@@ -2742,7 +2819,7 @@ namespace swc {
 				return false;
 			}
 			// 2026-10-28 지형 레이어 — 같은 두 진입점을 TERRAIN_LAYERS=1 로 한 번 더 컴파일한다(레이어 4종 + 마스크 섞기 판).
-			//  지형 재질(CreateTerrainMaterial)만 이 판으로 그린다. 정점 셰이더는 같다(VOut 에 메시 좌표가 늘 들어 있다).
+			//  지형 재질(CreateTerrainMaterial)만 이 판으로 그린다. 정점 셰이더는 같다(레이어 좌표 = 월드 위치 − 행성 중심, 2026-10-29).
 			const wchar_t* const terrainDefine[] = { L"TERRAIN_LAYERS=1" };
 			std::vector<uint8_t> psTerrain = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", psTarget, terrainDefine, 1, log);
 			std::vector<uint8_t> gbufferPsTerrain = psTerrain.empty() ? std::vector<uint8_t>{} :
@@ -4334,6 +4411,8 @@ namespace swc {
 		if (!std::isfinite(data.macroAmount) || !std::isfinite(data.macroBias) || !std::isfinite(data.bumpDistance) ||
 			!std::isfinite(data.reliefDistance) || !(data.reliefStrength >= 0.0f) || !(data.reliefStrength <= 1.0f))
 			return fail(L"4단계 값(색 흔들림 · 범프 거리 · 범프 세기 0 ~ 1)이 올바르지 않습니다.");
+		if (!std::isfinite(data.origin.x) || !std::isfinite(data.origin.y) || !std::isfinite(data.origin.z))
+			return fail(L"레이어 좌표의 원점(행성 중심)이 유한하지 않습니다.");
 		for (TextureHandle handle : slots)
 			if (handle >= impl->textures.size()) return fail(L"등록되지 않은 GPU 텍스처를 참조합니다.");
 
@@ -4371,6 +4450,7 @@ namespace swc {
 		constants.bumpDistance = data.bumpDistance;
 		constants.reliefDistance = data.reliefDistance;
 		constants.reliefStrength = data.reliefStrength;
+		constants.origin = data.origin;                   // 2026-10-29 — 월드의 행성 중심
 		material.terrainConstants = constants;
 		material.textures = impl->WriteMaterialTextures(impl->materials.size(), slots);
 
@@ -4385,12 +4465,30 @@ namespace swc {
 			for (size_t slot = 0; slot < 4; ++slot)         // 배열 4개: 색 · 노멀 · ORM · 높이
 				row.textures[slot] = impl->textures[slots[slot]].bindless;
 			row.emissiveTexture = mask.bindless;            // 지형: 레이어 마스크
+			row.terrainOrigin = data.origin;                // 지형: 레이어 좌표의 원점(2026-10-29)
 			row.alphaCutoff = 0.0f;                         // 알파 마스크 아님 — 레이 후보 판정에 오지 않는다
 			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
 		impl->materials.push_back(material);
 		return static_cast<MaterialHandle>(impl->materials.size() - 1);
+	}
+
+	// ── 물가 페이드 (2026-10-29, 사용자 «얼음 호수 경계도 뚜렷해. 모든 메시 경계도 흐릿하게 섞어줘») ──
+	//  투과 재질(반투명 패스로 그리는 것)이 땅(면 위로 올라온 불투명 표면)과 만나는 물가에서 옅어지게 한다 — Transparent.hlsl PSIce ⑥.
+	//  glTF 에 이런 값이 없어서 씬이 고른 재질에만 켠다(예시 행성 얼어붙은 호수 — PlanetDebugScene).
+	//  재질 표 한 줄의 칸만 고친다. 프레임 밖에서 부른다(CreateMaterial 과 같은 규칙).
+	bool GRenderer::SetMaterialEdgeFade(MaterialHandle handle, float distance)
+	{
+		if (!impl->rtMaterialData || impl->frameOpen || handle >= impl->materials.size() ||
+			!std::isfinite(distance) || distance < 0.0f)
+		{
+			impl->status = L"물가 페이드: 호출 시점 · 재질 번호 · 거리(0 이상)가 올바르지 않습니다.";
+			return false;
+		}
+		memcpy(impl->rtMaterialData + size_t(handle) * sizeof(RtMaterialGpu) + offsetof(RtMaterialGpu, edgeFade),
+			&distance, sizeof(distance));
+		return true;
 	}
 
 	void GRenderer::BeginFrame()
@@ -4496,14 +4594,15 @@ namespace swc {
 
 		// ── 프레임 상수 ──
 		FrameConstants fc = {};
-		XMStoreFloat4x4(&fc.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
+		// 2026-10-29 — 카메라 기준 viewProj(정점 셰이더가 «월드 − eye» 를 곱한다, CameraRelativeViewProj)
+		fc.viewProj = CameraRelativeViewProj(view.viewProj, view.eyePosition);
 		fc.eyePos = view.eyePosition;
 		fc.sunDir = impl->sunDir;
 		fc.debugMode = impl->debugMode;
 		// ★ 5단계 — 이전 프레임 viewProj (모션 벡터). 메인 패스만 지난 프레임 값을 쓰고,
 		//   첫 프레임 · 배경 패스(G-buffer 를 안 씀)는 이번 값과 같게 둔다 → 카메라 몫 모션 벡터 0.
 		const XMFLOAT4X4 prevViewProj = (!view.background && impl->hasPrevMainView) ? impl->prevMainViewProj : view.viewProj;
-		XMStoreFloat4x4(&fc.prevViewProj, XMMatrixTranspose(XMLoadFloat4x4(&prevViewProj)));
+		fc.prevViewProj = CameraRelativeViewProj(prevViewProj, view.eyePosition);   // 2026-10-29 이번 카메라 기준
 		fc.sunIlluminance = impl->sunIlluminance;   // 6단계 — 배경 패스 PSMain 의 태양
 		// 한 커맨드 리스트에 두 패스를 기록하므로 서로 다른 256바이트 CBV를 사용한다.
 		// 같은 CPU 메모리를 덮어쓰면 GPU가 배경에서도 마지막 메인 행렬을 읽는다.
@@ -4733,7 +4832,10 @@ namespace swc {
 			{ &impl->gbuffer[Impl::GbMotion],   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
 			{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE } });
 
-		const XMMATRIX invViewProj = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&view.viewProj)));
+		// 2026-10-29 — 카메라 기준 역행렬(전치됨). 깊이로 위치를 되살리는 패스(그림자 · 반사 · 노이즈 제거 · AO · 라이팅 · 반투명)는
+		//  셰이더에서 eyePos 를 더한다(GBuffer.hlsli ReconstructWorldPosition). 월드 역행렬이면 카메라가 원점에서 멀 때 위치 오차가 컸다.
+		const XMFLOAT4X4 invViewProjRelative = CameraRelativeInverseViewProj(view.viewProj, view.eyePosition);
+		const XMMATRIX invViewProj = XMLoadFloat4x4(&invViewProjRelative);
 		ID3D12DescriptorHeap* targetHeaps[] = { impl->targetHeap.Get() };
 		const UINT groupsX = (impl->width + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize;
 		const UINT groupsY = (impl->height + Impl::LightingGroupSize - 1) / Impl::LightingGroupSize;
@@ -4900,7 +5002,7 @@ namespace swc {
 
 			DenoiseConstants dc = {};
 			XMStoreFloat4x4(&dc.invViewProj, invViewProj);
-			XMStoreFloat4x4(&dc.prevInvViewProj, XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&prevViewProj))));
+			dc.prevInvViewProj = CameraRelativeInverseViewProj(prevViewProj, view.eyePosition);   // 2026-10-29 이번 카메라 기준
 			dc.eyePos = view.eyePosition;
 			dc.maxRoughness = Impl::kReflectionMaxRoughness;
 			dc.width = impl->width;
@@ -4949,9 +5051,9 @@ namespace swc {
 			const bool aoRt = rtActive && impl->accel.InstanceCount() > 0;
 
 			AoConstants ac = {};
-			XMStoreFloat4x4(&ac.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
+			ac.viewProj = CameraRelativeViewProj(view.viewProj, view.eyePosition);   // 2026-10-29 카메라 기준(AO.hlsl 이 eye 를 뺀다)
 			XMStoreFloat4x4(&ac.invViewProj, invViewProj);
-			XMStoreFloat4x4(&ac.prevInvViewProj, XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(&prevViewProj))));
+			ac.prevInvViewProj = CameraRelativeInverseViewProj(prevViewProj, view.eyePosition);   // 2026-10-29 이번 카메라 기준
 			ac.eyePos = view.eyePosition;
 			ac.radius = Impl::kAoRadius;
 			ac.width = impl->width;
@@ -5131,7 +5233,7 @@ namespace swc {
 			// ③ 그리기
 			const bool transparentRt = rtActive && impl->accel.InstanceCount() > 0;
 			TransparentConstants tc = {};
-			XMStoreFloat4x4(&tc.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
+			tc.viewProj = CameraRelativeViewProj(view.viewProj, view.eyePosition);   // 2026-10-29 카메라 기준(Transparent.hlsl 이 eye 를 뺀다)
 			XMStoreFloat4x4(&tc.invViewProj, invViewProj);
 			tc.eyePos = view.eyePosition;
 			tc.maxDistance = Impl::kShadowMaxDistance;

@@ -44,9 +44,13 @@ namespace swc {
 		//  baseColor · normal · orm · height = 같은 종류 4장(마스크 R G B A 순)을 묶은 배열 텍스처(arraySize 4).
 		//    baseColor = RGBA8 sRGB, normal · orm = RGBA8, height = R8. 넷의 크기 · 밉 수가 같아야 한다.
 		//  layerMask = RGBA8 마스크 한 장(채널마다 레이어 비율).
-		//  이 재질로 그리는 메시는 «메시 좌표 원점 = 행성 중심» 이어야 한다 — 마스크 UV 를 그 방향으로 계산한다.
+		//  마스크 UV · 노이즈는 «월드 위치 − TerrainMaterialData::origin(행성 중심)» 으로 계산한다(2026-10-29 — 예전에는 메시 좌표).
+		//  그래서 노드 변환이 있는 메시(오솔길 · 착륙 대지)도 이 재질로 그리면 지형과 같은 자리 · 같은 무늬가 된다.
 		MaterialHandle CreateTerrainMaterial(const TerrainMaterialData&, TextureHandle baseColor, TextureHandle normal,
 			TextureHandle orm, TextureHandle height, TextureHandle layerMask);
+		// ── 물가 페이드 (2026-10-29) — 투과 면이 땅(면 위로 올라온 불투명 표면)과 만나는 물가에서 옅어진다(폭 distance m, 0 = 끔) ──
+		//  얼어붙은 호수 면처럼 땅에 걸친 얇은 투과 면의 경계를 흐리게 한다. 프레임 밖에서 부른다. 실패하면 false.
+		bool SetMaterialEdgeFade(MaterialHandle, float distance);
 
 		void BeginFrame();
 		// BeginFrame마다 배경(view.background=true), 메인 패스를 각 한 번 호출한다.

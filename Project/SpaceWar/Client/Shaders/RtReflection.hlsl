@@ -109,7 +109,7 @@ void RayGen()
 	}
 	const float rough = max(rawRough, kMinRoughness);
 
-	const float3 P   = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj);
+	const float3 P   = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj, gEyePos);
 	const float3 N   = DecodeNormalOct(normalTex[pixel]);
 	const float3 V   = normalize(gEyePos - P);
 	const float3 dir = ReflectionDirection(N, V, rough, Random2(pixel, gFrameIndex));

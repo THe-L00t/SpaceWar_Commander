@@ -47,7 +47,8 @@ float2 EqualAreaSphereToSquare(float3 d)
 	return float2(0.5 * (u + 1.0), 0.5 * (v + 1.0));
 }
 
-// 레이어 마스크 UV. meshPosition = 메시 좌표(지형 노드에 변환이 없어 원점 = 행성 중심).
+// 레이어 마스크 UV. meshPosition = 행성 중심 기준 위치 = 월드 위치 − 재질의 행성 중심(2026-10-29 — 예전에는 메시 좌표.
+//  지형 노드는 변환이 없어 둘이 같고, 노드 변환이 있는 오솔길 · 착륙 대지는 월드 쪽이라야 지형과 같은 자리를 읽는다).
 //  리소스 규약: 방향 d(glTF) 를 (d.x, −d.z, d.y) 로 바꾼 뒤 등면적 팔면체 매핑.
 //  PNG 가로 = u, 세로 = v, 맨 위 행 v = 0(Resource_Work mask_gen.py 의 전치) → D3D 텍스처 좌표로 그대로 쓴다.
 float2 TerrainMaskUv(float3 meshPosition)
