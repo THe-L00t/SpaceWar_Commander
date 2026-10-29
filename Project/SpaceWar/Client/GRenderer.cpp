@@ -578,6 +578,15 @@ namespace swc {
 	};
 	static_assert(sizeof(SpriteConstants) == 16 * sizeof(uint32_t), "SpriteCB 는 루트 상수 16개");
 
+	// DebugLines.hlsl 의 DebugLineCB 와 같은 배치 (2026-10-29)
+	struct DebugLineConstants
+	{
+		XMFLOAT4X4 viewProj;   // 카메라 기준(CameraRelativeViewProj) — 전치해서 담긴 꼴
+		XMFLOAT3   offset;     // 원점 − eye
+		float      alpha;
+	};
+	static_assert(sizeof(DebugLineConstants) == 20 * sizeof(uint32_t), "DebugLineCB 는 루트 상수 20개");
+
 	struct GRenderer::Impl
 	{
 		static const UINT FrameCount = 2;
@@ -1140,6 +1149,15 @@ namespace swc {
 		UINT                               srvDescriptorSize = 0;
 		ComPtr<ID3D12RootSignature>        uiRootSig;
 		ComPtr<ID3D12PipelineState>        uiPso;
+
+		// ── 디버그 선 (2026-10-29 — C 키 충돌체 와이어프레임, DrawDebugLines) ──
+		//  PSO 둘: [0] 가려진 부분(깊이 GREATER, 옅게) · [1] 보이는 부분(LESS_EQUAL). 정점 버퍼는 처음 쓸 때 만들고 모자라면 키운다.
+		//  프레임마다 GPU 를 기다리므로(EndFrame) 한 벌이면 된다 — 라이팅 상수 버퍼와 같은 이유.
+		ComPtr<ID3D12RootSignature>        debugLineRootSig;
+		ComPtr<ID3D12PipelineState>        debugLinePsos[2];
+		ComPtr<ID3D12Resource>             debugLineBuffer;     // UPLOAD, 영속 매핑
+		uint8_t*                           debugLineData = nullptr;
+		size_t                             debugLineCapacity = 0;   // 정점 수
 
 		ShaderCompiler shaderCompiler;
 		AccelStructure accel;
@@ -3914,6 +3932,88 @@ namespace swc {
 			}
 		}
 
+		// ── 디버그 선 PSO (2026-10-29 — C 키 충돌체 와이어프레임, DrawDebugLines) ──
+		//  디버그 기능이라 만들지 못해도 초기화를 실패로 끝내지 않는다 — 그때 DrawDebugLines 는 아무것도 안 한다.
+		//  [0] 가려진 부분(GREATER) · [1] 보이는 부분(LESS_EQUAL). 깊이는 쓰지 않는다. 톤맵이 끝난 백버퍼에 직선 알파로 섞는다.
+		{
+			D3D12_ROOT_PARAMETER param = {};
+			param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			param.Constants.ShaderRegister = 0;
+			param.Constants.RegisterSpace = 0;
+			param.Constants.Num32BitValues = sizeof(DebugLineConstants) / sizeof(uint32_t);
+			param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 1;
+			rsDesc.pParameters = &param;
+			rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+			ComPtr<ID3DBlob> sig, err;
+			bool ok = SUCCEEDED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) &&
+				SUCCEEDED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+					IID_PPV_ARGS(&impl->debugLineRootSig)));
+
+			std::string log;
+			const std::wstring path = ShaderPath(L"DebugLines.hlsl");
+			std::vector<uint8_t> vs, ps;
+			if (ok)
+			{
+				vs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"VSMain", L"vs_6_0", nullptr, 0, log);
+				if (!vs.empty())
+					ps = impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSMain", L"ps_6_0", nullptr, 0, log);
+				if (vs.empty() || ps.empty())
+				{
+					OutputDebugStringA(("[DebugLines] " + log + "\n").c_str());
+					ok = false;
+				}
+			}
+			if (ok)
+			{
+				const D3D12_INPUT_ELEMENT_DESC layout[] = {
+					{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(DebugLineVertex, position)), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+					{ "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, static_cast<UINT>(offsetof(DebugLineVertex, color)),    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+				};
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+				psoDesc.pRootSignature = impl->debugLineRootSig.Get();
+				psoDesc.InputLayout = { layout, static_cast<UINT>(_countof(layout)) };
+				psoDesc.VS = { vs.data(), vs.size() };
+				psoDesc.PS = { ps.data(), ps.size() };
+				psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+				psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+				psoDesc.RasterizerState.DepthClipEnable = TRUE;
+				psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;   // MSAA 없이 알파 섞은 선
+				D3D12_RENDER_TARGET_BLEND_DESC& blend = psoDesc.BlendState.RenderTarget[0];
+				blend.BlendEnable = TRUE;
+				blend.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+				blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+				blend.BlendOp = D3D12_BLEND_OP_ADD;
+				blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+				blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+				blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+				blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+				psoDesc.DepthStencilState.DepthEnable = TRUE;
+				psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+				psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+				psoDesc.SampleMask = UINT_MAX;
+				psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+				psoDesc.NumRenderTargets = 1;
+				psoDesc.RTVFormats[0] = Impl::kBackBufferFormat;
+				psoDesc.SampleDesc.Count = 1;
+				for (int pass = 0; pass < 2 && ok; ++pass)
+				{
+					psoDesc.DepthStencilState.DepthFunc = pass == 0 ? D3D12_COMPARISON_FUNC_GREATER : D3D12_COMPARISON_FUNC_LESS_EQUAL;
+					ok = SUCCEEDED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->debugLinePsos[pass])));
+				}
+			}
+			if (!ok)
+			{
+				impl->debugLineRootSig.Reset();
+				impl->debugLinePsos[0].Reset();
+				impl->debugLinePsos[1].Reset();
+				OutputDebugStringW(L"[디버그 선] 파이프라인을 만들지 못해 C 키 충돌체 보기는 꺼 둔다.\n");
+			}
+		}
+
 		if (FAILED(impl->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&impl->fence))))
 			return false;
 		impl->fenceValue = 0;
@@ -5290,6 +5390,78 @@ namespace swc {
 		// ★ 5단계 — 다음 프레임의 «이전 프레임 viewProj» (모션 벡터 · 이력 위치 되살리기)
 		impl->prevMainViewProj = view.viewProj;
 		impl->hasPrevMainView = true;
+	}
+
+	// ── 디버그 선 (2026-10-29 — C 키 충돌체 와이어프레임) ──
+	//  톤맵이 끝난 백버퍼에 그린다(UI 처럼 — 노출 · 블룸에 색이 바뀌지 않는다). 깊이는 메인 패스 것을 읽기 전용으로 묶는다.
+	//  같은 정점을 두 번: 가려진 부분(GREATER)은 옅게, 보이는 부분(LESS_EQUAL)은 그대로.
+	//  끝나면 깊이를 뗀 백버퍼만 다시 묶는다 — 뒤의 UI PSO 는 DSV 형식이 UNKNOWN 이다.
+	void GRenderer::DrawDebugLines(const RenderView& view, const XMFLOAT3& origin, const std::vector<DebugLineVertex>& vertices)
+	{
+		if (!impl->frameOpen || !impl->debugLinePsos[0] || !impl->debugLinePsos[1]) return;
+		const size_t count = (std::min)(vertices.size(), kMaxDebugLineVertices) & ~size_t(1);   // 선 = 정점 두 개
+		if (count == 0) return;
+
+		// 정점 버퍼 — 모자라면 키운다. 지난 프레임은 EndFrame 에서 GPU 를 기다렸으므로 지금 바꿔도 된다.
+		if (impl->debugLineCapacity < count)
+		{
+			size_t capacity = (std::max)(impl->debugLineCapacity * 2, size_t(64) * 1024);
+			capacity = (std::min)((std::max)(capacity, count), kMaxDebugLineVertices);
+			impl->debugLineBuffer.Reset();
+			impl->debugLineData = nullptr;
+			impl->debugLineCapacity = 0;
+			D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+			D3D12_RESOURCE_DESC desc = BufferDesc(UINT64(capacity) * sizeof(DebugLineVertex));
+			D3D12_RANGE noRead = { 0, 0 };
+			if (FAILED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->debugLineBuffer))) ||
+				FAILED(impl->debugLineBuffer->Map(0, &noRead, reinterpret_cast<void**>(&impl->debugLineData))))
+			{
+				impl->debugLineBuffer.Reset();
+				impl->debugLineData = nullptr;
+				return;
+			}
+			impl->debugLineCapacity = capacity;
+		}
+		std::memcpy(impl->debugLineData, vertices.data(), count * sizeof(DebugLineVertex));
+
+		impl->ResolveToBackBuffer();   // [8] HDR → 백버퍼 (프레임에 한 번)
+
+		ID3D12GraphicsCommandList* commandList = impl->commandList.Get();
+		impl->TransitionTargets({ { &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ } });
+		const D3D12_CPU_DESCRIPTOR_HANDLE rtv = impl->Rtv(impl->frameIndex);
+		const D3D12_CPU_DESCRIPTOR_HANDLE readOnlyDsv = impl->ReadOnlyDsv();
+		commandList->OMSetRenderTargets(1, &rtv, FALSE, &readOnlyDsv);
+		const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, float(impl->width), float(impl->height), 0.0f, 1.0f };
+		const D3D12_RECT scissor = { 0, 0, LONG(impl->width), LONG(impl->height) };
+		commandList->RSSetViewports(1, &viewport);
+		commandList->RSSetScissorRects(1, &scissor);
+
+		DebugLineConstants constants = {};
+		constants.viewProj = CameraRelativeViewProj(view.viewProj, view.eyePosition);
+		constants.offset = XMFLOAT3(float(double(origin.x) - double(view.eyePosition.x)),
+			float(double(origin.y) - double(view.eyePosition.y)),
+			float(double(origin.z) - double(view.eyePosition.z)));
+
+		D3D12_VERTEX_BUFFER_VIEW vbv = {};
+		vbv.BufferLocation = impl->debugLineBuffer->GetGPUVirtualAddress();
+		vbv.SizeInBytes = static_cast<UINT>(count * sizeof(DebugLineVertex));
+		vbv.StrideInBytes = sizeof(DebugLineVertex);
+
+		commandList->SetGraphicsRootSignature(impl->debugLineRootSig.Get());
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+		commandList->IASetVertexBuffers(0, 1, &vbv);
+		constexpr float kHiddenAlpha = 0.3f;   // 가려진 선
+		for (int pass = 0; pass < 2; ++pass)
+		{
+			constants.alpha = pass == 0 ? kHiddenAlpha : 1.0f;
+			commandList->SetPipelineState(impl->debugLinePsos[pass].Get());
+			commandList->SetGraphicsRoot32BitConstants(0, sizeof(constants) / sizeof(uint32_t), &constants, 0);
+			commandList->DrawInstanced(static_cast<UINT>(count), 1, 0, 0);
+		}
+
+		// UI PSO 는 DSV 형식이 UNKNOWN — 깊이를 떼고 백버퍼만 다시 묶는다
+		commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 	}
 
 	void GRenderer::DrawSprites(const std::vector<UISprite>& sprites)
