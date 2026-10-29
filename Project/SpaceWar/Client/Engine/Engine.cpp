@@ -1,4 +1,6 @@
 #include "Engine.h"
+#include <algorithm>
+#include <iterator>
 #include <memory>
 
 #include <shellapi.h>
@@ -52,9 +54,8 @@ namespace
 	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
 
 	// ── 서버 전송 주기 ──────────────────────────────────────
-	//  렌더는 144fps 로 돌아도 좌표는 1/30초에 한 번만 보낸다.
-	//  매 프레임 보내면 대역폭만 낭비되고 서버 처리량이 프레임률에 끌려간다.
-	constexpr float kSendInterval = 1.0f / 30.0f;
+	//  2026-10-29 B안 — 좌표(1/30초) 대신 고정 틱 입력을 보낸다. 주기는 이동 틱(Shared::PlayerMovement::kTickSeconds = 1/60초)이고
+	//  렌더 프레임률과는 이미 분리돼 있다(PlayerController::Update 가 틱을 센다). 그래서 여기 따로 주기를 두지 않는다.
 
 	// ── 실행 인자 ───────────────────────────────────────────
 	//   Client.exe                     127.0.0.1:25000 에 접속 (기본값)
@@ -103,18 +104,66 @@ namespace
 		return DirectX::XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
 	}
 
-	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
+	// exe 가 있는 폴더(끝에 \ 포함).
 	// ★ 반드시 와이드로 다룬다. GetModuleFileNameA 는 ANSI(CP949)를 주므로
 	//   경로에 한글이 있으면 UTF-8 로 오인해 깨진다.
-	std::wstring AssetPath(const wchar_t* relative)
+	std::wstring ExeDirectory()
 	{
 		wchar_t exePath[MAX_PATH] = {};
 		GetModuleFileNameW(nullptr, exePath, MAX_PATH);
 
 		std::wstring p(exePath);
 		const size_t slash = p.find_last_of(L"\\/");
-		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
-		return p + L"assets\\" + relative;
+		return (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
+	}
+
+	bool AssetFileExists(const std::wstring& path)
+	{
+		const DWORD attributes = GetFileAttributesW(path.c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+	}
+
+	// 원본 assets\ 를 찾을 때 exe 폴더에서 몇 단계까지 올라갈지.
+	// exe 는 Project\SpaceWar\x64\<구성>\ 에 있어 원본 Project\assets\ 는 세 단계 위다.
+	constexpr int kAssetSourceSearchDepth = 6;
+
+	// 에셋 경로. 작업 디렉터리와 무관하게 exe 위치로 찾는다. 두 곳을 차례로 본다
+	// (2026-10-29 사용자 «디버그 폴더 안에 리소스가 없다면, 지금 기존의 리소스를 저장해두는 폴더에서 읽어오도록»).
+	//  1) exe 옆 assets\ — 빌드 후 대상(Client.vcxproj CopyModelAssets · xcopy)이 복사해 둔 판.
+	//  2) 원본 assets\ — exe 폴더에서 위로 올라가며 그 파일이 처음 있는 «…\assets\<relative>».
+	//     빌드 후 복사는 원본과 같은 하위 경로(model\map\… · model\prop\… · ui\…)를 쓴다.
+	//  파일마다 따로 본다. 두 곳 다 없으면 1) 경로를 돌려준다 → 못 읽었다는 로그에 exe 쪽 경로가 찍힌다.
+	// ★ 1) 의 문자열은 예전과 똑같이 만든다 — 모델 디스크 캐시 키에 절대 경로가 들어간다.
+	std::wstring AssetPath(const wchar_t* relative)
+	{
+		const std::wstring exeDirectory = ExeDirectory();
+		const std::wstring copied = exeDirectory + L"assets\\" + relative;
+		if (AssetFileExists(copied))
+			return copied;
+
+		std::wstring directory = exeDirectory;
+		for (int depth = 0; depth < kAssetSourceSearchDepth && directory.size() >= 2; ++depth)
+		{
+			// 끝의 \ 를 빼고 그 앞의 \ 까지 잘라 한 단계 위로 간다. 드라이브 루트에서 멈춘다.
+			const size_t slash = directory.find_last_of(L"\\/", directory.size() - 2);
+			if (slash == std::wstring::npos)
+				break;
+			directory.resize(slash + 1);
+
+			const std::wstring source = directory + L"assets\\" + relative;
+			if (AssetFileExists(source))
+			{
+				static bool logged = false;   // 메인 스레드에서만 부른다
+				if (!logged)
+				{
+					logged = true;
+					swc::Log(L"[에셋] exe 옆 assets\\ 에 없는 파일은 원본 폴더에서 읽는다 — %sassets\\ (처음: %s)",
+						directory.c_str(), relative);
+				}
+				return source;
+			}
+		}
+		return copied;
 	}
 
 	// 좌표만 받는 원격 캐릭터도 현재 지면의 위쪽에 몸통을 정렬한다.
@@ -130,6 +179,28 @@ namespace
 		m.r[2] = XMVectorSet(float(forward.x), float(forward.y), float(forward.z), 0.0f);
 		m.r[3] = XMVectorSet(position[0], position[1], position[2], 1.0f);
 		return m;
+	}
+
+	// 해 높이 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게»).
+	//  게임 맵 첫 스폰 · 예시 행성 입장 때, 플레이어가 바라보는 쪽 지평선에서 이 각도만큼 올린 곳에 해를 둔다.
+	//  (그 전: render/lab 803ca01 «지평선에 걸치게» = 0°.)
+	constexpr double kSunElevationDegrees = 45.0;
+
+	// SetSunDirection 에 넣을 값. sunDir 는 빛이 나아가는 방향 = −해 쪽이다.
+	//  해 쪽 = 바라보는 방향을 지면(위쪽에 수직인 면)에 투영한 앞쪽 × cos(높이) + 위쪽 × sin(높이).
+	XMFLOAT3 SunDirectionInFront(const swc::Vec3d& facing, const swc::Vec3d& up)
+	{
+		constexpr double kRadians = kSunElevationDegrees * 3.14159265358979323846 / 180.0;
+		const swc::Vec3d front = swc::ProjectOntoPlane(facing, up);
+		const swc::Vec3d toSun = swc::Normalize(front * std::cos(kRadians) + up * std::sin(kRadians));
+		return XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z));
+	}
+
+	// 예시 행성 디버그 씬의 창 제목 몫 (2026-10-28)
+	std::wstring DebugPlanetStatus(size_t index, const swc::PlanetDebugScene& planet)
+	{
+		return L"디버그 행성 " + std::to_wstring(index + 1) + L" " + swc::PlanetDebugScene::Name(index) +
+			L" — " + planet.Status();
 	}
 
 	// 로딩 중 임시 메모리와 실행 후 상주량을 구분한다 (client2 2f15728).
@@ -166,6 +237,17 @@ namespace
 		}
 		return DefWindowProc(hwnd, msg, wParam, lParam);
 	}
+
+	// ── 충돌체 로드 결과 슬롯 (2026-10-29) ──
+	//  로딩 스레드가 묶음을 읽어 world 를 채우고, 메인(finish)이 넘겨받는다(멀티스레딩 명세 §9.3 — 잡은 자기 슬롯에만 쓴다).
+	//  디버그 행성은 배치 인스턴스를 복사해 넘긴다(SetPlacement 가 배치를 옮겨 가므로). 게임 맵은 둘 다 비어 있다.
+	struct CollisionLoadSlot
+	{
+		std::vector<std::string>            typeNames;
+		std::vector<Shared::PlacedInstance> instances;
+		Shared::CollisionWorld              world;
+		std::wstring                        error;
+	};
 }
 
 namespace swc {
@@ -333,17 +415,48 @@ namespace swc {
 				LogMemory(L"map GPU uploaded", resources.ModelCount(), planetData);
 				resources.ReleaseModel(loaded.model);
 				LogMemory(L"map CPU released", resources.ModelCount());
-				const NodeHandle planetNode = planetModel.Instantiate(scene);
-				if (planetNode == kInvalidNode)
+				// 루트를 기억해 둔다 — 디버그 행성에 들어가면 숨긴다(EnterDebugPlanet, 2026-10-28).
+				gameMapNode = planetModel.Instantiate(scene);
+				if (gameMapNode == kInvalidNode)
 				{
 					batch.SetFailureDetail(L"행성 모델을 장면에 등록하지 못했습니다.");
 					return false;
 				}
-				scene.SetLocalTransform(planetNode,
+				scene.SetLocalTransform(gameMapNode,
 					XMMatrixTranslation(float(planet.center.x), float(planet.center.y), float(planet.center.z)));
 				return true;
 			},
 			std::move(planetOptions));
+
+		// ── 정적 오브젝트 충돌체 (2026-10-29, Shared/Physics/CollisionWorld.h) ──
+		//  맵 glb 옆 충돌체 묶음(Resource_Work/_tools/collision/col_build.py)을 로딩 스레드에서 읽는다.
+		//  못 읽어도 게임은 띄운다 — 지금은 C 키 와이어프레임만 쓴다(로그만 남긴다).
+		{
+			auto collision = std::make_shared<CollisionLoadSlot>();
+			const std::wstring collisionPack = AssetPath(Shared::kPlanetCollisionAsset);
+			const std::wstring collisionManifest = AssetPath(Shared::kPlanetCollisionManifestAsset);
+			batch.Add(L"충돌체",
+				[collision, collisionPack, collisionManifest]()
+				{
+					if (!collision->world.LoadPack(collisionPack.c_str(), collisionManifest.c_str(), collision->error))
+						return false;
+					collision->world.Finalize();
+					return true;
+				},
+				[this, collision](bool ok)
+				{
+					if (!ok)
+					{
+						Log(L"[충돌체] 게임 맵 충돌체를 못 읽어 없이 띄운다 — %s", collision->error.c_str());
+						return true;
+					}
+					gameMapCollision = std::move(collision->world);
+					colliderView.Clear();
+					Log(L"[충돌체] 게임 맵 — 메시 %zu · 인스턴스 %zu · 삼각형 %zu (C 키 = 와이어프레임)",
+						gameMapCollision.MeshCount(), gameMapCollision.InstanceCount(), gameMapCollision.MeshTriangleCount());
+					return true;
+				});
+		}
 
 		// ── 하늘의 원거리 행성 (GLB LOD2/LOD3, client2 2f15728) ──
 		//  LOD 마다 따로 요청한다 — 파싱은 로딩 스레드, GPU 업로드는 메인에서 한 프레임에 하나씩.
@@ -432,6 +545,8 @@ namespace swc {
 				// 공통 시작 방향(Landing L1)을 사용하고 실제 지면·플랫폼 높이에 맞춘다 (client2 2f15728).
 				// (모델도 중심 기준으로 1m 내려 배치된다 — Model.cpp kGroundOffset).
 				controller.SetPlanet(&planet);
+				// 게임 맵 충돌체(단계 0 «충돌체» 에서 읽었다 — 못 읽었으면 비어 있어 지형만 막는다, 2026-10-29 B안)
+				controller.SetCollision(gameMapCollision.Loaded() ? &gameMapCollision : nullptr);
 				const Vec3d spawn = Shared::kUsePlanarMap
 					? Vec3d{ Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ }
 					: planet.PositionAt(Normalize({ Shared::kPlanetSpawnUpX,
@@ -439,6 +554,9 @@ namespace swc {
 				controller.Spawn(spawn, { 0.0, 0.0, 1.0 });
 				spawnPosition = controller.Position();
 				camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+
+				// 해를 처음 바라보는 쪽 45° 상공에 둔다 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게») — 스폰 자리 기준.
+				renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
 				return true;
 			});
 
@@ -496,8 +614,12 @@ namespace swc {
 				MessageBox(hwnd, sceneManager.LoadError().c_str(), L"로딩 실패", MB_OK | MB_ICONERROR);
 				break;
 			}
-			if (sceneManager.TakeEntered() == SceneId::Game)
+			const SceneId entered = sceneManager.TakeEntered();
+			size_t debugPlanet = 0;
+			if (entered == SceneId::Game)
 				EnterGame();
+			else if (IsDebugPlanetScene(entered, debugPlanet))
+				EnterDebugPlanet(debugPlanet);
 
 			if (sceneManager.IsLoading())
 			{
@@ -508,6 +630,7 @@ namespace swc {
 
 			HandleSystemKeys();
 			UpdatePlayer(dt);
+			UpdateDebugPlanetObjects();
 			UpdateFire(dt);
 			UpdateNetwork(dt);
 
@@ -557,24 +680,308 @@ namespace swc {
 			suppressFire = true;   // 이 클릭은 «잡기» 였다. 총알이 나가면 안 된다
 		}
 
-		// V = 디버그 뷰 순환, R = RT 토글, [ ] = 룰렛 무릎점(레이 예산)
+		// V = 디버그 뷰 순환, R = RT 토글
+		//  (2026-10-27 렌더 2단계 — 룰렛 무릎점 [ ] 키는 RayTracingParams 에서 룰렛이 빠져 없앴다)
 		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
-			renderer.SetDebugMode((renderer.DebugMode() + 1) % 11);
+			renderer.SetDebugMode((renderer.DebugMode() + 1) % 14);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~13 (6단계: 11 주변광, 7단계: 12 GI 프로브 사용, 8단계: 13 AO)
 		if (input.WasPressed('R'))
 		{
 			RayTracingParams p = renderer.GetRayTracingParams();
 			p.enabled = !p.enabled;
 			renderer.SetRayTracingParams(p);
 		}
-		if (input.WasPressed(VK_OEM_4) || input.WasPressed(VK_OEM_6))
+
+		// C = 충돌체 와이어프레임 (2026-10-29 사용자 «c키를 눌러 저폴리 충돌체를 와이어 프레임으로 볼 수있게 해줘»)
+		if (input.WasPressed('C'))
 		{
-			RayTracingParams p = renderer.GetRayTracingParams();
-			p.rouletteKnee += input.WasPressed(VK_OEM_6) ? 0.05f : -0.05f;
-			if (p.rouletteKnee < 0.01f) p.rouletteKnee = 0.01f;
-			if (p.rouletteKnee > 2.0f) p.rouletteKnee = 2.0f;
-			renderer.SetRayTracingParams(p);
+			showColliders = !showColliders;
+			colliderView.Clear();
+			const Shared::CollisionWorld* world = ActiveCollision();
+			Log(L"[충돌체] 와이어프레임 %s — %s", showColliders ? L"켬" : L"끔",
+				world && world->Loaded() ? L"이 맵의 충돌체를 그린다" : L"이 맵은 충돌체를 못 읽었다(로드 로그 참고)");
 		}
+
+		HandleDebugPlanetKeys();
+	}
+
+	// 지금 맵의 충돌체 — 예시 행성이면 그 씬의 것, 아니면 게임 맵 것(2026-10-29)
+	const Shared::CollisionWorld* Engine::ActiveCollision() const
+	{
+		return InDebugPlanet() ? &sceneManager.DebugPlanet(activeDebugPlanet).Collision() : &gameMapCollision;
+	}
+
+	// ── 예시 행성 디버그 씬 (2026-10-28) ─────────────────────────
+	//  숫자키 1~5 = Verdant · Neon · Ruin · Volcanic · Glacier (PlanetDebugScene.h).
+	//  처음 고르면 로딩 씬을 띄우고 맵을 읽는다. 한 번 읽은 행성은 묶음 없이 바로 넘어간다.
+	//  게임 맵으로 돌아가는 키는 없다(지시 범위 밖).
+	void Engine::HandleDebugPlanetKeys()
+	{
+		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
+		{
+			if (!input.WasPressed('1' + int(i))) continue;
+			if (i == activeDebugPlanet) return;   // 이미 그 행성이다
+
+			loadStart = std::chrono::steady_clock::now();
+			const SceneId next = DebugPlanetSceneId(i);
+			if (sceneManager.DebugPlanet(i).Loaded())
+			{
+				sceneManager.ChangeScene(next, nullptr, resources);
+				return;
+			}
+			std::unique_ptr<LoadBatch> load = std::make_unique<LoadBatch>(
+				std::wstring(L"디버그 행성 ") + PlanetDebugScene::Name(i));
+			BuildDebugPlanetLoad(*load, i);
+			sceneManager.ChangeScene(next, std::move(load), resources);
+			return;
+		}
+	}
+
+	// 게임 맵(BuildGameLoad)과 같은 길 — 맵 glb 를 로딩 스레드에서 한 번 파싱해 렌더 메시와 접지면을 함께 얻고,
+	// 메인에서 GPU 에 올린 뒤 RAM 사본을 버린다. 배치 JSON 은 읽지 않는다(PlanetDebugScene.h).
+	void Engine::BuildDebugPlanetLoad(LoadBatch& batch, size_t index)
+	{
+		ModelRequestOptions options;
+		options.collectObject = &Shared::PlanetSurface::IsGroundObject;
+		options.cacheTag = Shared::PlanetSurface::kGroundRuleTag;
+		auto parsedGround = std::make_shared<Shared::PlanetSurface>();   // 로딩 스레드의 결과 슬롯
+		options.onParsed = [parsedGround](Shared::ModelSource& source, std::wstring& error)
+		{
+			return parsedGround->Build(source.collected, error);
+		};
+
+		resources.RequestModelFile(batch, AssetPath(PlanetDebugScene::Asset(index)),
+			[this, &batch, index, parsedGround](const ModelFileResources& loaded)
+			{
+				const std::wstring name = PlanetDebugScene::Name(index);
+				const ModelData* data = resources.Get(loaded.model);
+				if (!data)
+				{
+					batch.SetFailureDetail(name + L" 맵 로드 실패: " + resources.LastError());
+					return false;
+				}
+				std::wstring error;
+				const bool built = sceneManager.DebugPlanet(index).Build(*data, std::move(*parsedGround),
+					renderer, scene, planet.center, error);
+				// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다(실패해도 버린다).
+				resources.ReleaseModel(loaded.model);
+				if (!built)
+				{
+					batch.SetFailureDetail(name + L": " + error);
+					return false;
+				}
+				LogMemory(L"debug planet CPU released", resources.ModelCount());
+				return true;
+			},
+			std::move(options));
+
+		// ── 배치 JSON → 오브젝트 모델 (2026-10-28) ──
+		//  JSON 은 로딩 스레드에서 읽고(PlanetDebugScene::ReadPlacement), 메인에서 씬에 넘긴다.
+		//  오브젝트 목록은 JSON 을 읽어야 알 수 있어서, 이 finish 안에서 NextStage + RequestModelFile 로 다음 단계를 덧붙인다.
+		//  (LoadBatch 는 앞 단계가 메인에서 다 끝나야 다음 단계를 내므로, 아직 내지 않은 뒤 단계에 더하는 것은 안전하다.)
+		//  JSON 이나 오브젝트 하나를 못 읽어도 맵은 띄운다 — 디버깅용이라 그 종류만 빼고 로그를 남긴다.
+		auto placement = std::make_shared<PlanetPlacement>();   // 로딩 스레드의 결과 슬롯
+		const std::wstring placementPath = AssetPath(PlanetDebugScene::PlacementAsset(index));
+		batch.Add(L"배치 JSON",
+			[placement, placementPath]()
+			{
+				return PlanetDebugScene::ReadPlacement(placementPath, *placement);
+			},
+			[this, &batch, index, placement](bool ok)
+			{
+				if (!ok)
+				{
+					Log(L"[디버그 행성] 배치 JSON 을 못 읽어 오브젝트 없이 띄운다 — %s", placement->error.c_str());
+					return true;
+				}
+				PlanetDebugScene& target = sceneManager.DebugPlanet(index);
+				// 지형 레이어 DDS 경로 — SetPlacement 가 배치 결과를 옮겨 가기 전에 뽑는다(2026-10-28).
+				const std::vector<std::wstring> layerAssets = PlanetDebugScene::TerrainLayerAssets(index, *placement);
+				// 충돌체 입력 — 같은 이유로 종류 이름 · 인스턴스를 먼저 복사한다(2026-10-29).
+				auto collision = std::make_shared<CollisionLoadSlot>();
+				collision->typeNames.reserve(placement->types.size());
+				for (const PlanetPlacement::Type& type : placement->types)
+					collision->typeNames.push_back(type.name);
+				collision->instances.reserve(placement->instances.size());
+				for (const PlanetPlacement::Instance& instance : placement->instances)
+				{
+					Shared::PlacedInstance placed;
+					placed.type = instance.type;
+					std::copy(std::begin(instance.position), std::end(instance.position), placed.position);
+					std::copy(std::begin(instance.rotation), std::end(instance.rotation), placed.rotation);
+					placed.scale = instance.scale;
+					collision->instances.push_back(placed);
+				}
+				target.SetPlacement(std::move(*placement));
+
+				batch.NextStage();
+
+				// ── 충돌체 (2026-10-29, 사용자 «… 나머진은 저폴리로 충돌 가자 … c키를 눌러 … 와이어 프레임으로») ──
+				//  맵 glb 옆 «<행성>_Collision.glb · .json» 을 읽고 배치 인스턴스를 씌운다(로딩 스레드).
+				//  작은 식물(충돌체 없음)과 작은 돌(배율 < min_scale)은 여기서 빠진다. 못 읽어도 맵은 띄운다(로그만).
+				{
+					const std::wstring collisionPack = AssetPath(PlanetDebugScene::CollisionAsset(index).c_str());
+					const std::wstring collisionManifest = AssetPath(PlanetDebugScene::CollisionManifestAsset(index).c_str());
+					batch.Add(L"충돌체",
+						[collision, collisionPack, collisionManifest]()
+						{
+							if (!collision->world.LoadPack(collisionPack.c_str(), collisionManifest.c_str(), collision->error))
+								return false;
+							collision->world.AddPlacement(collision->typeNames, collision->instances);
+							collision->world.Finalize();
+							collision->instances.clear();
+							collision->instances.shrink_to_fit();
+							return true;
+						},
+						[this, index, collision](bool ok)
+						{
+							if (!ok)
+							{
+								Log(L"[디버그 행성] %s 충돌체를 못 읽어 없이 띄운다 — %s",
+									PlanetDebugScene::Name(index), collision->error.c_str());
+								return true;
+							}
+							const Shared::CollisionWorld& world = collision->world;
+							Log(L"[디버그 행성] %s 충돌체 — 종류 %zu · 인스턴스 %zu · 삼각형 %zu · 작은 돌 제외 %zu · 충돌체 없는 종류(작은 식물) %zu",
+								PlanetDebugScene::Name(index), world.MeshCount(), world.InstanceCount(), world.MeshTriangleCount(),
+								world.SkippedSmallRocks(), world.SkippedNoCollider());
+							sceneManager.DebugPlanet(index).SetCollision(std::move(collision->world));
+							colliderView.Clear();
+							return true;
+						});
+				}
+
+				// ── 지형 레이어 (2026-10-28, 사용자 «렌더러 밖 수정 이번만 허용») ──
+				//  glb 의 지형 재질은 대체 레이어 한 장뿐이다. 레이어 4종 + 마스크의 밉맵 DDS 를 로딩 스레드에서 읽고,
+				//  메인에서 렌더러 지형 재질을 만들어 지형 노드에 끼운다. 이 단계는 맵 Build(앞 단계) 뒤에 돈다.
+				//  못 읽으면 대체 레이어 한 장 그대로 둔다(로그만).
+				if (layerAssets.empty())
+				{
+					Log(L"[디버그 행성] 배치 JSON 에 terrain_layers 가 없어 지형은 대체 레이어 한 장으로 둔다");
+				}
+				else
+				{
+					auto layers = std::make_shared<TerrainLayerSet>();   // 로딩 스레드의 결과 슬롯
+					std::vector<std::wstring> layerPaths;
+					layerPaths.reserve(layerAssets.size());
+					for (const std::wstring& asset : layerAssets)
+						layerPaths.push_back(AssetPath(asset.c_str()));
+					batch.Add(L"지형 레이어",
+						[layers, layerPaths]()
+						{
+							return PlanetDebugScene::LoadTerrainLayers(layerPaths, *layers);
+						},
+						[this, index, layers](bool ok)
+						{
+							if (!ok)
+							{
+								Log(L"[디버그 행성] 지형 레이어를 못 읽어 대체 레이어 한 장으로 둔다 — %s", layers->error.c_str());
+								return true;
+							}
+							std::wstring error;
+							if (!sceneManager.DebugPlanet(index).ApplyTerrainLayers(index, std::move(*layers), renderer, scene, error))
+								Log(L"[디버그 행성] 지형 레이어 적용 실패 — 대체 레이어 한 장으로 둔다: %s", error.c_str());
+							else
+								Log(L"[디버그 행성] %s 지형 레이어 4종 + 마스크 적용", PlanetDebugScene::Name(index));
+							return true;
+						});
+				}
+				for (size_t type = 0; type < target.ObjectTypeCount(); ++type)
+				{
+					const std::wstring asset = target.ObjectAsset(type);
+					resources.RequestModelFile(batch, AssetPath(asset.c_str()),
+						[this, index, type, asset](const ModelFileResources& loaded)
+						{
+							const ModelData* data = resources.Get(loaded.model);
+							if (!data)
+							{
+								Log(L"[디버그 행성] 오브젝트 건너뜀 — %s: %s", asset.c_str(), resources.LastError().c_str());
+								return true;
+							}
+							std::wstring error;
+							if (!sceneManager.DebugPlanet(index).AddObjectModel(type, *data, renderer, error))
+								Log(L"[디버그 행성] 오브젝트 건너뜀 — %s: %s", asset.c_str(), error.c_str());
+							// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다.
+							resources.ReleaseModel(loaded.model);
+							return true;
+						});
+				}
+				return true;
+			});
+	}
+
+	void Engine::EnterDebugPlanet(size_t index)
+	{
+		PlanetDebugScene& target = sceneManager.DebugPlanet(index);
+		if (!target.Loaded()) return;
+
+		// 보이는 맵을 바꿔 끼운다 — 모든 맵이 같은 자리(행성 중심)에 겹쳐 있으므로 하나만 켠다.
+		if (gameMapNode != kInvalidNode)
+			scene.SetVisible(gameMapNode, false);
+		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
+		{
+			const PlanetDebugScene& other = sceneManager.DebugPlanet(i);
+			if (other.Loaded())
+				scene.SetVisible(other.Root(), i == index);
+		}
+
+		// 접지면도 바꾼다 — 이동 · 착지 · 카메라가 모두 Planet::SurfaceHeight 하나로 지형을 본다(Planet.h).
+		terrain.Configure(&target.Ground(), planet.radius);
+		planet.terrain = &terrain;
+
+		// 서버 세계는 게임 맵이다. 받아 둔 원격 플레이어 · NPC 를 치운다(이 씬에서는 UpdateNetwork 가 돌지 않는다).
+		ParkNetworkNodes();
+
+		// 충돌체도 이 행성 것으로(2026-10-29) — 못 읽었으면 지형만 막는다.
+		controller.SetCollision(target.Collision().Loaded() ? &target.Collision() : nullptr);
+
+		// 착륙 지점 L1 에 다시 세운다. 높이는 Spawn 이 새 접지면에서 잰다.
+		controller.Spawn(planet.PositionAt(target.SpawnUp(), Shared::kGroundOffset), controller.Facing());
+		spawnPosition = controller.Position();
+		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+		scene.SetLocalTransform(player, controller.WorldMatrix());
+
+		// 해를 바라보는 쪽 45° 상공에 둔다 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게») — 착륙 지점 L1 기준.
+		renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
+
+		// 스폰 자리 주변 오브젝트를 바로 고른다(이후는 UpdateDebugPlanetObjects 가 움직일 때마다).
+		target.StreamObjects(scene, controller.Position() - planet.center, true);
+		terrainStatus = DebugPlanetStatus(index, target);
+
+		activeDebugPlanet = index;
+		titleTimer = 0.0f;
+
+		const double seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - loadStart).count();
+		Log(L"[디버그 행성] %zu %s 입장 — %.2fs · %s", index + 1, PlanetDebugScene::Name(index),
+			seconds, terrainStatus.c_str());
+	}
+
+	// 플레이어 주변 배치 오브젝트를 다시 고른다 — 15 m 움직일 때마다(PlanetDebugScene::StreamObjects).
+	void Engine::UpdateDebugPlanetObjects()
+	{
+		if (!InDebugPlanet()) return;
+		PlanetDebugScene& target = sceneManager.DebugPlanet(activeDebugPlanet);
+		if (target.StreamObjects(scene, controller.Position() - planet.center, false))
+			terrainStatus = DebugPlanetStatus(activeDebugPlanet, target);
+	}
+
+	// 원격 플레이어 · NPC 노드를 화면 밖으로 치우고 빈 노드 목록으로 돌린다(노드는 지우지 않고 재사용한다).
+	void Engine::ParkNetworkNodes()
+	{
+		const XMMATRIX parked = ParkedTransform();
+		for (const auto& entry : remoteNodes)
+		{
+			scene.SetLocalTransform(entry.second, parked);
+			freeRemoteNodes.push_back(entry.second);
+		}
+		remoteNodes.clear();
+		for (const auto& entry : npcNodes)
+		{
+			scene.SetLocalTransform(entry.second, parked);
+			freeNpcNodes.push_back(entry.second);
+		}
+		npcNodes.clear();
 	}
 
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
@@ -625,7 +1032,8 @@ namespace swc {
 		const Vec3d aim = camera.LookDirection();
 
 		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
-		if (network.Connected())
+		// 디버그 행성에서는 보내지 않는다 — 서버 세계(게임 맵)와 좌표가 맞지 않는다.
+		if (network.Connected() && !InDebugPlanet())
 		{
 			const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
 			const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
@@ -685,21 +1093,34 @@ namespace swc {
 	//   송신은 Class Bridge → Network(9절), 수신은 Network → State Manager → OtherPlayer · NPC(6.13) 로 옮길 대상이다.
 	void Engine::UpdateNetwork(float dt)
 	{
-		if (!network.Connected())
+		// 디버그 행성에서는 돌리지 않는다 — 서버 세계는 게임 맵이라 위치 · 리스폰 · 원격 좌표가 맞지 않는다.
+		if (!network.Connected() || InDebugPlanet())
 			return;
 
-		// ★ 좌표 송신은 1/30초마다. 렌더 프레임률과 분리한다.
-		sendAccumulator += dt;
-		if (sendAccumulator >= kSendInterval)
-		{
-			sendAccumulator -= kSendInterval;
+		// ★ B안(입력 기반, 2026-10-29) — 좌표가 아니라 이번 프레임에 돈 고정 틱의 입력을 보낸다(틱마다 하나, 초당 60개).
+		//   서버가 같은 이동 코드 · 같은 충돌체로 판정한다(명세 6.13 ②, 18절 원칙 4).
+		for (const Shared::MoveCommand& command : controller.FrameCommands())
+			network.SendInput(command);
 
-			const Vec3d& pos = controller.Position();
-			network.SendToServer(float(pos.x), float(pos.y), float(pos.z));
-		}
-
-		//서버가 뿌린 다른 플레이어의 좌표를 받는다. 논블로킹이라 즉시 돌아온다.
+		//서버가 뿌린 다른 플레이어의 좌표와 내 판정 상태를 받는다. 논블로킹이라 즉시 돌아온다.
 		network.Poll();
+
+		// ── 서버 판정으로 보정 (명세 6.13 ③ · 멀티스레딩 명세 §3.2 ②) ──
+		//  서버가 마지막으로 처리한 입력 뒤의 내 예측과 벌어졌으면 서버 상태로 되감고 남은 입력을 다시 적용한다.
+		Shared::PlayerStatePacket serverState;
+		if (network.TakePlayerState(serverState))
+		{
+			ServerMoveState state;
+			state.lastSeq = serverState.lastSeq;
+			std::copy(std::begin(serverState.pos), std::end(serverState.pos), state.pos);
+			std::copy(std::begin(serverState.velocity), std::end(serverState.velocity), state.velocity);
+			std::copy(std::begin(serverState.facing), std::end(serverState.facing), state.facing);
+			state.verticalSpeed = serverState.verticalSpeed;
+			state.flags = serverState.flags;
+			const double moved = controller.Reconcile(state);
+			if (moved > 0.5)
+				Log(L"[이동] 서버 보정 %.2fm (입력 %u, 누계 %u회)", moved, serverState.lastSeq, controller.Corrections());
+		}
 
 		// ── 리스폰 ──────────────────────────────────────────
 		//  ★ 클라가 스스로 되살아나지 않는다. 체력이 0 인지도 서버가 판정하고,
@@ -825,6 +1246,8 @@ namespace swc {
 		packet.view = RenderView{ };
 		packet.view.viewProj = camera.ViewProj();
 		packet.view.eyePosition = camera.EyePosition();
+		// 2026-10-27 렌더 6단계 — 하늘 · 해 높이의 기준(행성 위 플레이어 자리의 위)
+		packet.view.up = XMFLOAT3(float(controller.Up().x), float(controller.Up().y), float(controller.Up().z));
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);
@@ -832,6 +1255,13 @@ namespace swc {
 		renderer.BeginFrame();
 		skyPlanet.Render(renderer, camera, kHeight);
 		renderer.Render(packet);
+		// C 키 충돌체 와이어프레임 — 메인 패스 뒤 · UI 앞(2026-10-29). 선은 맵 공간이라 원점 = 행성 중심(월드).
+		if (showColliders)
+		{
+			colliderView.Update(ActiveCollision(), controller.Position() - planet.center, false);
+			renderer.DrawDebugLines(packet.view,
+				XMFLOAT3(float(planet.center.x), float(planet.center.y), float(planet.center.z)), colliderView.Vertices());
+		}
 		renderer.DrawSprites(uiSprites);
 		renderer.EndFrame();
 	}
@@ -882,10 +1312,9 @@ namespace swc {
 		titleTimer = 0.0f;
 
 		const RayTracingParams& rt = renderer.GetRayTracingParams();
-		// 임시 스위치로 끈 것과 장치가 못 하는 것을 구분해서 보여준다.
-		// 둘을 「미지원」 하나로 뭉치면 RTX 장비에서 «왜 미지원이지» 로 헤맨다.
-		const wchar_t* rtState = !kEnableRaytracing ? L"임시끔(래스터만)"
-			: !renderer.SupportsRaytracing() ? L"미지원"
+		// 장치가 못 하는 것과 실행 중 R 키로 끈 것을 구분해서 보여준다.
+		//  (2026-10-27 렌더 2단계 — 임시 스위치 kEnableRaytracing 이 없어져 «임시끔(래스터만)» 상태도 없앴다)
+		const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
 			: (rt.enabled ? L"ON" : L"OFF");
 
 		// 이동 검증용: 고도 / 접지 / 실제 스폰에서의 거리
@@ -903,12 +1332,13 @@ namespace swc {
 			else
 				swprintf_s(healthText, L"?");
 
+			// 2026-10-29 B안 — 송신 = 입력 수, 판정 = 받은 서버 상태 수, 보정 = 되감은 횟수(마지막 거리)
 			swprintf_s(netText,
-				L"나=%u  체력 %s  피격 %u  송신 %u  수신 %u  다른플레이어 %u명  NPC %u마리",
+				L"나=%u  체력 %s  피격 %u  입력 %u  판정 %u  보정 %u회(%.2fm)  다른플레이어 %u명  NPC %u마리",
 				network.MyId(), healthText, network.HitCount(),
-				network.SentCount(),
-				network.EchoCount(), network.RemoteCount(),
-				network.NpcCount());
+				network.SentCount(), network.StateCount(),
+				controller.Corrections(), controller.LastCorrection(),
+				network.RemoteCount(), network.NpcCount());
 		}
 		else
 		{
@@ -929,22 +1359,36 @@ namespace swc {
 		// 래스터 제출량 (client2 2f15728) — 프러스텀 컬링으로 빠진 메시 수와 제출 삼각형.
 		//  Draw = 인스턴싱 묶음(실제 DrawIndexedInstanced 횟수), Inst = 그 안의 인스턴스 합.
 		const RenderStats& renderStats = renderer.Stats();
+
+		// C 키 충돌체 와이어프레임 (2026-10-29) — 켰을 때만 «그린 충돌체 수 · 선 수»
+		wchar_t colliderText[128] = L"";
+		if (showColliders)
+		{
+			const Shared::CollisionWorld* world = ActiveCollision();
+			if (world && world->Loaded())
+				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 선 %zu%s", colliderView.InstanceCount(), colliderView.LineCount(),
+					colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
+			else
+				swprintf_s(colliderText, L"  |  충돌체(C) 없음");
+		}
+
 		wchar_t title[1280];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-			L"|  %s  |  %s  |  RT %s knee %.2f view %u  |  %s  "
-			L"|  행성 LOD%u %.0fpx  |  Draw %zu Inst %zu/%zu Cull %zu Tri %.2fM%s",
+			L"|  %s  |  %s  |  RT %s view %u  |  %s  "
+			L"|  행성 LOD%u %.0fpx  |  Draw %zu Inst %zu/%zu Cull %zu Tri %.2fM%s%s",
 			timer.Fps(), dt * 1000.0f,
 			controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 			distFromSpawn, controller.Speed(),
 			netText,
 			terrainStatus.c_str(),
-			rtState, rt.rouletteKnee, renderer.DebugMode(),
+			rtState, renderer.DebugMode(),
 			blasText,
 			skyPlanet.SelectedLod(), skyPlanet.DiameterPixels(),
 			renderStats.drawCalls, renderStats.instances, renderStats.submitted, renderStats.culled,
 			double(renderStats.triangles) / 1000000.0,
-			renderStats.dropped ? L" ★인스턴스 유실" : L"");
+			renderStats.dropped ? L" ★인스턴스 유실" : L"",
+			colliderText);
 		SetWindowText(hwnd, title);
 	}
 

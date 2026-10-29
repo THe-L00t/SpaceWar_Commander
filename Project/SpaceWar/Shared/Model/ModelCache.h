@@ -28,7 +28,9 @@ namespace Shared {
 
 	// 결과가 달라지는 변경을 하면 올린다(위 주석).
 	// 2 = SourceMaterial::doubleSided · KHR_materials_emissive_strength · glTF 보조 노드 숨김·노드 collectObject (2026-10-11)
-	inline constexpr uint32_t kModelCacheVersion = 2;
+	// 3 = SourceMaterial 투과 · 부피 · 굴절률 — KHR_materials_transmission · volume · ior (2026-10-28)
+	// 4 = SourceMaterial 알파 마스크 — glTF alphaMode MASK · alphaCutoff (2026-10-28)
+	inline constexpr uint32_t kModelCacheVersion = 4;
 
 	struct ModelCacheKey
 	{

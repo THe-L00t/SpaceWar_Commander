@@ -1,10 +1,14 @@
 #include "ModelBuilder.h"
+#include "TextureBake.h"
 #include "TextureLoader.h"
 
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace DirectX;
 
@@ -55,8 +59,8 @@ namespace swc {
 		class TextureCache
 		{
 		public:
-			TextureCache(ModelData& data, const Shared::ModelSource& source)
-				: data(data), source(source) {}
+			TextureCache(ModelData& data, const Shared::ModelSource& source, const std::wstring& bakeDirectory)
+				: data(data), source(source), bakeDirectory(bakeDirectory) {}
 
 			bool ResolveFile(const std::string& relative, TextureSlot slot,
 				uint32_t& index, std::wstring& error)
@@ -78,10 +82,23 @@ namespace swc {
 				}
 
 				TextureData image;
-				if (!LoadTextureImage(path.c_str(), srgb, image, error))
+				fs::path ddsPath = path;
+				ddsPath.replace_extension(L".dds");
+				if (TryMipmappedDds(ddsPath, srgb, 0, 0, image))
 				{
-					error = L"모델 텍스처를 읽지 못했습니다: " + path.wstring() + L"\n" + error;
-					return false;
+					++stats.dds;
+				}
+				else
+				{
+					// 파일을 통째로 읽어 메모리에서 푼다 — bake 키(내용 해시)를 푸는 바이트와 같은 바이트로 만든다.
+					std::vector<uint8_t> bytes;
+					if (!ReadFileBytes(path, bytes) ||
+						!DecodeBaked(bytes.data(), bytes.size(), path.stem().wstring(), srgb, path.c_str(), image, error))
+					{
+						error = L"모델 텍스처를 읽지 못했습니다: " + path.wstring() +
+							(error.empty() ? std::wstring() : L"\n" + error);
+						return false;
+					}
 				}
 				index = Store(std::move(image), key);
 				return true;
@@ -106,17 +123,124 @@ namespace swc {
 					return true;
 				}
 
-				const std::wstring label = L"내장 이미지 #" + std::to_wstring(imageIndex);
 				TextureData decoded;
-				if (!LoadTextureImageFromMemory(image.bytes.data(), image.bytes.size(),
-					srgb, label.c_str(), decoded, error))
-					return false;
+				uint32_t pngWidth = 0, pngHeight = 0;
+				PngSize(image.bytes, pngWidth, pngHeight);
+				const fs::path ddsPath = EmbeddedDdsPath(image.name);
+				if (!ddsPath.empty() && TryMipmappedDds(ddsPath, srgb, pngWidth, pngHeight, decoded))
+				{
+					++stats.dds;
+				}
+				else
+				{
+					const std::wstring label = L"내장 이미지 #" + std::to_wstring(imageIndex);
+					if (!DecodeBaked(image.bytes.data(), image.bytes.size(), AsciiName(image.name), srgb,
+						label.c_str(), decoded, error))
+						return false;
+				}
 
 				index = Store(std::move(decoded), key);
 				return true;
 			}
 
+			TextureLoadStats stats;
+
 		private:
+			// ★ 텍스처 LOD = 밉맵 (2026-10-29 사용자 «일단 텍스처만 LOD 시작해줘» → «미리 만든 DDS 를 읽는다»)
+			//   노션 «LOD 적용 준비» 2.4 «밉맵이 텍스처 LOD 다». resource(dfa4fe4)가 PNG 옆에 같은 이름으로 구워 둔
+			//   밉맵 DDS(texconv, 1×1 까지)가 있으면 그것을 읽는다. 렌더러는 밉 체인을 그대로 올린다(GRenderer::CreateTexture).
+			//   없거나 맞지 않으면(RGBA8 아님 · sRGB 가 슬롯과 다름 · 크기가 PNG 와 다름) 예전처럼 PNG 를 WIC 로 푼다(밉 1단).
+			//   방식은 client1 세션이 10-28 에 넣었다 되돌린 코드와 같다(되돌린 이유 = 먼 곳 번쩍임 → 렌더러에서 원인을 찾는다).
+			static bool TryMipmappedDds(const fs::path& ddsPath, bool srgb, uint32_t expectWidth, uint32_t expectHeight,
+				TextureData& out)
+			{
+				std::error_code ec;
+				if (!fs::is_regular_file(ddsPath, ec)) return false;
+				TextureData dds;
+				std::wstring ddsError;
+				if (!LoadDdsTexture(ddsPath.c_str(), dds, ddsError)) return false;
+				if (dds.format != TextureFormat::Rgba8 || dds.srgb != srgb) return false;
+				if (expectWidth != 0 && (dds.width != expectWidth || dds.height != expectHeight)) return false;
+				out = std::move(dds);
+				return true;
+			}
+
+			// glb 내장 이미지의 DDS 자리 = 모델 파일 폴더\<이미지 이름>.dds (리소스 규칙: 이미지 이름 = PNG 파일 이름).
+			// 이름이 없거나 폴더가 섞여 있으면 찾지 않는다.
+			fs::path EmbeddedDdsPath(const std::string& imageName) const
+			{
+				if (imageName.empty() || source.sourceDirectory.empty()) return {};
+				const fs::path name = Utf8Path(imageName);
+				if (name.has_parent_path() || !name.has_filename()) return {};
+				return fs::path(source.sourceDirectory) / (name.wstring() + L".dds");
+			}
+
+			// PNG 머리(IHDR)의 크기. PNG 가 아니면 0 × 0 — 크기 비교를 하지 않는다.
+			static void PngSize(const std::vector<uint8_t>& bytes, uint32_t& width, uint32_t& height)
+			{
+				width = height = 0;
+				static constexpr uint8_t kSignature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+				if (bytes.size() < 24 || std::memcmp(bytes.data(), kSignature, 8) != 0 ||
+					std::memcmp(bytes.data() + 12, "IHDR", 4) != 0) return;
+				auto be32 = [&](size_t at)
+				{
+					return (uint32_t(bytes[at]) << 24) | (uint32_t(bytes[at + 1]) << 16) |
+						(uint32_t(bytes[at + 2]) << 8) | uint32_t(bytes[at + 3]);
+				};
+				width = be32(16);
+				height = be32(20);
+			}
+
+			// ★ 푼 픽셀 bake (2026-10-29 사용자 «WIC로 PNG읽은거를 bake해줘») — Resource/TextureBake.h
+			//   모델 디스크 캐시(.swmc)는 메시만 bake 하고 텍스처는 PNG 압축 그대로라, 실행할 때마다 WIC 로 다시 풀었다.
+			//   같은 PNG 바이트의 bake 파일이 있으면 그 픽셀을 그대로 읽고, 없으면 예전처럼 WIC 로 푼 뒤 bake 파일을 쓴다.
+			//   화질은 예전과 같다(WIC 결과 그대로, 밉 1단). bake 폴더가 없으면 예전과 똑같이 매번 푼다.
+			//   render/lab 텍스처 LOD(b2235ce)를 합친 뒤로는 밉맵 DDS 가 없거나 맞지 않는 이미지만 여기로 온다.
+			bool DecodeBaked(const uint8_t* bytes, size_t size, const std::wstring& name, bool srgb,
+				const wchar_t* label, TextureData& out, std::wstring& error)
+			{
+				TextureBakeKey bakeKey;
+				std::wstring bakePath;
+				if (!bakeDirectory.empty())
+				{
+					bakeKey = MakeTextureBakeKey(bytes, size, srgb);
+					bakePath = TextureBakePath(bakeDirectory, name, bakeKey);
+					if (ReadTextureBake(bakePath, bakeKey, out))
+					{
+						out.path = label ? label : L"";
+						++stats.baked;
+						return true;
+					}
+				}
+
+				if (!LoadTextureImageFromMemory(bytes, size, srgb, label, out, error))
+					return false;
+				++stats.decoded;
+				if (!bakePath.empty() && WriteTextureBake(bakePath, bakeKey, out))
+					++stats.written;
+				return true;
+			}
+
+			static bool ReadFileBytes(const fs::path& path, std::vector<uint8_t>& out)
+			{
+				std::ifstream file(path, std::ios::binary | std::ios::ate);
+				if (!file) return false;
+				const std::streamoff size = file.tellg();
+				if (size <= 0) return false;
+				out.resize(static_cast<size_t>(size));
+				file.seekg(0);
+				return static_cast<bool>(file.read(reinterpret_cast<char*>(out.data()), size));
+			}
+
+			// bake 파일 이름에 붙이는 사람용 이름(구분은 해시가 한다). glTF 이미지 이름은 UTF-8 이라 ASCII 만 남긴다.
+			static std::wstring AsciiName(const std::string& text)
+			{
+				std::wstring out;
+				out.reserve(text.size());
+				for (unsigned char c : text) out.push_back(c < 0x80 ? wchar_t(c) : L'_');
+				return out;
+			}
+
 			// sRGB 로 읽을 슬롯 = 색을 담은 슬롯. 거칠기·금속도·노멀은 데이터라 선형이다.
 			static bool IsColorSlot(TextureSlot slot)
 			{
@@ -133,15 +257,18 @@ namespace swc {
 
 			ModelData& data;
 			const Shared::ModelSource& source;
+			const std::wstring& bakeDirectory;
 			std::unordered_map<std::wstring, uint32_t> loaded;
 		};
 
 	} // namespace
 
-	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error)
+	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error,
+		const std::wstring& textureBakeDirectory, TextureLoadStats* stats)
 	{
 		error.clear();
 		out = ModelData{};
+		if (stats) *stats = TextureLoadStats{};
 
 		if (source.meshes.empty() || source.nodes.empty())
 		{
@@ -150,7 +277,7 @@ namespace swc {
 		}
 
 		// ── 재질·텍스처 ────────────────────────────────────
-		TextureCache textures(out, source);
+		TextureCache textures(out, source, textureBakeDirectory);
 		out.materials.reserve(source.materials.size());
 
 		// 화면 메시가 쓰지 않는 재질(숨긴 충돌 프록시 등)의 텍스처는 디코딩하지 않는다 (client2 2f15728).
@@ -171,6 +298,16 @@ namespace swc {
 			material.roughness = sourceMaterial.roughness;
 			material.metallic = sourceMaterial.metallic;
 			material.doubleSided = sourceMaterial.doubleSided;
+			// 투과 · 부피 · 굴절률 (2026-10-28) — 이름 · 뜻 · 기본값이 같아 그대로 옮긴다(ModelSource.h).
+			material.transmission = sourceMaterial.transmission;
+			material.thickness = sourceMaterial.thickness;
+			material.attenuationDistance = sourceMaterial.attenuationDistance;
+			material.attenuationColor = { sourceMaterial.attenuationColor.x, sourceMaterial.attenuationColor.y,
+				sourceMaterial.attenuationColor.z };
+			material.ior = sourceMaterial.ior;
+			// 알파 마스크 (2026-10-28) — 이름 · 뜻 · 기본값이 같아 그대로 옮긴다
+			material.alphaMask = sourceMaterial.alphaMask;
+			material.alphaCutoff = sourceMaterial.alphaCutoff;
 
 			for (size_t slot = 0; materialUsed[materialIndex] && slot < kMaterialTextureCount; ++slot)
 			{
@@ -193,6 +330,7 @@ namespace swc {
 
 			out.materials.push_back(std::move(material));
 		}
+		if (stats) *stats = textures.stats;
 
 		// ── 메시 ───────────────────────────────────────────
 		// ★ 정점·인덱스·스킨은 복사하지 않고 «넘겨받는다» (2026-10-09)

@@ -1,6 +1,8 @@
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32")
 #include <windows.h>
+#include <algorithm>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -10,6 +12,8 @@
 #include "Shared/Protocol.h"
 #include "Shared/PlanetConst.h"
 #include "Shared/GameLogic/GameLogic.h"
+#include "Shared/GameLogic/PlayerMovement.h"
+#include "Shared/Physics/CollisionWorld.h"
 #include "Shared/Physics/PhysicsCalculator.h"
 #include "Shared/Terrain/PlanetSurface.h"
 #include "Shared/Terrain/TerrainSampler.h"
@@ -18,11 +22,18 @@
 #define MAX_THREAD_CNT		4
 #define SERVER_PORT			25000
 #define RECV_BUFFER_SIZE	8192		//8KB
-#define GROUND_TOLERANCE	0.05		//위치 검사 허용오차 (m). float 전송 오차는 0.1mm 수준이다
+
+// ── 플레이어 이동 (B안 · 입력 기반, 2026-10-29) ──────────────────────
+//  클라는 좌표가 아니라 고정 틱(1/60 s) 입력을 보낸다(Shared::PlayerInputPacket).
+//  틱 스레드가 같은 이동 코드(Shared::PlayerMovement::Step) · 같은 충돌체(Shared::CollisionWorld)로 판정하고,
+//  당사자에게 PlayerState(마지막 입력 번호 + 상태), 다른 사람에게 PlayerMove(위치)를 보낸다.
+//  근거: 명세 6.13 Player ②③ · 13절 · 18절 원칙 4, 노션 「충돌 처리 ②」 B안 · 사용자 결정 5번(판정 = 틱 스레드 한 곳).
+#define INPUT_RATE			60.0		//클라가 초당 보내는 입력 수 (= 1 / PlayerMovement::kTickSeconds)
+#define INPUT_BUDGET_MAX	10.0		//밀린 입력을 한 틱에 최대 이만큼까지 따라잡는다
+#define INPUT_QUEUE_MAX		30			//이보다 밀리면(0.5초) 오래된 것부터 버린다 — 지연이 끝없이 쌓이지 않게
 
 //세션이 정의되기 전에 쓰이므로 미리 선언해 둔다.
 void SendToAll(const void *pData, int nLen, UINT32 nExceptId);
-bool ClampToGround(float pos[3]);
 
 /////////////////////////////////////////////////////////////////////////
 //  발사 요청 — IOCP 워커가 넣고, NPC 행동 스레드가 꺼내 판정한다.
@@ -77,6 +88,7 @@ public:
 	{
 		::ZeroMemory(m_buffer, sizeof(m_buffer));
 		::ZeroMemory(m_lastPos, sizeof(m_lastPos));
+		::InitializeCriticalSection(&m_csInput);
 	}
 
 	~Session()
@@ -86,7 +98,94 @@ public:
 			::shutdown(m_hSocket, SD_BOTH);
 			::closesocket(m_hSocket);
 		}
+		::DeleteCriticalSection(&m_csInput);
 	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  이동 (B안, 2026-10-29)
+	//  ★ m_move · m_lastSeq 는 틱 스레드만 쓴다. 워커와 나누는 것은 입력 큐(m_inputs)뿐이고 m_csInput 으로 지킨다.
+	//    (예외: InitMove 는 접속 스레드가 세션을 목록에 넣기 «전에» 부른다 — 아직 아무도 이 세션을 모른다.)
+
+	//접속 직후 스폰 자리에 세운다. 클라도 같은 스폰 계산(PlayerMovement::Spawn)을 하므로 첫 상태가 같다.
+	void InitMove(const Shared::MoveWorld &world, const float spawn[3])
+	{
+		Shared::PlayerMovement::Spawn(m_move, world,
+			Shared::Vec3d(spawn[0], spawn[1], spawn[2]), Shared::Vec3d(0.0, 0.0, 1.0));
+		m_lastSeq = 0;
+		StorePosition();
+	}
+
+	//되살아난다 — 시작 위치로 옮기고 밀린 입력을 버린다(틱 스레드, ResolveFire).
+	void Respawn(const Shared::MoveWorld &world, const float spawn[3])
+	{
+		Shared::PlayerMovement::Spawn(m_move, world,
+			Shared::Vec3d(spawn[0], spawn[1], spawn[2]), m_move.facing);
+		::EnterCriticalSection(&m_csInput);
+		m_inputs.clear();
+		::LeaveCriticalSection(&m_csInput);
+		StorePosition();
+	}
+
+	//틱 스레드 — 흐른 시간만큼 입력을 꺼내 순서대로 판정한다. 처리한 입력 수를 돌려준다.
+	int Simulate(const Shared::MoveWorld &world, double elapsedSeconds)
+	{
+		std::vector<Shared::MoveCommand> batch;
+		::EnterCriticalSection(&m_csInput);
+		m_inputBudget = (std::min)(m_inputBudget + elapsedSeconds * INPUT_RATE, INPUT_BUDGET_MAX);
+		while (!m_inputs.empty() && m_inputBudget >= 1.0)
+		{
+			batch.push_back(m_inputs.front());
+			m_inputs.pop_front();
+			m_inputBudget -= 1.0;
+		}
+		::LeaveCriticalSection(&m_csInput);
+
+		for (size_t i = 0; i < batch.size(); ++i)
+		{
+			Shared::PlayerMovement::Step(m_move, batch[i], Shared::PlayerMovement::kTickSeconds, world);
+			m_lastSeq = batch[i].seq;
+		}
+		if (!batch.empty())
+			StorePosition();
+		return (int)batch.size();
+	}
+
+	void FillState(Shared::PlayerStatePacket &pkt) const
+	{
+		pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::PlayerState;
+		pkt.lastSeq = m_lastSeq;
+		pkt.pos[0] = (float)m_move.position.x;
+		pkt.pos[1] = (float)m_move.position.y;
+		pkt.pos[2] = (float)m_move.position.z;
+		pkt.velocity[0] = (float)m_move.velocity.x;
+		pkt.velocity[1] = (float)m_move.velocity.y;
+		pkt.velocity[2] = (float)m_move.velocity.z;
+		pkt.facing[0] = (float)m_move.facing.x;
+		pkt.facing[1] = (float)m_move.facing.y;
+		pkt.facing[2] = (float)m_move.facing.z;
+		pkt.verticalSpeed = (float)m_move.verticalSpeed;
+		pkt.flags = (uint8_t)((m_move.grounded ? Shared::kMoveStateGrounded : 0) |
+			(m_move.onObject ? Shared::kMoveStateOnObject : 0) |
+			(m_move.sprinting ? Shared::kMoveStateSprinting : 0));
+	}
+
+	void FillMove(Shared::PlayerMovePacket &pkt) const
+	{
+		pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::PlayerMove;
+		pkt.playerId = m_nPlayerId;
+		pkt.pos[0] = (float)m_move.position.x;
+		pkt.pos[1] = (float)m_move.position.y;
+		pkt.pos[2] = (float)m_move.position.z;
+		pkt.velocity[0] = (float)m_move.velocity.x;
+		pkt.velocity[1] = (float)m_move.velocity.y;
+		pkt.velocity[2] = (float)m_move.velocity.z;
+	}
+
+	UINT32 DroppedInputs() const { return m_nDroppedInputs; }
 
 	SOCKET	Sock()		const { return m_hSocket; }
 	UINT32	PlayerId()	const { return m_nPlayerId; }
@@ -104,14 +203,6 @@ public:
 	float	Health()	const		{ return m_fHealth; }
 	void	SetHealth(float f)		{ m_fHealth = f; }
 
-	//되살아날 자리로 옮긴다. 다음 PlayerMove 가 올 때까지 이 자리가 서버가 아는 위치다.
-	void	Teleport(const float pos[3])
-	{
-		m_lastPos[0] = pos[0];
-		m_lastPos[1] = pos[1];
-		m_lastPos[2] = pos[2];
-		m_bHasPos = true;
-	}
 
 	bool PostRecv()
 	{
@@ -216,9 +307,19 @@ private:
 	{
 		switch (pHead->type)
 		{
+		case Shared::PacketType::PlayerInput:
+			if (nSize == (int)sizeof(Shared::PlayerInputPacket))
+				OnPlayerInput((const Shared::PlayerInputPacket *)pHead);
+			break;
+
 		case Shared::PacketType::PlayerMove:
-			if (nSize == (int)sizeof(Shared::PlayerMovePacket))
-				OnPlayerMove((const Shared::PlayerMovePacket *)pHead);
+			//★ B안(2026-10-29) — 클라 좌표는 받지 않는다. 위치는 서버가 입력으로 판정한다(명세 18절 원칙 4).
+			if (!m_bWarnedLegacyMove)
+			{
+				m_bWarnedLegacyMove = true;
+				printf("[이동] 플레이어 %u : 좌표 패킷(PlayerMove)은 무시합니다 — 입력(PlayerInput)만 받습니다. 클라를 새로 빌드하세요.\n",
+					m_nPlayerId);
+			}
 			break;
 
 		case Shared::PacketType::PlayerFire:
@@ -249,40 +350,48 @@ private:
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  좌표 한 번.
-	void OnPlayerMove(const Shared::PlayerMovePacket *pMove)
+	//  고정 틱 입력 하나 (B안). ★ 여기서 판정하지 않는다 — 검사하고 큐에 넣기만 한다(사격과 같은 규칙).
+	//  · 번호가 앞으로만 간다(같거나 작으면 버린다 — 되보내기 · 순서 뒤집기).
+	//  · 축은 −1 · 0 · 1, 버튼은 아는 비트만, 카메라 방향은 유한하고 길이가 1 근처여야 한다(정규화해서 쓴다).
+	//  · 큐가 INPUT_QUEUE_MAX 를 넘으면 오래된 것부터 버린다 — 조작된 클라가 몰아 보내도 지연 · 메모리가 쌓이지 않는다.
+	//  m_nLastQueuedSeq · m_nDroppedInputs 는 이 세션의 워커만 만진다(OnRecv 는 세션마다 한 번에 하나).
+	void OnPlayerInput(const Shared::PlayerInputPacket *pInput)
 	{
-		//★ 위치 검사 (서버 권위) — 지형 아래면 지면으로 올린 좌표를 쓴다.
-		//  고친 좌표를 저장하고 뿌리므로 NPC 추격도 다른 플레이어 화면도 서버 판정을 따른다.
-		//  보낸 당사자에게는 아직 알리지 않는다.
-		float pos[3] = { pMove->pos[0], pMove->pos[1], pMove->pos[2] };
-		for (const float component : pos)
-			if (!std::isfinite(component)) return;
-		if (ClampToGround(pos))
+		if (pInput->seq <= m_nLastQueuedSeq) return;
+
+		const float lx = pInput->look[0], ly = pInput->look[1], lz = pInput->look[2];
+		if (!std::isfinite(lx) || !std::isfinite(ly) || !std::isfinite(lz)) return;
+		const float len = std::sqrt(lx * lx + ly * ly + lz * lz);
+		if (len < 0.5f || len > 1.5f) return;
+
+		Shared::MoveCommand cmd;
+		cmd.seq = pInput->seq;
+		cmd.moveX = (int8_t)(std::max)(-1, (std::min)(1, (int)pInput->moveX));
+		cmd.moveZ = (int8_t)(std::max)(-1, (std::min)(1, (int)pInput->moveZ));
+		cmd.buttons = (uint8_t)(pInput->buttons &
+			(Shared::kMoveButtonSprint | Shared::kMoveButtonJump | Shared::kMoveButtonAim));
+		cmd.look[0] = lx / len;
+		cmd.look[1] = ly / len;
+		cmd.look[2] = lz / len;
+		m_nLastQueuedSeq = cmd.seq;
+
+		::EnterCriticalSection(&m_csInput);
+		m_inputs.push_back(cmd);
+		while (m_inputs.size() > (size_t)INPUT_QUEUE_MAX)
 		{
-			printf("[위치 보정] 플레이어 %u : 지형 아래 ( %8.2f, %8.2f, %8.2f ) -> ( %8.2f, %8.2f, %8.2f )\n",
-				m_nPlayerId,
-				pMove->pos[0], pMove->pos[1], pMove->pos[2],
-				pos[0], pos[1], pos[2]);
+			m_inputs.pop_front();
+			++m_nDroppedInputs;
 		}
+		::LeaveCriticalSection(&m_csInput);
+	}
 
-		m_lastPos[0] = pos[0];
-		m_lastPos[1] = pos[1];
-		m_lastPos[2] = pos[2];
+	//판정한 위치를 다른 스레드가 읽는 사본(m_lastPos)에 옮긴다 — NPC 추격 · 사격 · 접속자 명단이 이것을 본다.
+	void StorePosition()
+	{
+		m_lastPos[0] = (float)m_move.position.x;
+		m_lastPos[1] = (float)m_move.position.y;
+		m_lastPos[2] = (float)m_move.position.z;
 		m_bHasPos = true;
-
-		printf("[좌표] 플레이어 %u : ( %8.2f, %8.2f, %8.2f )\n",
-			m_nPlayerId,
-			pos[0], pos[1], pos[2]);
-
-		//★ 전원에게 알린다. 보낸 사람은 자기 위치를 이미 알고 있으므로 제외한다.
-		//  (돌려주면 자기 큐브가 30Hz 로 과거 위치로 끌려간다)
-		Shared::PlayerMovePacket bcast = *pMove;
-		bcast.playerId = m_nPlayerId;		//서버가 붙인 번호로 바꿔서 보낸다
-		bcast.pos[0] = pos[0];
-		bcast.pos[1] = pos[1];
-		bcast.pos[2] = pos[2];
-		SendToAll(&bcast, (int)sizeof(bcast), m_nPlayerId);
 	}
 
 	SOCKET		m_hSocket;
@@ -291,8 +400,18 @@ private:
 	char		m_buffer[RECV_BUFFER_SIZE];
 	int			m_nRecvd;			//buffer 에 쌓인 바이트 수
 
-	float		m_lastPos[3];		//마지막으로 받은 위치
-	bool		m_bHasPos;			//한 번이라도 좌표를 보냈는가
+	float		m_lastPos[3];		//서버가 판정한 마지막 위치(m_move 의 사본, 2026-10-29 B안)
+	bool		m_bHasPos;			//스폰했는가
+
+	// ── 이동 (B안) ──
+	Shared::MoveState					m_move;					//판정한 이동 상태 — 틱 스레드만
+	uint32_t							m_lastSeq = 0;			//마지막으로 처리한 입력 번호 — 틱 스레드만
+	CRITICAL_SECTION					m_csInput;				//입력 큐 잠금(워커 ↔ 틱 스레드)
+	std::deque<Shared::MoveCommand>		m_inputs;
+	double								m_inputBudget = 0.0;	//처리해도 되는 입력 수(흐른 시간 × 60) — 잠금 안에서만
+	uint32_t							m_nLastQueuedSeq = 0;	//워커만
+	UINT32								m_nDroppedInputs = 0;	//큐가 넘쳐 버린 입력 수 — 잠금 안에서만 늘린다
+	bool								m_bWarnedLegacyMove = false;
 
 	float		m_fHealth;			//남은 체력. 쓰는 쪽은 행동 스레드 하나
 	ULONGLONG	m_nLastFireMs;		//마지막 발사 시각 (연사 제한). 이 세션의 워커만 만진다
@@ -319,6 +438,11 @@ volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
 //지형. 시작할 때 한 번 읽고 그 뒤로는 읽기만 하므로 스레드 간에 락이 필요 없다.
 Shared::PlanetSurface	g_planetSurface;
 Shared::TerrainSampler	g_terrain;
+
+//정적 오브젝트 충돌체(2026-10-29) — 클라와 같은 묶음(Shared::kPlanetCollisionAsset). 시작할 때 한 번 읽고 그 뒤로는 읽기만 한다.
+Shared::CollisionWorld	g_collision;
+//이동이 보는 세계 — 행성 기하 · 지형 · 충돌체. 클라 PlayerController::World() 와 같은 값이어야 같은 판정이 나온다.
+Shared::MoveWorld		g_moveWorld;
 
 /////////////////////////////////////////////////////////////////////////
 //  클라이언트와 같은 맵(Shared::kPlanetModelAsset)의 접지 삼각형을 읽는다.
@@ -360,41 +484,33 @@ bool LoadTerrain()
 }
 
 /////////////////////////////////////////////////////////////////////////
-//  플레이어 위치 검사 — 지형 아래면 지면으로 올린다. 올렸으면 true.
+//  정적 오브젝트 충돌체 (2026-10-29) — 맵 glb 옆 묶음(Resource_Work/_tools/collision/col_build.py).
 //
-//  ★ 클라 착지와 같은 TerrainSampler · 같은 kGroundOffset 으로 잰다
-//    정직한 클라는 착지하면 정확히 «지면 + kGroundOffset» 을 보내므로 걸리지 않는다.
-//    걸리는 것은 조작됐거나 지형 설정이 서버와 다른 클라다.
-//  ★ 위쪽은 검사하지 않는다 — 점프와 절벽 낙하로 정상적으로 뜬다.
-bool ClampToGround(float pos[3])
+//  ★ 클라와 같은 파일을 읽는다 — 클라 예측과 서버 판정이 같은 충돌체여야 보정이 생기지 않는다.
+//  ★ 못 읽어도 서버는 켠다. 그때는 지형만 막는다(예전처럼) — 로그로 알린다.
+//  ★ ClampToGround(클라 좌표를 지면 위로 올리던 검사)는 지웠다. 위치를 서버가 직접 계산하므로 필요 없다.
+bool LoadCollision()
 {
-	if constexpr (Shared::kUsePlanarMap)
+	wchar_t szExe[MAX_PATH] = { 0 };
+	::GetModuleFileNameW(NULL, szExe, MAX_PATH);
+	std::wstring dir(szExe);
+	const size_t nSlash = dir.find_last_of(L"\\/");
+	dir = (nSlash == std::wstring::npos) ? std::wstring() : dir.substr(0, nSlash + 1);
+	dir += L"assets\\";
+
+	const std::wstring pack = dir + Shared::kPlanetCollisionAsset;
+	const std::wstring manifest = dir + Shared::kPlanetCollisionManifestAsset;
+	std::wstring error;
+	if (!g_collision.LoadPack(pack.c_str(), manifest.c_str(), error))
 	{
-		const double floorHeight = g_terrain.Height(pos[0], pos[1], pos[2]) + Shared::kGroundOffset;
-		if (double(pos[1]) >= floorHeight - GROUND_TOLERANCE) return false;
-		pos[1] = float(floorHeight);
-		return true;
-	}
-	const double dx = (double)pos[0] - Shared::kPlanetCenterX;
-	const double dy = (double)pos[1] - Shared::kPlanetCenterY;
-	const double dz = (double)pos[2] - Shared::kPlanetCenterZ;
-	const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
-	if (len < 1.0e-6)
-		return false;			//행성 중심. 방향을 알 수 없다
-
-	const double ux = dx / len;
-	const double uy = dy / len;
-	const double uz = dz / len;
-
-	const double floorRadius = Shared::kPlanetRadius
-		+ g_terrain.Height(ux, uy, uz) + Shared::kGroundOffset;
-
-	if (len >= floorRadius - GROUND_TOLERANCE)
+		char szError[512] = { 0 };
+		::WideCharToMultiByte(CP_ACP, 0, error.c_str(), -1, szError, sizeof(szError), NULL, NULL);
+		printf("경고: 충돌체를 읽지 못해 오브젝트에 막히지 않습니다 (%s)\n", szError);
 		return false;
-
-	pos[0] = (float)(Shared::kPlanetCenterX + ux * floorRadius);
-	pos[1] = (float)(Shared::kPlanetCenterY + uy * floorRadius);
-	pos[2] = (float)(Shared::kPlanetCenterZ + uz * floorRadius);
+	}
+	g_collision.Finalize();
+	printf("충돌체 %zu개(메시 %zu종 · 삼각형 %zu)를 읽었습니다.\n",
+		g_collision.InstanceCount(), g_collision.MeshCount(), g_collision.MeshTriangleCount());
 	return true;
 }
 
@@ -822,7 +938,7 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	SpawnPoint(spawn);
 
 	pVictim->SetHealth(Shared::kMaxHealth);
-	pVictim->Teleport(spawn);
+	pVictim->Respawn(g_moveWorld, spawn);
 	BroadcastNeutralized(nHitPlayer, req.nShooterId, spawn, Shared::kMaxHealth);
 
 	printf("[무력화] 플레이어 %u 가 시작 위치로 돌아갑니다 (가해 %u)\n",
@@ -840,6 +956,12 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 	std::vector<uint32_t>        despawned;
 
 	int nTicks = 0;
+	int nInputsThisSecond = 0;
+
+	//실제로 흐른 시간 — Sleep(33) 은 타이머 해상도 때문에 더 길게 잘 수 있다. 입력 예산은 흐른 시간으로 준다.
+	LARGE_INTEGER freq = {}, last = {};
+	::QueryPerformanceFrequency(&freq);
+	::QueryPerformanceCounter(&last);
 
 	puts("[NPC 행동 스레드 시작]");
 
@@ -847,7 +969,38 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 	{
 		::Sleep(dwIntervalMs);
 
-		//1) 위치를 한 번이라도 보낸 플레이어를 모은다.
+		LARGE_INTEGER now = {};
+		::QueryPerformanceCounter(&now);
+		const double elapsed = double(now.QuadPart - last.QuadPart) / double(freq.QuadPart);
+		last = now;
+
+		//0) 플레이어 이동 (B안, 2026-10-29) — 받은 입력을 같은 이동 코드 · 같은 충돌체로 판정한다.
+		//   ★ 판정은 이 스레드 한 곳에서만 한다(사격과 같은 규칙, 사용자 결정 5번). 워커는 큐에 넣기만 했다.
+		//   당사자 = PlayerState(마지막 입력 번호 + 상태, 클라가 어긋나면 되감는다), 다른 사람 = PlayerMove(위치).
+		{
+			std::vector<SessionPtr> list = SnapshotSessions();
+			for (size_t i = 0; i < list.size(); ++i)
+				nInputsThisSecond += list[i]->Simulate(g_moveWorld, elapsed);
+
+			for (size_t i = 0; i < list.size(); ++i)
+			{
+				if (!list[i]->HasPos()) continue;
+
+				Shared::PlayerStatePacket state;
+				list[i]->FillState(state);
+				list[i]->Send(&state, (int)sizeof(state));
+
+				Shared::PlayerMovePacket move;
+				list[i]->FillMove(move);
+				for (size_t j = 0; j < list.size(); ++j)
+				{
+					if (j == i) continue;
+					list[j]->Send(&move, (int)sizeof(move));
+				}
+			}
+		}
+
+		//1) 스폰한 플레이어를 모은다(접속하면 서버가 바로 스폰한다 — B안).
 		players.clear();
 		{
 			std::vector<SessionPtr> list = SnapshotSessions();
@@ -922,6 +1075,16 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 				printf("[NPC] %zu 마리 / 추격 %d 마리 (플레이어 %zu명)\n",
 					views.size(), g_npcWorld.ChasingCount(), players.size());
 			}
+			//이동 판정 계측(2026-10-29) — 초당 처리한 입력 수(1명당 약 60이 정상) · 넘쳐 버린 입력 누계
+			if (!players.empty())
+			{
+				std::vector<SessionPtr> list = SnapshotSessions();
+				UINT32 nDropped = 0;
+				for (size_t i = 0; i < list.size(); ++i) nDropped += list[i]->DroppedInputs();
+				printf("[이동] 플레이어 %zu명 · 입력 %d개/초 · 버린 입력 누계 %u · 충돌체 %s\n",
+					players.size(), nInputsThisSecond, nDropped, g_collision.Loaded() ? "켬" : "없음");
+			}
+			nInputsThisSecond = 0;
 		}
 	}
 
@@ -941,6 +1104,13 @@ DWORD WINAPI ThreadAcceptLoop(LPVOID pParam)
 		const UINT32 nPlayerId = (UINT32)::InterlockedIncrement(&g_nNextPlayerId);
 
 		SessionPtr pNewUser = std::make_shared<Session>(hClient, nPlayerId);
+
+		//★ 서버가 스폰한다(B안) — 목록에 넣기 전에. 클라도 같은 자리(Landing L1 지면)에 같은 계산으로 선다.
+		{
+			float spawn[3];
+			SpawnPoint(spawn);
+			pNewUser->InitMove(g_moveWorld, spawn);
+		}
 
 		::EnterCriticalSection(&g_cs);
 		g_sessions[nPlayerId] = pNewUser;
@@ -1016,6 +1186,10 @@ int main()
 	if (!LoadTerrain())
 		return 0;
 	g_npcWorld.SetTerrain(&g_terrain);
+
+	//이동 판정 세계 (B안, 2026-10-29) — 충돌체는 없어도 켠다(지형만 막는다).
+	g_moveWorld.terrain = &g_terrain;
+	g_moveWorld.collision = LoadCollision() ? &g_collision : NULL;
 
 	WSADATA wsa = { 0 };
 	if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -1094,7 +1268,8 @@ int main()
 		(int)sizeof(Shared::PlayerMovePacket),
 		(int)sizeof(Shared::NpcStatePacket));
 	printf("    NPC %d 마리를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount);
-	printf("    플레이어가 지형 아래(허용오차 %.2fm)면 지면으로 올립니다.\n", GROUND_TOLERANCE);
+	printf("    플레이어 이동은 입력(%d 바이트, 초당 60개)으로 받아 서버가 판정합니다 — 상태 %d 바이트를 당사자에게 30Hz.\n",
+		(int)sizeof(Shared::PlayerInputPacket), (int)sizeof(Shared::PlayerStatePacket));
 	while (1)
 		getchar();
 

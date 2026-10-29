@@ -67,6 +67,7 @@
       <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
 xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
 xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsli" "$(OutDir)Shaders\"
 xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -93,6 +94,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <Command>xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxcompiler.dll" "$(OutDir)"
 xcopy /Y /D "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\dxil.dll" "$(OutDir)"
 xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsl" "$(OutDir)Shaders\"
+xcopy /Y /D /I "$(ProjectDir)Shaders\*.hlsli" "$(OutDir)Shaders\"
 xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -103,6 +105,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="Scene\SceneManager.cpp" />
     <ClCompile Include="Scene\Scene.cpp" />
     <ClCompile Include="Scene\LoadingScene.cpp" />
+    <ClCompile Include="Scene\PlanetDebugScene.cpp" />
     <ClCompile Include="UI\UI.cpp" />
     <ClCompile Include="Bridge\ClassBridge.cpp" />
     <ClCompile Include="State\StateManager.cpp" />
@@ -120,12 +123,14 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="Resource\ModelBuilder.cpp" />
     <ClCompile Include="Animation\AnimationBlender.cpp" />
     <ClCompile Include="Resource\TextureLoader.cpp" />
+    <ClCompile Include="Resource\TextureBake.cpp" />
     <ClCompile Include="Model.cpp" />
     <ClCompile Include="Resource\LoadQueue.cpp" />
     <ClCompile Include="Resource\LoadBatch.cpp" />
     <ClCompile Include="Log.cpp" />
     <ClCompile Include="SkyPlanet.cpp" />
     <ClCompile Include="Net\Network.cpp" />
+    <ClCompile Include="DebugView\ColliderDebugView.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
@@ -143,6 +148,27 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <None Include="..\..\assets\model\cube_test.obj" />
     <None Include="..\..\assets\model\cube_test.mtl" />
     <None Include="Shaders\UI.hlsl" />
+    <None Include="Shaders\Lighting.hlsl" />
+    <None Include="Shaders\Tonemap.hlsl" />
+    <None Include="Shaders\RtShadow.hlsl" />
+    <None Include="Shaders\Shading.hlsli" />
+    <None Include="Shaders\GBuffer.hlsli" />
+    <None Include="Shaders\RtCommon.hlsli" />
+    <None Include="Shaders\RtReflection.hlsl" />
+    <None Include="Shaders\RtReflectionDenoise.hlsl" />
+    <None Include="Shaders\Sky.hlsli" />
+    <None Include="Shaders\Sky.hlsl" />
+    <None Include="Shaders\RtSurface.hlsli" />
+    <None Include="Shaders\Probes.hlsli" />
+    <None Include="Shaders\ProbeGI.hlsl" />
+    <None Include="Shaders\AO.hlsl" />
+    <None Include="Shaders\ColorPyramid.hlsl" />
+    <None Include="Shaders\Transparent.hlsl" />
+    <None Include="Shaders\PostProcess.hlsl" />
+    <None Include="Shaders\ReflectionTiles.hlsli" />
+    <None Include="Shaders\ReflectionClassify.hlsl" />
+    <None Include="Shaders\TerrainLayers.hlsli" />
+    <None Include="Shaders\DebugLines.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
@@ -157,8 +183,11 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="Scene\SceneManager.h" />
     <ClInclude Include="Scene\Scene.h" />
     <ClInclude Include="Scene\LoadingScene.h" />
+    <ClInclude Include="Scene\PlanetDebugScene.h" />
     <ClInclude Include="UI\UI.h" />
     <ClInclude Include="UISprite.h" />
+    <ClInclude Include="DebugLine.h" />
+    <ClInclude Include="DebugView\ColliderDebugView.h" />
     <ClInclude Include="Log.h" />
     <ClInclude Include="Bridge\ClassBridge.h" />
     <ClInclude Include="State\StateManager.h" />
@@ -182,6 +211,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="Resource\LoadQueue.h" />
     <ClInclude Include="Resource\LoadBatch.h" />
     <ClInclude Include="Resource\TextureLoader.h" />
+    <ClInclude Include="Resource\TextureBake.h" />
     <ClInclude Include="Net\Network.h" />
     <ClInclude Include="MeshData.h" />
     <ClInclude Include="Model.h" />
@@ -214,6 +244,91 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
         <TargetFolder>sky_planet\LOD3</TargetFolder>
       </ModelAsset>
+      <!-- 예시 행성 디버그 씬 1~5 (2026-10-28) — 파일명이 Client/Scene/PlanetDebugScene.cpp 에도 적혀 있다. 바꿀 때 두 곳. -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet.glb">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet.glb">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet.glb">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet.glb">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet.glb">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 디버그 씬의 배치 JSON (오브젝트 종류 · 인스턴스) -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Placement.json">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Placement.json">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Placement.json">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Placement.json">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 정적 오브젝트 충돌체 묶음 · 설명 JSON (2026-10-29, Shared/Physics/CollisionWorld.h · col_build.py).
+           파일명이 Shared/PlanetConst.h(게임 맵) · PlanetDebugScene::CollisionAsset(예시 행성)에도 적혀 있다 — 바꿀 때 두 곳. -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.glb;$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.json">
+        <TargetFolder>map</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.json">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.json">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.json">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.json">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.json">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 지형 레이어 (2026-10-28) — 레이어 4종의 색 · ORM · 노멀 · 높이와 레이어 마스크의 밉맵 DDS(resource dfa4fe4).
+           glb 에는 대체 레이어 한 장뿐이라 PlanetDebugScene::LoadTerrainLayers 가 이 파일들을 읽는다. 행성 폴더 구조 그대로. -->
+      <TerrainAsset Include="$(ProjectDir)..\..\assets\model\map\**\*_BaseColor.dds;$(ProjectDir)..\..\assets\model\map\**\*_ORM.dds;$(ProjectDir)..\..\assets\model\map\**\*_Normal.dds;$(ProjectDir)..\..\assets\model\map\**\*_Height.dds;$(ProjectDir)..\..\assets\model\map\**\*_LayerMask.dds" />
+      <!-- 배치 JSON 이 가리키는 오브젝트 glb (텍스처는 glb 안에 내장 — 옆의 png 는 복사하지 않는다). 폴더 구조를 그대로 둔다. -->
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\prop\**\*.glb">
+        <Category>prop</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\light\**\*.glb">
+        <Category>light</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\structure\**\*.glb">
+        <Category>structure</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\vegetation\**\*.glb">
+        <Category>vegetation</Category>
+      </ObjectAsset>
+      <!-- 텍스처 LOD (2026-10-29) — 모델 텍스처의 밉맵 DDS(resource dfa4fe4). ModelBuilder 가 glb 내장 PNG 대신
+           «모델 폴더\이미지 이름.dds» 를 읽는다(없으면 PNG 를 푼다). 맵 폴더의 BaseColor · ORM · Normal 은 위 TerrainAsset 이 이미 복사한다. -->
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\prop\**\*.dds">
+        <Category>prop</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\light\**\*.dds">
+        <Category>light</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\structure\**\*.dds">
+        <Category>structure</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\vegetation\**\*.dds">
+        <Category>vegetation</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\map\**\*_Emissive.dds">
+        <Category>map</Category>
+      </ObjectAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다." />
@@ -221,6 +336,8 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD2\future_ruins_fps_lod2.glb')" Text="하늘 행성 LOD2의 future_ruins_fps_lod2.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb')" Text="하늘 행성 LOD3의 future_ruins_fps_lod3.glb 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Copy SourceFiles="@(ModelAsset)" DestinationFiles="@(ModelAsset->'$(OutDir)assets\model\%(TargetFolder)\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ObjectAsset)" DestinationFiles="@(ObjectAsset->'$(OutDir)assets\model\%(Category)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(TerrainAsset)" DestinationFiles="@(TerrainAsset->'$(OutDir)assets\model\map\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

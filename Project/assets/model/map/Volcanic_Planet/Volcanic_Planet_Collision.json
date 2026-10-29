@@ -1,0 +1,670 @@
+{
+ "version": 1,
+ "kind": "types",
+ "map": "Volcanic_Planet",
+ "source": "Volcanic_Planet_Placement.json",
+ "generated": "2026-10-29",
+ "generator": "Resource_Work/_tools/collision/col_build.py",
+ "player_height_m": 1.8,
+ "small_rock_ratio": 0.15,
+ "rules": [
+  "작은 식물(Grass_ · Fern_ · Bush_ · Flower_ · Shrub_ · Weed_)은 충돌 없음(method none) — 2026-10-29 사용자 «정말 작은 식물의 경우 우선은 충돌에서 빼줘»",
+  "돌(class rock)은 인스턴스 배율 < min_scale 이면 충돌 없음. min_scale = (1.8 m × 0.15) ÷ height_m — 사용자 «엄청 작은 돌들도 플레이어 기준 높이가 15%아래라면 충돌체도 만들지 마». 게임(로더)이 판정한다",
+  "나머지는 저폴리 — 사용자 «나머진은 저폴리로 충돌 가자». 이미 COL_ 이 있는 종류는 그대로(existing_col) — 단 렌더 표면 밖으로 0.30 m(p95) 넘게 부풀면 보이지 않는 벽이 되므로 아래 규칙으로 새로 만든다(replaced_col 에 원래 COL_ 기록). 나무는 줄기 각기둥(trunk), 건물은 평면 합치기 → 간선 붕괴, 돌 · 소품은 볼록 껍질이 맞으면 hull 아니면 간선 붕괴. 간선 붕괴 비율은 낮은 쪽부터 올려 cover · bulge p95 가 허용치(tol_m) 안인 첫 단계",
+  "오차: cover = 렌더 표면 → 충돌체(빠진 곳), bulge = 충돌체 표면 → 렌더(부푼 곳), 표본 3000 점씩, m"
+ ],
+ "types": {
+  "Basalt_Columns_A": {
+   "class": "rock",
+   "instances": 1373,
+   "render_tris": 8014,
+   "height_m": 4.334,
+   "render_min": [
+    -1.744,
+    -0.4,
+    -1.796
+   ],
+   "render_max": [
+    1.539,
+    4.334,
+    1.935
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.793,
+   "bulge_p95_m": 0.294,
+   "cover_max_m": 0.899,
+   "bulge_max_m": 0.49,
+   "min_scale": 0.0623,
+   "skipped_small": 0,
+   "tris": 114
+  },
+  "Basalt_Columns_B": {
+   "class": "rock",
+   "instances": 338,
+   "render_tris": 4432,
+   "height_m": 1.466,
+   "render_min": [
+    -2.529,
+    -0.35,
+    -0.716
+   ],
+   "render_max": [
+    2.27,
+    1.466,
+    0.687
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.615,
+   "bulge_p95_m": 0.19,
+   "cover_max_m": 0.699,
+   "bulge_max_m": 0.337,
+   "min_scale": 0.1842,
+   "skipped_small": 0,
+   "tris": 66
+  },
+  "Basalt_Column_Fallen_A": {
+   "class": "rock",
+   "instances": 147,
+   "render_tris": 2322,
+   "height_m": 1.707,
+   "render_min": [
+    -1.821,
+    -0.02,
+    -1.003
+   ],
+   "render_max": [
+    1.684,
+    1.707,
+    0.931
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.024,
+   "bulge_p95_m": 0.019,
+   "cover_max_m": 0.207,
+   "bulge_max_m": 0.192,
+   "min_scale": 0.1582,
+   "skipped_small": 0,
+   "tris": 146
+  },
+  "Lava_Rock_Wall_A": {
+   "class": "rock",
+   "instances": 665,
+   "render_tris": 3840,
+   "height_m": 1.366,
+   "render_min": [
+    -3.571,
+    -0.126,
+    -1.05
+   ],
+   "render_max": [
+    3.654,
+    1.366,
+    0.834
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.051,
+   "bulge_p95_m": 0.048,
+   "cover_max_m": 0.085,
+   "bulge_max_m": 0.08,
+   "min_scale": 0.1977,
+   "skipped_small": 0,
+   "tris": 1036
+  },
+  "Volcanic_Boulder_A": {
+   "class": "rock",
+   "instances": 3033,
+   "render_tris": 5120,
+   "height_m": 2.249,
+   "render_min": [
+    -1.31,
+    -0.192,
+    -1.278
+   ],
+   "render_max": [
+    1.436,
+    2.249,
+    1.291
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.074,
+   "bulge_p95_m": 0.066,
+   "cover_max_m": 0.121,
+   "bulge_max_m": 0.11,
+   "min_scale": 0.1201,
+   "skipped_small": 0,
+   "tris": 622
+  },
+  "Volcanic_Boulder_B": {
+   "class": "rock",
+   "instances": 1628,
+   "render_tris": 1600,
+   "height_m": 1.132,
+   "render_min": [
+    -0.784,
+    -0.084,
+    -0.635
+   ],
+   "render_max": [
+    1.249,
+    1.132,
+    0.63
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.368,
+   "bulge_p95_m": 0.017,
+   "cover_max_m": 0.589,
+   "bulge_max_m": 0.034,
+   "min_scale": 0.2385,
+   "skipped_small": 0,
+   "tris": 572
+  },
+  "Obsidian_Spire_A": {
+   "class": "rock",
+   "instances": 537,
+   "render_tris": 2240,
+   "height_m": 3.335,
+   "render_min": [
+    -1.186,
+    -0.436,
+    -1.213
+   ],
+   "render_max": [
+    0.873,
+    3.335,
+    1.235
+   ],
+   "replaced_col": {
+    "tris": 156,
+    "bulge_p95_m": 0.641
+   },
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.059,
+   "cover_p95_m": 0.024,
+   "bulge_p95_m": 0.022,
+   "cover_max_m": 0.051,
+   "bulge_max_m": 0.045,
+   "min_scale": 0.081,
+   "skipped_small": 0,
+   "tris": 268,
+   "tried": [
+    [
+     "hull",
+     156,
+     0.629
+    ],
+    [
+     "collapse 0.02",
+     44,
+     0.515
+    ],
+    [
+     "collapse 0.04",
+     88,
+     0.109
+    ],
+    [
+     "collapse 0.07",
+     156,
+     0.062
+    ],
+    [
+     "collapse 0.12",
+     268,
+     0.024
+    ]
+   ]
+  },
+  "Lava_Tube_Arch_A": {
+   "class": "prop",
+   "instances": 75,
+   "render_tris": 4504,
+   "height_m": 5.092,
+   "render_min": [
+    -4.977,
+    -0.852,
+    -1.807
+   ],
+   "render_max": [
+    4.639,
+    5.092,
+    1.876
+   ],
+   "replaced_col": {
+    "tris": 554,
+    "bulge_p95_m": 0.506
+   },
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.074,
+   "bulge_p95_m": 0.069,
+   "cover_max_m": 0.141,
+   "bulge_max_m": 0.137,
+   "tris": 540,
+   "tried": [
+    [
+     "hull",
+     362,
+     1.726
+    ],
+    [
+     "collapse 0.02",
+     90,
+     0.384
+    ],
+    [
+     "collapse 0.04",
+     180,
+     0.183
+    ],
+    [
+     "collapse 0.07",
+     314,
+     0.112
+    ],
+    [
+     "collapse 0.12",
+     540,
+     0.074
+    ]
+   ]
+  },
+  "Hornito_A": {
+   "class": "rock",
+   "instances": 706,
+   "render_tris": 1736,
+   "height_m": 2.961,
+   "render_min": [
+    -2.659,
+    -0.334,
+    -2.454
+   ],
+   "render_max": [
+    2.343,
+    2.961,
+    2.436
+   ],
+   "replaced_col": {
+    "tris": 130,
+    "bulge_p95_m": 0.838
+   },
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.093,
+   "cover_p95_m": 0.072,
+   "bulge_p95_m": 0.063,
+   "cover_max_m": 0.158,
+   "bulge_max_m": 0.136,
+   "min_scale": 0.0912,
+   "skipped_small": 0,
+   "tris": 208,
+   "tried": [
+    [
+     "hull",
+     136,
+     0.833
+    ],
+    [
+     "collapse 0.02",
+     33,
+     0.341
+    ],
+    [
+     "collapse 0.04",
+     68,
+     0.171
+    ],
+    [
+     "collapse 0.07",
+     120,
+     0.103
+    ],
+    [
+     "collapse 0.12",
+     208,
+     0.072
+    ]
+   ]
+  },
+  "Aa_Clinker_Pile_A": {
+   "class": "rock",
+   "instances": 983,
+   "render_tris": 6000,
+   "height_m": 1.031,
+   "render_min": [
+    -2.101,
+    -0.182,
+    -1.257
+   ],
+   "render_max": [
+    2.228,
+    1.031,
+    1.205
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.452,
+   "bulge_p95_m": 0.294,
+   "cover_max_m": 0.544,
+   "bulge_max_m": 0.502,
+   "min_scale": 0.2619,
+   "skipped_small": 0,
+   "tris": 258
+  },
+  "Lava_Crust_Slab_A": {
+   "class": "rock",
+   "instances": 9265,
+   "render_tris": 206,
+   "height_m": 0.3,
+   "render_min": [
+    -2.37,
+    -0.32,
+    -1.701
+   ],
+   "render_max": [
+    2.687,
+    0.3,
+    1.865
+   ],
+   "method": "hull",
+   "tol_m": 0.187,
+   "bulge_p95_m": 0.165,
+   "bulge_max_m": 0.381,
+   "min_scale": 0.9,
+   "skipped_small": 2057,
+   "tris": 64,
+   "tried": [
+    [
+     "hull",
+     64,
+     0.165
+    ]
+   ]
+  },
+  "Light_FireVent_A": {
+   "class": "prop",
+   "instances": 70,
+   "render_tris": 6999,
+   "height_m": 0.293,
+   "render_min": [
+    -1.101,
+    -0.263,
+    -1.1
+   ],
+   "render_max": [
+    1.1,
+    0.293,
+    1.101
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.227,
+   "bulge_p95_m": 0.204,
+   "cover_max_m": 0.268,
+   "bulge_max_m": 0.238,
+   "tris": 462
+  },
+  "Fumarole_A": {
+   "class": "prop",
+   "instances": 813,
+   "render_tris": 7000,
+   "height_m": 1.04,
+   "render_min": [
+    -1.58,
+    -0.29,
+    -1.58
+   ],
+   "render_max": [
+    1.58,
+    1.04,
+    1.58
+   ],
+   "replaced_col": {
+    "tris": 488,
+    "bulge_p95_m": 0.496
+   },
+   "method": "collapse",
+   "ratio": 0.02,
+   "tol_m": 0.056,
+   "cover_p95_m": 0.049,
+   "bulge_p95_m": 0.05,
+   "cover_max_m": 0.1,
+   "bulge_max_m": 0.097,
+   "tris": 140,
+   "tried": [
+    [
+     "hull",
+     486,
+     0.651
+    ],
+    [
+     "collapse 0.02",
+     140,
+     0.05
+    ]
+   ]
+  },
+  "Ember_Log_A": {
+   "class": "prop",
+   "instances": 749,
+   "render_tris": 708,
+   "height_m": 0.878,
+   "render_min": [
+    -2.411,
+    -0.032,
+    -0.843
+   ],
+   "render_max": [
+    2.416,
+    0.878,
+    0.818
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.184,
+   "bulge_p95_m": 0.033,
+   "cover_max_m": 0.66,
+   "bulge_max_m": 0.103,
+   "tris": 110
+  },
+  "Lava_Rock_A": {
+   "class": "rock",
+   "instances": 25378,
+   "render_tris": 800,
+   "height_m": 0.687,
+   "render_min": [
+    -0.57,
+    -0.08,
+    -0.65
+   ],
+   "render_max": [
+    1.183,
+    0.687,
+    0.5
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.026,
+   "bulge_p95_m": 0.025,
+   "cover_max_m": 0.045,
+   "bulge_max_m": 0.039,
+   "min_scale": 0.393,
+   "skipped_small": 0,
+   "tris": 508
+  },
+  "Scoria_Rubble_A": {
+   "class": "rock",
+   "instances": 19170,
+   "render_tris": 900,
+   "height_m": 0.313,
+   "render_min": [
+    -1.075,
+    -0.059,
+    -0.978
+   ],
+   "render_max": [
+    1.198,
+    0.313,
+    1.143
+   ],
+   "method": "collapse",
+   "ratio": 0.3,
+   "tol_m": 0.038,
+   "cover_p95_m": 0.029,
+   "bulge_p95_m": 0.027,
+   "cover_max_m": 0.053,
+   "bulge_max_m": 0.055,
+   "min_scale": 0.8626,
+   "skipped_small": 3440,
+   "tris": 270,
+   "tried": [
+    [
+     "hull",
+     136,
+     0.27
+    ],
+    [
+     "collapse 0.02",
+     36,
+     0.181
+    ],
+    [
+     "collapse 0.04",
+     36,
+     0.181
+    ],
+    [
+     "collapse 0.07",
+     62,
+     0.112
+    ],
+    [
+     "collapse 0.12",
+     108,
+     0.069
+    ],
+    [
+     "collapse 0.20",
+     180,
+     0.044
+    ],
+    [
+     "collapse 0.30",
+     270,
+     0.029
+    ]
+   ]
+  },
+  "Obsidian_Shards_A": {
+   "class": "rock",
+   "instances": 11751,
+   "render_tris": 720,
+   "height_m": 0.675,
+   "render_min": [
+    -0.257,
+    -0.03,
+    -0.807
+   ],
+   "render_max": [
+    0.55,
+    0.675,
+    0.433
+   ],
+   "method": "collapse",
+   "ratio": 0.2,
+   "tol_m": 0.03,
+   "cover_p95_m": 0.013,
+   "bulge_p95_m": 0.011,
+   "cover_max_m": 0.043,
+   "bulge_max_m": 0.019,
+   "min_scale": 0.4,
+   "skipped_small": 0,
+   "tris": 144,
+   "tried": [
+    [
+     "hull",
+     106,
+     0.241
+    ],
+    [
+     "collapse 0.02",
+     18,
+     0.2
+    ],
+    [
+     "collapse 0.04",
+     28,
+     0.134
+    ],
+    [
+     "collapse 0.07",
+     50,
+     0.05
+    ],
+    [
+     "collapse 0.12",
+     86,
+     0.033
+    ],
+    [
+     "collapse 0.20",
+     144,
+     0.013
+    ]
+   ]
+  },
+  "Tree_Charred_A": {
+   "class": "tree",
+   "instances": 960,
+   "render_tris": 2216,
+   "height_m": 5.772,
+   "render_min": [
+    -1.22,
+    -0.654,
+    -2.063
+   ],
+   "render_max": [
+    1.096,
+    5.772,
+    0.514
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.335,
+   "trunk_top_m": 2.89,
+   "bark_faces": 2216,
+   "slices": 9,
+   "bark_inside_ratio": 0.627,
+   "tris": 40
+  },
+  "Tree_Charred_B": {
+   "class": "tree",
+   "instances": 965,
+   "render_tris": 1856,
+   "height_m": 5.709,
+   "render_min": [
+    -1.478,
+    -0.615,
+    -0.565
+   ],
+   "render_max": [
+    1.932,
+    5.709,
+    2.599
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.317,
+   "trunk_top_m": 2.85,
+   "bark_faces": 1856,
+   "slices": 9,
+   "bark_inside_ratio": 0.569,
+   "tris": 40
+  },
+  "Grass_Ash_A": {
+   "class": "plant_small",
+   "instances": 6398,
+   "method": "none"
+  },
+  "Grass_Ash_Patch_A": {
+   "class": "plant_small",
+   "instances": 890,
+   "method": "none"
+  }
+ }
+}

@@ -1,0 +1,1530 @@
+{
+ "version": 1,
+ "kind": "types",
+ "map": "Ruin_Planet",
+ "source": "Ruin_Planet_Placement.json",
+ "generated": "2026-10-29",
+ "generator": "Resource_Work/_tools/collision/col_build.py",
+ "player_height_m": 1.8,
+ "small_rock_ratio": 0.15,
+ "rules": [
+  "작은 식물(Grass_ · Fern_ · Bush_ · Flower_ · Shrub_ · Weed_)은 충돌 없음(method none) — 2026-10-29 사용자 «정말 작은 식물의 경우 우선은 충돌에서 빼줘»",
+  "돌(class rock)은 인스턴스 배율 < min_scale 이면 충돌 없음. min_scale = (1.8 m × 0.15) ÷ height_m — 사용자 «엄청 작은 돌들도 플레이어 기준 높이가 15%아래라면 충돌체도 만들지 마». 게임(로더)이 판정한다",
+  "나머지는 저폴리 — 사용자 «나머진은 저폴리로 충돌 가자». 이미 COL_ 이 있는 종류는 그대로(existing_col) — 단 렌더 표면 밖으로 0.30 m(p95) 넘게 부풀면 보이지 않는 벽이 되므로 아래 규칙으로 새로 만든다(replaced_col 에 원래 COL_ 기록). 나무는 줄기 각기둥(trunk), 건물은 평면 합치기 → 간선 붕괴, 돌 · 소품은 볼록 껍질이 맞으면 hull 아니면 간선 붕괴. 간선 붕괴 비율은 낮은 쪽부터 올려 cover · bulge p95 가 허용치(tol_m) 안인 첫 단계",
+  "오차: cover = 렌더 표면 → 충돌체(빠진 곳), bulge = 충돌체 표면 → 렌더(부푼 곳), 표본 3000 점씩, m"
+ ],
+ "types": {
+  "Ruin_Block_A": {
+   "class": "building",
+   "instances": 1045,
+   "render_tris": 6470,
+   "height_m": 8.34,
+   "render_min": [
+    -5.304,
+    -6.0,
+    -3.935
+   ],
+   "render_max": [
+    5.316,
+    8.34,
+    6.313
+   ],
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.073,
+   "bulge_p95_m": 0.048,
+   "cover_max_m": 0.261,
+   "bulge_max_m": 0.201,
+   "tris": 1332,
+   "tried": [
+    [
+     "collapse 0.02",
+     476,
+     3.353
+    ],
+    [
+     "collapse 0.04",
+     476,
+     3.353
+    ],
+    [
+     "collapse 0.07",
+     476,
+     3.353
+    ],
+    [
+     "collapse 0.12",
+     476,
+     3.353
+    ],
+    [
+     "collapse 0.20",
+     532,
+     2.645
+    ],
+    [
+     "collapse 0.30",
+     800,
+     0.156
+    ],
+    [
+     "collapse 0.50",
+     1332,
+     0.073
+    ]
+   ]
+  },
+  "Ruin_Block_B": {
+   "class": "building",
+   "instances": 320,
+   "render_tris": 17202,
+   "height_m": 14.089,
+   "render_min": [
+    -7.979,
+    -6.0,
+    -5.628
+   ],
+   "render_max": [
+    7.852,
+    14.089,
+    7.85
+   ],
+   "method": "planar",
+   "tol_m": 0.1,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.007,
+   "bulge_max_m": 0.002,
+   "tris": 4787,
+   "tried": [
+    [
+     "collapse 0.02",
+     863,
+     3.404
+    ],
+    [
+     "collapse 0.04",
+     863,
+     3.404
+    ],
+    [
+     "collapse 0.07",
+     863,
+     3.404
+    ],
+    [
+     "collapse 0.12",
+     863,
+     3.404
+    ],
+    [
+     "collapse 0.20",
+     957,
+     2.521
+    ],
+    [
+     "collapse 0.30",
+     1435,
+     0.156
+    ],
+    [
+     "collapse 0.50",
+     2393,
+     0.116
+    ]
+   ]
+  },
+  "Ruin_Block_C": {
+   "class": "building",
+   "instances": 201,
+   "render_tris": 19996,
+   "height_m": 12.608,
+   "render_min": [
+    -8.93,
+    -6.0,
+    -6.669
+   ],
+   "render_max": [
+    8.95,
+    12.608,
+    8.86
+   ],
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.097,
+   "bulge_p95_m": 0.079,
+   "cover_max_m": 0.262,
+   "bulge_max_m": 0.213,
+   "tris": 2648,
+   "tried": [
+    [
+     "collapse 0.02",
+     812,
+     3.507
+    ],
+    [
+     "collapse 0.04",
+     812,
+     3.507
+    ],
+    [
+     "collapse 0.07",
+     812,
+     3.507
+    ],
+    [
+     "collapse 0.12",
+     812,
+     3.507
+    ],
+    [
+     "collapse 0.20",
+     1058,
+     2.567
+    ],
+    [
+     "collapse 0.30",
+     1588,
+     0.16
+    ],
+    [
+     "collapse 0.50",
+     2648,
+     0.097
+    ]
+   ]
+  },
+  "Ruin_Tower_A": {
+   "class": "building",
+   "instances": 82,
+   "render_tris": 39094,
+   "height_m": 30.374,
+   "render_min": [
+    -6.922,
+    -6.0,
+    -6.655
+   ],
+   "render_max": [
+    6.801,
+    30.374,
+    8.402
+   ],
+   "method": "planar",
+   "tol_m": 0.1,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.007,
+   "bulge_max_m": 0.011,
+   "tris": 10953,
+   "tried": [
+    [
+     "collapse 0.02",
+     1707,
+     2.603
+    ],
+    [
+     "collapse 0.04",
+     1707,
+     2.603
+    ],
+    [
+     "collapse 0.07",
+     1707,
+     2.603
+    ],
+    [
+     "collapse 0.12",
+     1707,
+     2.603
+    ],
+    [
+     "collapse 0.20",
+     2189,
+     1.74
+    ],
+    [
+     "collapse 0.30",
+     3285,
+     0.198
+    ],
+    [
+     "collapse 0.50",
+     5475,
+     0.11
+    ]
+   ]
+  },
+  "Ruin_Shell_A": {
+   "class": "building",
+   "instances": 174,
+   "render_tris": 4930,
+   "height_m": 5.823,
+   "render_min": [
+    -10.761,
+    -6.0,
+    -4.544
+   ],
+   "render_max": [
+    10.672,
+    5.823,
+    7.219
+   ],
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.071,
+   "bulge_p95_m": 0.058,
+   "cover_max_m": 0.154,
+   "bulge_max_m": 0.148,
+   "tris": 1266,
+   "tried": [
+    [
+     "collapse 0.02",
+     390,
+     3.797
+    ],
+    [
+     "collapse 0.04",
+     390,
+     3.797
+    ],
+    [
+     "collapse 0.07",
+     390,
+     3.797
+    ],
+    [
+     "collapse 0.12",
+     390,
+     3.797
+    ],
+    [
+     "collapse 0.20",
+     506,
+     3.024
+    ],
+    [
+     "collapse 0.30",
+     760,
+     0.152
+    ],
+    [
+     "collapse 0.50",
+     1266,
+     0.071
+    ]
+   ]
+  },
+  "Ruin_Corner_A": {
+   "class": "building",
+   "instances": 759,
+   "render_tris": 3658,
+   "height_m": 11.292,
+   "render_min": [
+    -4.793,
+    -6.0,
+    -3.9
+   ],
+   "render_max": [
+    4.632,
+    11.292,
+    3.638
+   ],
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.095,
+   "bulge_p95_m": 0.075,
+   "cover_max_m": 0.232,
+   "bulge_max_m": 0.146,
+   "tris": 889,
+   "tried": [
+    [
+     "collapse 0.02",
+     213,
+     3.428
+    ],
+    [
+     "collapse 0.04",
+     213,
+     3.428
+    ],
+    [
+     "collapse 0.07",
+     213,
+     3.428
+    ],
+    [
+     "collapse 0.12",
+     213,
+     3.428
+    ],
+    [
+     "collapse 0.20",
+     355,
+     0.292
+    ],
+    [
+     "collapse 0.30",
+     533,
+     0.249
+    ],
+    [
+     "collapse 0.50",
+     889,
+     0.095
+    ]
+   ]
+  },
+  "Ruin_Wall_A": {
+   "class": "building",
+   "instances": 189,
+   "render_tris": 172,
+   "height_m": 2.18,
+   "render_min": [
+    -3.0,
+    -1.0,
+    -0.25
+   ],
+   "render_max": [
+    3.0,
+    2.18,
+    0.25
+   ],
+   "method": "planar",
+   "tol_m": 0.082,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.01,
+   "bulge_max_m": 0.009,
+   "tris": 82,
+   "tried": [
+    [
+     "collapse 0.07",
+     5,
+     1.04
+    ],
+    [
+     "collapse 0.12",
+     9,
+     0.586
+    ],
+    [
+     "collapse 0.20",
+     15,
+     0.441
+    ],
+    [
+     "collapse 0.30",
+     23,
+     0.266
+    ],
+    [
+     "collapse 0.50",
+     40,
+     0.257
+    ]
+   ]
+  },
+  "Ruin_Overpass_A": {
+   "class": "building",
+   "instances": 6,
+   "render_tris": 7012,
+   "height_m": 7.94,
+   "render_min": [
+    -13.0,
+    -2.0,
+    -5.5
+   ],
+   "render_max": [
+    21.944,
+    7.94,
+    5.5
+   ],
+   "method": "planar",
+   "tol_m": 0.1,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.009,
+   "bulge_max_m": 0.01,
+   "tris": 1788,
+   "tried": [
+    [
+     "collapse 0.02",
+     202,
+     1.786
+    ],
+    [
+     "collapse 0.04",
+     202,
+     1.786
+    ],
+    [
+     "collapse 0.07",
+     202,
+     1.786
+    ],
+    [
+     "collapse 0.12",
+     214,
+     1.277
+    ],
+    [
+     "collapse 0.20",
+     356,
+     0.811
+    ],
+    [
+     "collapse 0.30",
+     536,
+     0.608
+    ],
+    [
+     "collapse 0.50",
+     894,
+     0.147
+    ]
+   ]
+  },
+  "Bridge_Pier_A": {
+   "class": "building",
+   "instances": 98,
+   "render_tris": 344,
+   "height_m": 30.0,
+   "render_min": [
+    -6.5,
+    0.0,
+    -0.9
+   ],
+   "render_max": [
+    6.5,
+    30.0,
+    0.9
+   ],
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.011,
+   "bulge_max_m": 0.001,
+   "tris": 172,
+   "tried": [
+    [
+     "collapse 0.02",
+     36,
+     1.092
+    ],
+    [
+     "collapse 0.04",
+     36,
+     1.092
+    ],
+    [
+     "collapse 0.07",
+     36,
+     1.092
+    ],
+    [
+     "collapse 0.12",
+     40,
+     0.857
+    ],
+    [
+     "collapse 0.20",
+     68,
+     0.855
+    ],
+    [
+     "collapse 0.30",
+     102,
+     0.853
+    ],
+    [
+     "collapse 0.50",
+     172,
+     0.0
+    ]
+   ]
+  },
+  "Ruin_Pillar_A": {
+   "class": "building",
+   "instances": 957,
+   "render_tris": 176,
+   "height_m": 3.811,
+   "render_min": [
+    -0.6,
+    -0.5,
+    -1.448
+   ],
+   "render_max": [
+    2.072,
+    3.811,
+    0.857
+   ],
+   "method": "planar",
+   "tol_m": 0.067,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.0,
+   "bulge_max_m": 0.0,
+   "tris": 176,
+   "tried": [
+    [
+     "collapse 0.04",
+     24,
+     0.461
+    ],
+    [
+     "collapse 0.07",
+     24,
+     0.461
+    ],
+    [
+     "collapse 0.12",
+     24,
+     0.461
+    ],
+    [
+     "collapse 0.20",
+     34,
+     0.461
+    ],
+    [
+     "collapse 0.30",
+     52,
+     0.332
+    ],
+    [
+     "collapse 0.50",
+     88,
+     0.116
+    ]
+   ]
+  },
+  "Light_FireBarrel_A": {
+   "class": "prop",
+   "instances": 74,
+   "render_tris": 1496,
+   "height_m": 0.9,
+   "render_min": [
+    -0.3,
+    0.0,
+    -0.3
+   ],
+   "render_max": [
+    0.3,
+    0.9,
+    0.3
+   ],
+   "method": "collapse",
+   "ratio": 0.2,
+   "tol_m": 0.03,
+   "cover_p95_m": 0.004,
+   "bulge_p95_m": 0.004,
+   "cover_max_m": 0.005,
+   "bulge_max_m": 0.004,
+   "tris": 290,
+   "tried": [
+    [
+     "hull",
+     156,
+     0.146
+    ],
+    [
+     "collapse 0.02",
+     29,
+     0.205
+    ],
+    [
+     "collapse 0.04",
+     58,
+     0.038
+    ],
+    [
+     "collapse 0.07",
+     100,
+     0.039
+    ],
+    [
+     "collapse 0.12",
+     174,
+     0.035
+    ],
+    [
+     "collapse 0.20",
+     290,
+     0.004
+    ]
+   ]
+  },
+  "Rubble_Pile_A": {
+   "class": "rock",
+   "instances": 5229,
+   "render_tris": 4566,
+   "height_m": 1.909,
+   "render_min": [
+    -1.503,
+    -0.127,
+    -1.443
+   ],
+   "render_max": [
+    1.428,
+    1.909,
+    1.414
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.055,
+   "cover_p95_m": 0.004,
+   "bulge_p95_m": 0.004,
+   "cover_max_m": 0.014,
+   "bulge_max_m": 0.012,
+   "min_scale": 0.1414,
+   "skipped_small": 0,
+   "tris": 546,
+   "tried": [
+    [
+     "hull",
+     230,
+     0.466
+    ],
+    [
+     "collapse 0.02",
+     91,
+     0.521
+    ],
+    [
+     "collapse 0.04",
+     181,
+     0.121
+    ],
+    [
+     "collapse 0.07",
+     318,
+     0.071
+    ],
+    [
+     "collapse 0.12",
+     546,
+     0.004
+    ]
+   ]
+  },
+  "Rubble_Pile_B": {
+   "class": "rock",
+   "instances": 1886,
+   "render_tris": 10526,
+   "height_m": 2.543,
+   "render_min": [
+    -2.888,
+    -0.119,
+    -2.806
+   ],
+   "render_max": [
+    3.002,
+    2.543,
+    3.079
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.077,
+   "bulge_p95_m": 0.061,
+   "cover_max_m": 0.153,
+   "bulge_max_m": 0.177,
+   "min_scale": 0.1062,
+   "skipped_small": 0,
+   "tris": 736,
+   "tried": [
+    [
+     "hull",
+     260,
+     0.685
+    ],
+    [
+     "collapse 0.02",
+     210,
+     0.644
+    ],
+    [
+     "collapse 0.04",
+     420,
+     0.198
+    ],
+    [
+     "collapse 0.07",
+     736,
+     0.077
+    ]
+   ]
+  },
+  "Concrete_Slab_A": {
+   "class": "rock",
+   "instances": 3954,
+   "render_tris": 596,
+   "height_m": 0.25,
+   "render_min": [
+    -1.6,
+    -0.253,
+    -0.818
+   ],
+   "render_max": [
+    1.6,
+    0.25,
+    1.1
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.045,
+   "cover_p95_m": 0.026,
+   "bulge_p95_m": 0.025,
+   "cover_max_m": 0.082,
+   "bulge_max_m": 0.126,
+   "min_scale": 1.08,
+   "skipped_small": 2237,
+   "tris": 40,
+   "tried": [
+    [
+     "hull",
+     138,
+     0.294
+    ],
+    [
+     "collapse 0.02",
+     10,
+     0.433
+    ],
+    [
+     "collapse 0.04",
+     22,
+     0.282
+    ],
+    [
+     "collapse 0.07",
+     40,
+     0.026
+    ]
+   ]
+  },
+  "Concrete_Chunk_A": {
+   "class": "rock",
+   "instances": 4574,
+   "render_tris": 1044,
+   "height_m": 1.238,
+   "render_min": [
+    -1.336,
+    -0.1,
+    -1.38
+   ],
+   "render_max": [
+    1.418,
+    1.238,
+    1.475
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.05,
+   "cover_p95_m": 0.004,
+   "bulge_p95_m": 0.004,
+   "cover_max_m": 0.006,
+   "bulge_max_m": 0.004,
+   "min_scale": 0.2181,
+   "skipped_small": 0,
+   "tris": 124,
+   "tried": [
+    [
+     "hull",
+     194,
+     0.272
+    ],
+    [
+     "collapse 0.02",
+     20,
+     0.463
+    ],
+    [
+     "collapse 0.04",
+     40,
+     0.451
+    ],
+    [
+     "collapse 0.07",
+     72,
+     0.316
+    ],
+    [
+     "collapse 0.12",
+     124,
+     0.004
+    ]
+   ]
+  },
+  "Rebar_Tangle_A": {
+   "class": "prop",
+   "instances": 2042,
+   "render_tris": 1788,
+   "height_m": 1.506,
+   "render_min": [
+    -1.328,
+    -0.1,
+    -1.269
+   ],
+   "render_max": [
+    1.64,
+    1.506,
+    0.808
+   ],
+   "method": "collapse",
+   "ratio": 0.3,
+   "tol_m": 0.048,
+   "cover_p95_m": 0.003,
+   "bulge_p95_m": 0.003,
+   "cover_max_m": 0.007,
+   "bulge_max_m": 0.007,
+   "tris": 414,
+   "tried": [
+    [
+     "hull",
+     162,
+     0.44
+    ],
+    [
+     "collapse 0.02",
+     26,
+     0.487
+    ],
+    [
+     "collapse 0.04",
+     54,
+     0.429
+    ],
+    [
+     "collapse 0.07",
+     96,
+     0.417
+    ],
+    [
+     "collapse 0.12",
+     164,
+     0.375
+    ],
+    [
+     "collapse 0.20",
+     276,
+     0.359
+    ],
+    [
+     "collapse 0.30",
+     414,
+     0.003
+    ]
+   ]
+  },
+  "Car_Wreck_A": {
+   "class": "prop",
+   "instances": 1396,
+   "render_tris": 3932,
+   "height_m": 1.429,
+   "render_min": [
+    -0.958,
+    0.0,
+    -2.366
+   ],
+   "render_max": [
+    0.935,
+    1.429,
+    2.305
+   ],
+   "method": "hull",
+   "tol_m": 0.21,
+   "bulge_p95_m": 0.177,
+   "bulge_max_m": 0.287,
+   "tris": 350,
+   "tried": [
+    [
+     "hull",
+     350,
+     0.177
+    ]
+   ]
+  },
+  "Car_Wreck_B": {
+   "class": "prop",
+   "instances": 627,
+   "render_tris": 4850,
+   "height_m": 1.94,
+   "render_min": [
+    -1.127,
+    0.0,
+    -2.66
+   ],
+   "render_max": [
+    1.058,
+    1.94,
+    2.63
+   ],
+   "method": "hull",
+   "tol_m": 0.242,
+   "bulge_p95_m": 0.198,
+   "bulge_max_m": 0.391,
+   "tris": 314,
+   "tried": [
+    [
+     "hull",
+     314,
+     0.198
+    ]
+   ]
+  },
+  "Barrel_Rust_A": {
+   "class": "prop",
+   "instances": 2052,
+   "render_tris": 2832,
+   "height_m": 0.88,
+   "render_min": [
+    -0.622,
+    -0.012,
+    -0.802
+   ],
+   "render_max": [
+    1.34,
+    0.88,
+    0.502
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.03,
+   "cover_p95_m": 0.026,
+   "bulge_p95_m": 0.025,
+   "cover_max_m": 0.04,
+   "bulge_max_m": 0.038,
+   "tris": 198,
+   "tried": [
+    [
+     "hull",
+     412,
+     0.188
+    ],
+    [
+     "collapse 0.02",
+     56,
+     0.126
+    ],
+    [
+     "collapse 0.04",
+     112,
+     0.044
+    ],
+    [
+     "collapse 0.07",
+     198,
+     0.026
+    ]
+   ]
+  },
+  "Tire_Pile_A": {
+   "class": "prop",
+   "instances": 1221,
+   "render_tris": 1536,
+   "height_m": 0.827,
+   "render_min": [
+    -0.495,
+    -0.107,
+    -0.516
+   ],
+   "render_max": [
+    1.349,
+    0.827,
+    1.062
+   ],
+   "method": "collapse",
+   "ratio": 0.3,
+   "tol_m": 0.031,
+   "cover_p95_m": 0.022,
+   "bulge_p95_m": 0.022,
+   "cover_max_m": 0.035,
+   "bulge_max_m": 0.038,
+   "tris": 460,
+   "tried": [
+    [
+     "hull",
+     226,
+     0.284
+    ],
+    [
+     "collapse 0.02",
+     110,
+     0.121
+    ],
+    [
+     "collapse 0.04",
+     110,
+     0.121
+    ],
+    [
+     "collapse 0.07",
+     110,
+     0.121
+    ],
+    [
+     "collapse 0.12",
+     184,
+     0.064
+    ],
+    [
+     "collapse 0.20",
+     306,
+     0.035
+    ],
+    [
+     "collapse 0.30",
+     460,
+     0.022
+    ]
+   ]
+  },
+  "Sign_Bent_A": {
+   "class": "prop",
+   "instances": 160,
+   "render_tris": 264,
+   "height_m": 2.7,
+   "render_min": [
+    -0.15,
+    -0.3,
+    -0.218
+   ],
+   "render_max": [
+    1.004,
+    2.7,
+    0.15
+   ],
+   "method": "collapse",
+   "ratio": 0.2,
+   "tol_m": 0.039,
+   "cover_p95_m": 0.004,
+   "bulge_p95_m": 0.004,
+   "cover_max_m": 0.007,
+   "bulge_max_m": 0.007,
+   "tris": 51,
+   "tried": [
+    [
+     "hull",
+     154,
+     0.523
+    ],
+    [
+     "collapse 0.02",
+     4,
+     0.733
+    ],
+    [
+     "collapse 0.04",
+     10,
+     0.225
+    ],
+    [
+     "collapse 0.07",
+     18,
+     0.155
+    ],
+    [
+     "collapse 0.12",
+     30,
+     0.079
+    ],
+    [
+     "collapse 0.20",
+     51,
+     0.004
+    ]
+   ]
+  },
+  "Lamp_Broken_A": {
+   "class": "prop",
+   "instances": 281,
+   "render_tris": 672,
+   "height_m": 3.727,
+   "render_min": [
+    -0.3,
+    -0.3,
+    -0.3
+   ],
+   "render_max": [
+    0.95,
+    3.727,
+    3.75
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.07,
+   "cover_p95_m": 0.068,
+   "bulge_p95_m": 0.059,
+   "cover_max_m": 0.084,
+   "bulge_max_m": 0.081,
+   "tris": 42,
+   "tried": [
+    [
+     "hull",
+     156,
+     1.184
+    ],
+    [
+     "collapse 0.02",
+     12,
+     0.227
+    ],
+    [
+     "collapse 0.04",
+     24,
+     0.169
+    ],
+    [
+     "collapse 0.07",
+     42,
+     0.068
+    ]
+   ]
+  },
+  "Barrier_Broken_A": {
+   "class": "prop",
+   "instances": 131,
+   "render_tris": 840,
+   "height_m": 0.82,
+   "render_min": [
+    -1.5,
+    -0.543,
+    -0.703
+   ],
+   "render_max": [
+    2.375,
+    0.82,
+    0.3
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.051,
+   "cover_p95_m": 0.004,
+   "bulge_p95_m": 0.004,
+   "cover_max_m": 0.013,
+   "bulge_max_m": 0.01,
+   "tris": 100,
+   "tried": [
+    [
+     "hull",
+     170,
+     0.348
+    ],
+    [
+     "collapse 0.02",
+     16,
+     0.332
+    ],
+    [
+     "collapse 0.04",
+     32,
+     0.313
+    ],
+    [
+     "collapse 0.07",
+     58,
+     0.073
+    ],
+    [
+     "collapse 0.12",
+     100,
+     0.004
+    ]
+   ]
+  },
+  "Utility_Pole_A": {
+   "class": "prop",
+   "instances": 139,
+   "render_tris": 2316,
+   "height_m": 8.326,
+   "render_min": [
+    -1.2,
+    -0.821,
+    -8.172
+   ],
+   "render_max": [
+    1.2,
+    8.326,
+    1.341
+   ],
+   "method": "collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.003,
+   "bulge_p95_m": 0.003,
+   "cover_max_m": 0.005,
+   "bulge_max_m": 0.005,
+   "tris": 1142,
+   "tried": [
+    [
+     "hull",
+     308,
+     2.805
+    ],
+    [
+     "collapse 0.02",
+     617,
+     0.358
+    ],
+    [
+     "collapse 0.04",
+     617,
+     0.358
+    ],
+    [
+     "collapse 0.07",
+     617,
+     0.358
+    ],
+    [
+     "collapse 0.12",
+     617,
+     0.358
+    ],
+    [
+     "collapse 0.20",
+     617,
+     0.358
+    ],
+    [
+     "collapse 0.30",
+     684,
+     0.358
+    ],
+    [
+     "collapse 0.50",
+     1142,
+     0.003
+    ]
+   ]
+  },
+  "Asphalt_Chunk_A": {
+   "class": "rock",
+   "instances": 1097,
+   "render_tris": 568,
+   "height_m": 0.402,
+   "render_min": [
+    -0.659,
+    -0.385,
+    -0.461
+   ],
+   "render_max": [
+    1.533,
+    0.402,
+    1.412
+   ],
+   "method": "collapse",
+   "ratio": 0.5,
+   "tol_m": 0.036,
+   "cover_p95_m": 0.002,
+   "bulge_p95_m": 0.002,
+   "cover_max_m": 0.003,
+   "bulge_max_m": 0.003,
+   "min_scale": 0.6716,
+   "skipped_small": 0,
+   "tris": 284,
+   "tried": [
+    [
+     "hull",
+     204,
+     0.144
+    ],
+    [
+     "collapse 0.02",
+     136,
+     0.235
+    ],
+    [
+     "collapse 0.04",
+     136,
+     0.244
+    ],
+    [
+     "collapse 0.07",
+     136,
+     0.238
+    ],
+    [
+     "collapse 0.12",
+     136,
+     0.239
+    ],
+    [
+     "collapse 0.20",
+     136,
+     0.221
+    ],
+    [
+     "collapse 0.30",
+     170,
+     0.052
+    ],
+    [
+     "collapse 0.50",
+     284,
+     0.002
+    ]
+   ]
+  },
+  "Pipe_Concrete_A": {
+   "class": "prop",
+   "instances": 1654,
+   "render_tris": 876,
+   "height_m": 1.56,
+   "render_min": [
+    -1.2,
+    0.0,
+    -2.991
+   ],
+   "render_max": [
+    2.297,
+    1.56,
+    0.78
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.064,
+   "cover_p95_m": 0.049,
+   "bulge_p95_m": 0.049,
+   "cover_max_m": 0.077,
+   "bulge_max_m": 0.081,
+   "tris": 104,
+   "tried": [
+    [
+     "hull",
+     256,
+     0.577
+    ],
+    [
+     "collapse 0.02",
+     24,
+     0.532
+    ],
+    [
+     "collapse 0.04",
+     34,
+     0.248
+    ],
+    [
+     "collapse 0.07",
+     60,
+     0.106
+    ],
+    [
+     "collapse 0.12",
+     104,
+     0.049
+    ]
+   ]
+  },
+  "Fence_Broken_A": {
+   "class": "prop",
+   "instances": 555,
+   "render_tris": 508,
+   "height_m": 2.118,
+   "render_min": [
+    -2.029,
+    -0.404,
+    -0.12
+   ],
+   "render_max": [
+    2.029,
+    2.118,
+    0.9
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.059,
+   "cover_p95_m": 0.026,
+   "bulge_p95_m": 0.018,
+   "cover_max_m": 0.053,
+   "bulge_max_m": 0.062,
+   "tris": 35,
+   "tried": [
+    [
+     "hull",
+     78,
+     0.538
+    ],
+    [
+     "collapse 0.02",
+     9,
+     0.349
+    ],
+    [
+     "collapse 0.04",
+     20,
+     0.163
+    ],
+    [
+     "collapse 0.07",
+     35,
+     0.026
+    ]
+   ]
+  },
+  "Tree_Dead_A": {
+   "class": "tree",
+   "instances": 1437,
+   "render_tris": 3340,
+   "height_m": 7.242,
+   "render_min": [
+    -2.418,
+    -0.623,
+    -2.849
+   ],
+   "render_max": [
+    3.487,
+    7.242,
+    0.965
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.243,
+   "trunk_top_m": 3.0,
+   "bark_faces": 2936,
+   "slices": 10,
+   "bark_inside_ratio": 0.619,
+   "tris": 40
+  },
+  "Tree_Dead_B": {
+   "class": "tree",
+   "instances": 1388,
+   "render_tris": 4176,
+   "height_m": 8.309,
+   "render_min": [
+    -2.375,
+    -0.616,
+    -2.759
+   ],
+   "render_max": [
+    3.443,
+    8.309,
+    3.016
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.216,
+   "trunk_top_m": 3.0,
+   "bark_faces": 3656,
+   "slices": 10,
+   "bark_inside_ratio": 0.74,
+   "tris": 40
+  },
+  "Weed_A": {
+   "class": "plant_small",
+   "instances": 155316,
+   "method": "none"
+  },
+  "Weed_Patch_A": {
+   "class": "plant_small",
+   "instances": 79635,
+   "method": "none"
+  }
+ }
+}

@@ -101,6 +101,8 @@
   <Target Name="CopyPlanetSurfaceAsset" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
     <ItemGroup>
       <PlanetSurfaceAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb" />
+      <!-- 정적 오브젝트 충돌체 묶음 (2026-10-29, Shared::kPlanetCollisionAsset) — 클라와 같은 파일. 없으면 서버는 지형만 막는다. -->
+      <PlanetSurfaceAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.glb;$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.json" />
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb')" Text="assets/model/map에 future_ruins_planet_separated.glb 맵 파일이 필요합니다." />
     <Copy SourceFiles="@(PlanetSurfaceAsset)" DestinationFolder="$(OutDir)assets\model\map\" SkipUnchangedFiles="true" />
