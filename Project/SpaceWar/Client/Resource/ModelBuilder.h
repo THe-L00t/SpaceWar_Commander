@@ -24,10 +24,21 @@
 
 namespace swc {
 
+	// 텍스처를 어디서 얻었나 (2026-10-29 텍스처 LOD) — 로그 확인용.
+	//  dds     = 이미지 옆에 미리 구워 둔 밉맵 DDS 를 읽었다(밉 1×1 까지, 풀기 없음).
+	//  decoded = DDS 가 없거나 맞지 않아 PNG · JPEG 를 WIC 로 풀었다(밉 1단).
+	struct TextureLoadStats
+	{
+		uint32_t dds = 0;
+		uint32_t decoded = 0;
+	};
+
 	// 실패하면 error 에 사람이 읽을 문장을 넣고 false. 예외는 던지지 않는다.
 	// ★ source 의 메시 배열(정점·인덱스·스킨)을 «넘겨받는다» — 끝나면 source.meshes 의 배열은 비어 있다.
 	//   파서가 이미 렌더 배치로 만들었으므로 복사하지 않는다(2026-10-09). 스켈레톤·클립은 건드리지 않는다.
-	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error);
+	// ★ 텍스처 LOD (2026-10-29) — 같은 이름의 밉맵 DDS 가 옆에 있으면 그것을 읽는다(ModelBuilder.cpp TextureCache).
+	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error,
+		TextureLoadStats* stats = nullptr);
 
 	// 스킨이 없으면 out 이 빈 스켈레톤으로 남는다(실패가 아니다).
 	void BuildSkeleton(const Shared::ModelSource& source, SkeletonResource& out);

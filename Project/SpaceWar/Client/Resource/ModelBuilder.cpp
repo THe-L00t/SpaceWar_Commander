@@ -1,6 +1,7 @@
 #include "ModelBuilder.h"
 #include "TextureLoader.h"
 
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -78,10 +79,20 @@ namespace swc {
 				}
 
 				TextureData image;
-				if (!LoadTextureImage(path.c_str(), srgb, image, error))
+				fs::path ddsPath = path;
+				ddsPath.replace_extension(L".dds");
+				if (TryMipmappedDds(ddsPath, srgb, 0, 0, image))
 				{
-					error = L"모델 텍스처를 읽지 못했습니다: " + path.wstring() + L"\n" + error;
-					return false;
+					++stats.dds;
+				}
+				else
+				{
+					if (!LoadTextureImage(path.c_str(), srgb, image, error))
+					{
+						error = L"모델 텍스처를 읽지 못했습니다: " + path.wstring() + L"\n" + error;
+						return false;
+					}
+					++stats.decoded;
 				}
 				index = Store(std::move(image), key);
 				return true;
@@ -106,17 +117,75 @@ namespace swc {
 					return true;
 				}
 
-				const std::wstring label = L"내장 이미지 #" + std::to_wstring(imageIndex);
 				TextureData decoded;
-				if (!LoadTextureImageFromMemory(image.bytes.data(), image.bytes.size(),
-					srgb, label.c_str(), decoded, error))
-					return false;
+				uint32_t pngWidth = 0, pngHeight = 0;
+				PngSize(image.bytes, pngWidth, pngHeight);
+				const fs::path ddsPath = EmbeddedDdsPath(image.name);
+				if (!ddsPath.empty() && TryMipmappedDds(ddsPath, srgb, pngWidth, pngHeight, decoded))
+				{
+					++stats.dds;
+				}
+				else
+				{
+					const std::wstring label = L"내장 이미지 #" + std::to_wstring(imageIndex);
+					if (!LoadTextureImageFromMemory(image.bytes.data(), image.bytes.size(),
+						srgb, label.c_str(), decoded, error))
+						return false;
+					++stats.decoded;
+				}
 
 				index = Store(std::move(decoded), key);
 				return true;
 			}
 
+			TextureLoadStats stats;
+
 		private:
+			// ★ 텍스처 LOD = 밉맵 (2026-10-29 사용자 «일단 텍스처만 LOD 시작해줘» → «미리 만든 DDS 를 읽는다»)
+			//   노션 «LOD 적용 준비» 2.4 «밉맵이 텍스처 LOD 다». resource(dfa4fe4)가 PNG 옆에 같은 이름으로 구워 둔
+			//   밉맵 DDS(texconv, 1×1 까지)가 있으면 그것을 읽는다. 렌더러는 밉 체인을 그대로 올린다(GRenderer::CreateTexture).
+			//   없거나 맞지 않으면(RGBA8 아님 · sRGB 가 슬롯과 다름 · 크기가 PNG 와 다름) 예전처럼 PNG 를 WIC 로 푼다(밉 1단).
+			//   방식은 client1 세션이 10-28 에 넣었다 되돌린 코드와 같다(되돌린 이유 = 먼 곳 번쩍임 → 렌더러에서 원인을 찾는다).
+			static bool TryMipmappedDds(const fs::path& ddsPath, bool srgb, uint32_t expectWidth, uint32_t expectHeight,
+				TextureData& out)
+			{
+				std::error_code ec;
+				if (!fs::is_regular_file(ddsPath, ec)) return false;
+				TextureData dds;
+				std::wstring ddsError;
+				if (!LoadDdsTexture(ddsPath.c_str(), dds, ddsError)) return false;
+				if (dds.format != TextureFormat::Rgba8 || dds.srgb != srgb) return false;
+				if (expectWidth != 0 && (dds.width != expectWidth || dds.height != expectHeight)) return false;
+				out = std::move(dds);
+				return true;
+			}
+
+			// glb 내장 이미지의 DDS 자리 = 모델 파일 폴더\<이미지 이름>.dds (리소스 규칙: 이미지 이름 = PNG 파일 이름).
+			// 이름이 없거나 폴더가 섞여 있으면 찾지 않는다.
+			fs::path EmbeddedDdsPath(const std::string& imageName) const
+			{
+				if (imageName.empty() || source.sourceDirectory.empty()) return {};
+				const fs::path name = Utf8Path(imageName);
+				if (name.has_parent_path() || !name.has_filename()) return {};
+				return fs::path(source.sourceDirectory) / (name.wstring() + L".dds");
+			}
+
+			// PNG 머리(IHDR)의 크기. PNG 가 아니면 0 × 0 — 크기 비교를 하지 않는다.
+			static void PngSize(const std::vector<uint8_t>& bytes, uint32_t& width, uint32_t& height)
+			{
+				width = height = 0;
+				static constexpr uint8_t kSignature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+				if (bytes.size() < 24 || std::memcmp(bytes.data(), kSignature, 8) != 0 ||
+					std::memcmp(bytes.data() + 12, "IHDR", 4) != 0) return;
+				auto be32 = [&](size_t at)
+				{
+					return (uint32_t(bytes[at]) << 24) | (uint32_t(bytes[at + 1]) << 16) |
+						(uint32_t(bytes[at + 2]) << 8) | uint32_t(bytes[at + 3]);
+				};
+				width = be32(16);
+				height = be32(20);
+			}
+
 			// sRGB 로 읽을 슬롯 = 색을 담은 슬롯. 거칠기·금속도·노멀은 데이터라 선형이다.
 			static bool IsColorSlot(TextureSlot slot)
 			{
@@ -138,10 +207,12 @@ namespace swc {
 
 	} // namespace
 
-	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error)
+	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error,
+		TextureLoadStats* stats)
 	{
 		error.clear();
 		out = ModelData{};
+		if (stats) *stats = TextureLoadStats{};
 
 		if (source.meshes.empty() || source.nodes.empty())
 		{
@@ -203,6 +274,7 @@ namespace swc {
 
 			out.materials.push_back(std::move(material));
 		}
+		if (stats) *stats = textures.stats;
 
 		// ── 메시 ───────────────────────────────────────────
 		// ★ 정점·인덱스·스킨은 복사하지 않고 «넘겨받는다» (2026-10-09)

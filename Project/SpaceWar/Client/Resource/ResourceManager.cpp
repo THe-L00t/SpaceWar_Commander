@@ -236,8 +236,16 @@ namespace swc {
 		if (!source.meshes.empty())
 		{
 			out.model = std::make_unique<ModelData>();
-			if (!BuildModelData(source, *out.model, error))
+			begin = std::chrono::steady_clock::now();
+			TextureLoadStats textureStats;
+			if (!BuildModelData(source, *out.model, error, &textureStats))
 				return false;
+			// 텍스처를 어디서 얻었나 (2026-10-29 텍스처 LOD). resource 가 미리 구워 둔 밉맵 DDS 라
+			// 첫 실행부터 «밉맵 DDS» 가 대부분이어야 정상이다(PNG 풀기 = 옆에 DDS 가 없거나 맞지 않는 이미지).
+			if (textureStats.dds + textureStats.decoded > 0)
+				Log(L"[모델] %s — 텍스처 %u장(밉맵 DDS %u · PNG 풀기 %u), %.2fs", shortName.c_str(),
+					textureStats.dds + textureStats.decoded, textureStats.dds, textureStats.decoded,
+					SecondsSince(begin));
 		}
 
 		// ── 3) 스켈레톤(본) ────────────────────────────
