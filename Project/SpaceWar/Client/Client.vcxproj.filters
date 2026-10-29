@@ -90,6 +90,9 @@
     <Filter Include="클래스 목록\TextureLoader">
       <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\TextureBake">
+      <UniqueIdentifier>{7d2c9e41-3b58-4f6a-9c17-a8e05b2d6f93}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\LoadingScene">
       <UniqueIdentifier>{b4e71c2a-6d39-4f80-a5c2-1e9d7f3b8a64}</UniqueIdentifier>
     </Filter>
@@ -188,6 +191,9 @@
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
     </ClCompile>
+    <ClCompile Include="Resource\TextureBake.cpp">
+      <Filter>클래스 목록\TextureBake</Filter>
+    </ClCompile>
     <ClCompile Include="Scene\LoadingScene.cpp">
       <Filter>클래스 목록\LoadingScene</Filter>
     </ClCompile>
@@ -285,6 +291,9 @@
     </ClInclude>
     <ClInclude Include="Resource\TextureLoader.h">
       <Filter>클래스 목록\TextureLoader</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\TextureBake.h">
+      <Filter>클래스 목록\TextureBake</Filter>
     </ClInclude>
     <ClInclude Include="MeshData.h">
       <Filter>헤더파일</Filter>

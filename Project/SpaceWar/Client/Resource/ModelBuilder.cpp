@@ -1,11 +1,14 @@
 #include "ModelBuilder.h"
+#include "TextureBake.h"
 #include "TextureLoader.h"
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace DirectX;
 
@@ -56,8 +59,8 @@ namespace swc {
 		class TextureCache
 		{
 		public:
-			TextureCache(ModelData& data, const Shared::ModelSource& source)
-				: data(data), source(source) {}
+			TextureCache(ModelData& data, const Shared::ModelSource& source, const std::wstring& bakeDirectory)
+				: data(data), source(source), bakeDirectory(bakeDirectory) {}
 
 			bool ResolveFile(const std::string& relative, TextureSlot slot,
 				uint32_t& index, std::wstring& error)
@@ -87,12 +90,15 @@ namespace swc {
 				}
 				else
 				{
-					if (!LoadTextureImage(path.c_str(), srgb, image, error))
+					// 파일을 통째로 읽어 메모리에서 푼다 — bake 키(내용 해시)를 푸는 바이트와 같은 바이트로 만든다.
+					std::vector<uint8_t> bytes;
+					if (!ReadFileBytes(path, bytes) ||
+						!DecodeBaked(bytes.data(), bytes.size(), path.stem().wstring(), srgb, path.c_str(), image, error))
 					{
-						error = L"모델 텍스처를 읽지 못했습니다: " + path.wstring() + L"\n" + error;
+						error = L"모델 텍스처를 읽지 못했습니다: " + path.wstring() +
+							(error.empty() ? std::wstring() : L"\n" + error);
 						return false;
 					}
-					++stats.decoded;
 				}
 				index = Store(std::move(image), key);
 				return true;
@@ -128,10 +134,9 @@ namespace swc {
 				else
 				{
 					const std::wstring label = L"내장 이미지 #" + std::to_wstring(imageIndex);
-					if (!LoadTextureImageFromMemory(image.bytes.data(), image.bytes.size(),
-						srgb, label.c_str(), decoded, error))
+					if (!DecodeBaked(image.bytes.data(), image.bytes.size(), AsciiName(image.name), srgb,
+						label.c_str(), decoded, error))
 						return false;
-					++stats.decoded;
 				}
 
 				index = Store(std::move(decoded), key);
@@ -186,6 +191,56 @@ namespace swc {
 				height = be32(20);
 			}
 
+			// ★ 푼 픽셀 bake (2026-10-29 사용자 «WIC로 PNG읽은거를 bake해줘») — Resource/TextureBake.h
+			//   모델 디스크 캐시(.swmc)는 메시만 bake 하고 텍스처는 PNG 압축 그대로라, 실행할 때마다 WIC 로 다시 풀었다.
+			//   같은 PNG 바이트의 bake 파일이 있으면 그 픽셀을 그대로 읽고, 없으면 예전처럼 WIC 로 푼 뒤 bake 파일을 쓴다.
+			//   화질은 예전과 같다(WIC 결과 그대로, 밉 1단). bake 폴더가 없으면 예전과 똑같이 매번 푼다.
+			//   render/lab 텍스처 LOD(b2235ce)를 합친 뒤로는 밉맵 DDS 가 없거나 맞지 않는 이미지만 여기로 온다.
+			bool DecodeBaked(const uint8_t* bytes, size_t size, const std::wstring& name, bool srgb,
+				const wchar_t* label, TextureData& out, std::wstring& error)
+			{
+				TextureBakeKey bakeKey;
+				std::wstring bakePath;
+				if (!bakeDirectory.empty())
+				{
+					bakeKey = MakeTextureBakeKey(bytes, size, srgb);
+					bakePath = TextureBakePath(bakeDirectory, name, bakeKey);
+					if (ReadTextureBake(bakePath, bakeKey, out))
+					{
+						out.path = label ? label : L"";
+						++stats.baked;
+						return true;
+					}
+				}
+
+				if (!LoadTextureImageFromMemory(bytes, size, srgb, label, out, error))
+					return false;
+				++stats.decoded;
+				if (!bakePath.empty() && WriteTextureBake(bakePath, bakeKey, out))
+					++stats.written;
+				return true;
+			}
+
+			static bool ReadFileBytes(const fs::path& path, std::vector<uint8_t>& out)
+			{
+				std::ifstream file(path, std::ios::binary | std::ios::ate);
+				if (!file) return false;
+				const std::streamoff size = file.tellg();
+				if (size <= 0) return false;
+				out.resize(static_cast<size_t>(size));
+				file.seekg(0);
+				return static_cast<bool>(file.read(reinterpret_cast<char*>(out.data()), size));
+			}
+
+			// bake 파일 이름에 붙이는 사람용 이름(구분은 해시가 한다). glTF 이미지 이름은 UTF-8 이라 ASCII 만 남긴다.
+			static std::wstring AsciiName(const std::string& text)
+			{
+				std::wstring out;
+				out.reserve(text.size());
+				for (unsigned char c : text) out.push_back(c < 0x80 ? wchar_t(c) : L'_');
+				return out;
+			}
+
 			// sRGB 로 읽을 슬롯 = 색을 담은 슬롯. 거칠기·금속도·노멀은 데이터라 선형이다.
 			static bool IsColorSlot(TextureSlot slot)
 			{
@@ -202,13 +257,14 @@ namespace swc {
 
 			ModelData& data;
 			const Shared::ModelSource& source;
+			const std::wstring& bakeDirectory;
 			std::unordered_map<std::wstring, uint32_t> loaded;
 		};
 
 	} // namespace
 
 	bool BuildModelData(Shared::ModelSource& source, ModelData& out, std::wstring& error,
-		TextureLoadStats* stats)
+		const std::wstring& textureBakeDirectory, TextureLoadStats* stats)
 	{
 		error.clear();
 		out = ModelData{};
@@ -221,7 +277,7 @@ namespace swc {
 		}
 
 		// ── 재질·텍스처 ────────────────────────────────────
-		TextureCache textures(out, source);
+		TextureCache textures(out, source, textureBakeDirectory);
 		out.materials.reserve(source.materials.size());
 
 		// 화면 메시가 쓰지 않는 재질(숨긴 충돌 프록시 등)의 텍스처는 디코딩하지 않는다 (client2 2f15728).
