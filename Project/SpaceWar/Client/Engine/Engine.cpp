@@ -103,18 +103,66 @@ namespace
 		return DirectX::XMMatrixTranslation(0.0f, -1.0e7f, 0.0f);
 	}
 
-	// 에셋은 빌드 후 exe 옆 assets\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
+	// exe 가 있는 폴더(끝에 \ 포함).
 	// ★ 반드시 와이드로 다룬다. GetModuleFileNameA 는 ANSI(CP949)를 주므로
 	//   경로에 한글이 있으면 UTF-8 로 오인해 깨진다.
-	std::wstring AssetPath(const wchar_t* relative)
+	std::wstring ExeDirectory()
 	{
 		wchar_t exePath[MAX_PATH] = {};
 		GetModuleFileNameW(nullptr, exePath, MAX_PATH);
 
 		std::wstring p(exePath);
 		const size_t slash = p.find_last_of(L"\\/");
-		p = (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
-		return p + L"assets\\" + relative;
+		return (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash + 1);
+	}
+
+	bool AssetFileExists(const std::wstring& path)
+	{
+		const DWORD attributes = GetFileAttributesW(path.c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+	}
+
+	// 원본 assets\ 를 찾을 때 exe 폴더에서 몇 단계까지 올라갈지.
+	// exe 는 Project\SpaceWar\x64\<구성>\ 에 있어 원본 Project\assets\ 는 세 단계 위다.
+	constexpr int kAssetSourceSearchDepth = 6;
+
+	// 에셋 경로. 작업 디렉터리와 무관하게 exe 위치로 찾는다. 두 곳을 차례로 본다
+	// (2026-10-29 사용자 «디버그 폴더 안에 리소스가 없다면, 지금 기존의 리소스를 저장해두는 폴더에서 읽어오도록»).
+	//  1) exe 옆 assets\ — 빌드 후 대상(Client.vcxproj CopyModelAssets · xcopy)이 복사해 둔 판.
+	//  2) 원본 assets\ — exe 폴더에서 위로 올라가며 그 파일이 처음 있는 «…\assets\<relative>».
+	//     빌드 후 복사는 원본과 같은 하위 경로(model\map\… · model\prop\… · ui\…)를 쓴다.
+	//  파일마다 따로 본다. 두 곳 다 없으면 1) 경로를 돌려준다 → 못 읽었다는 로그에 exe 쪽 경로가 찍힌다.
+	// ★ 1) 의 문자열은 예전과 똑같이 만든다 — 모델 디스크 캐시 키에 절대 경로가 들어간다.
+	std::wstring AssetPath(const wchar_t* relative)
+	{
+		const std::wstring exeDirectory = ExeDirectory();
+		const std::wstring copied = exeDirectory + L"assets\\" + relative;
+		if (AssetFileExists(copied))
+			return copied;
+
+		std::wstring directory = exeDirectory;
+		for (int depth = 0; depth < kAssetSourceSearchDepth && directory.size() >= 2; ++depth)
+		{
+			// 끝의 \ 를 빼고 그 앞의 \ 까지 잘라 한 단계 위로 간다. 드라이브 루트에서 멈춘다.
+			const size_t slash = directory.find_last_of(L"\\/", directory.size() - 2);
+			if (slash == std::wstring::npos)
+				break;
+			directory.resize(slash + 1);
+
+			const std::wstring source = directory + L"assets\\" + relative;
+			if (AssetFileExists(source))
+			{
+				static bool logged = false;   // 메인 스레드에서만 부른다
+				if (!logged)
+				{
+					logged = true;
+					swc::Log(L"[에셋] exe 옆 assets\\ 에 없는 파일은 원본 폴더에서 읽는다 — %sassets\\ (처음: %s)",
+						directory.c_str(), relative);
+				}
+				return source;
+			}
+		}
+		return copied;
 	}
 
 	// 좌표만 받는 원격 캐릭터도 현재 지면의 위쪽에 몸통을 정렬한다.
@@ -130,6 +178,21 @@ namespace
 		m.r[2] = XMVectorSet(float(forward.x), float(forward.y), float(forward.z), 0.0f);
 		m.r[3] = XMVectorSet(position[0], position[1], position[2], 1.0f);
 		return m;
+	}
+
+	// 해 높이 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게»).
+	//  게임 맵 첫 스폰 · 예시 행성 입장 때, 플레이어가 바라보는 쪽 지평선에서 이 각도만큼 올린 곳에 해를 둔다.
+	//  (그 전: render/lab 803ca01 «지평선에 걸치게» = 0°.)
+	constexpr double kSunElevationDegrees = 45.0;
+
+	// SetSunDirection 에 넣을 값. sunDir 는 빛이 나아가는 방향 = −해 쪽이다.
+	//  해 쪽 = 바라보는 방향을 지면(위쪽에 수직인 면)에 투영한 앞쪽 × cos(높이) + 위쪽 × sin(높이).
+	XMFLOAT3 SunDirectionInFront(const swc::Vec3d& facing, const swc::Vec3d& up)
+	{
+		constexpr double kRadians = kSunElevationDegrees * 3.14159265358979323846 / 180.0;
+		const swc::Vec3d front = swc::ProjectOntoPlane(facing, up);
+		const swc::Vec3d toSun = swc::Normalize(front * std::cos(kRadians) + up * std::sin(kRadians));
+		return XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z));
 	}
 
 	// 예시 행성 디버그 씬의 창 제목 몫 (2026-10-28)
@@ -448,10 +511,8 @@ namespace swc {
 				spawnPosition = controller.Position();
 				camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 
-				// 해를 지평선에 걸친다 (2026-10-29 사용자 «태양위치 지평선에 걸치게») — 스폰 자리 기준 높이 0°, 처음 바라보는 쪽.
-				//  sunDir 는 빛이 나아가는 방향 = −해 쪽. 0° 아래로 내리면 대기 계산(지구 크기 땅)이 해를 막아 빛이 0 이 된다.
-				{ const Vec3d toSun = ProjectOntoPlane(controller.Facing(), controller.Up());
-				  renderer.SetSunDirection(XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z))); }
+				// 해를 처음 바라보는 쪽 45° 상공에 둔다 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게») — 스폰 자리 기준.
+				renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
 				return true;
 			});
 
@@ -767,10 +828,8 @@ namespace swc {
 		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 		scene.SetLocalTransform(player, controller.WorldMatrix());
 
-		// 해를 지평선에 걸친다 (2026-10-29 사용자 «태양위치 지평선에 걸치게») — 착륙 지점 L1 기준 높이 0°, 바라보는 쪽.
-		//  sunDir 는 빛이 나아가는 방향 = −해 쪽. 0° 아래로 내리면 대기 계산(지구 크기 땅)이 해를 막아 빛이 0 이 된다.
-		{ const Vec3d toSun = ProjectOntoPlane(controller.Facing(), controller.Up());
-		  renderer.SetSunDirection(XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z))); }
+		// 해를 바라보는 쪽 45° 상공에 둔다 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게») — 착륙 지점 L1 기준.
+		renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
 
 		// 스폰 자리 주변 오브젝트를 바로 고른다(이후는 UpdateDebugPlanetObjects 가 움직일 때마다).
 		target.StreamObjects(scene, controller.Position() - planet.center, true);
