@@ -286,6 +286,23 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ObjectAsset Include="$(ProjectDir)..\..\assets\model\vegetation\**\*.glb">
         <Category>vegetation</Category>
       </ObjectAsset>
+      <!-- 텍스처 LOD (2026-10-29) — 모델 텍스처의 밉맵 DDS(resource dfa4fe4). ModelBuilder 가 glb 내장 PNG 대신
+           «모델 폴더\이미지 이름.dds» 를 읽는다(없으면 PNG 를 푼다). 맵 폴더의 BaseColor · ORM · Normal 은 위 TerrainAsset 이 이미 복사한다. -->
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\prop\**\*.dds">
+        <Category>prop</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\light\**\*.dds">
+        <Category>light</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\structure\**\*.dds">
+        <Category>structure</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\vegetation\**\*.dds">
+        <Category>vegetation</Category>
+      </ObjectAsset>
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\map\**\*_Emissive.dds">
+        <Category>map</Category>
+      </ObjectAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다." />

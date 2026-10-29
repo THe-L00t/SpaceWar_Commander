@@ -95,7 +95,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	const float depth = gDepth[pixel];
 	if (depth >= 1.0) return;   // 메인 패스 물체 없음 — 하늘 · 배경 패스 결과를 건드리지 않는다
 
-	const float3 P        = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj);
+	const float3 P        = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj, gEyePos);
 	const float3 albedo   = gAlbedo[pixel].rgb;
 	const float3 N        = DecodeNormalOct(gNormal[pixel]);
 	const float4 material = gMaterial[pixel];

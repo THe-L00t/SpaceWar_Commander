@@ -12,6 +12,7 @@
 //    ④ 표면 반사 — 반사 레이 1개를 픽셀 셰이더 RayQuery 로(DXR 1.1). 맞으면 확산 셰이딩(태양 · 그림자 · GI 프로브), 아니면 하늘
 //    ⑤ 태양 하이라이트 × 그림자(RayQuery, 투과 물체는 연하게 — [4a] 와 같은 규칙)
 //    결과 = (1 − F) × 굴절 × 흡수 × 투과 색 + F × 반사 + 하이라이트 + 투과 안 되는 몫의 확산 + 발광
+//    ⑥ (2026-10-29) 물가 페이드 — 재질이 켰으면 둘레의 땅(면 위로 올라온 표면) 비율로 얼음을 옅게(얼어붙은 호수의 물가)
 //  ★ 얼음 뒤의 얼음은 안 보인다 — 피라미드를 한 번만 뜨므로(선택지 (a)). 앞면만 그린다(뒷면 컬링).
 // ============================================================
 
@@ -78,7 +79,7 @@ VOut VSMain(VIn i)
 	VOut o;
 	const float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
-	o.pos   = mul(wp, gViewProj);
+	o.pos   = mul(float4(wp.xyz - gEyePos, 1.0), gViewProj);   // 2026-10-29 — 카메라 기준(Forward.hlsl VSMain 과 같은 깊이가 나와야 한다)
 	o.nrm   = mul(float4(i.nrm, 0.0), world).xyz;
 	o.col   = i.col;
 	o.uv    = i.uv;
@@ -147,7 +148,7 @@ float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float2 pixelUv = i.pos.xy / float2(gSize);
 	const float  mip = pow(rough, 1.3) * float(max(gMipCount, 1u) - 1u);
 	float offsetMul = max(0.0, 1.0 - mip * 0.08);   // HDRP: 흐릴수록 오프셋을 줄여 테두리 번짐(헤일로)을 줄인다
-	const float4 clip = mul(float4(exitP, 1.0), gViewProj);
+	const float4 clip = mul(float4(exitP - gEyePos, 1.0), gViewProj);   // 2026-10-29 — 카메라 기준
 	float2 exitUv = pixelUv;
 	if (clip.w > 1.0e-4)
 	{
@@ -162,7 +163,7 @@ float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target
 			const float d = depthTex[q];
 			if (d < 1.0)
 			{
-				const float3 hitP = ReconstructWorldPosition(q, d, gSize, gInvViewProj);
+				const float3 hitP = ReconstructWorldPosition(q, d, gSize, gInvViewProj, gEyePos);
 				if (length(hitP - gEyePos) <= length(P - gEyePos))
 					offsetMul = 0.0;
 			}
@@ -222,6 +223,95 @@ float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target
 		* NdotL * gSunIlluminance * sunVisibility;
 	const float3 opaqueDiffuse = (1.0 - mat.transmission) * tint / kPi * NdotL * gSunIlluminance * sunVisibility;
 
-	const float3 color = (1.0 - F) * transmitted + F * reflection + specular + opaqueDiffuse + emissive;
+	float3 color = (1.0 - F) * transmitted + F * reflection + specular + opaqueDiffuse + emissive;
+
+	// ⑥ 물가 페이드 (2026-10-29, 사용자 «얼음 호수 경계도 뚜렷해. 모든 메시 경계도 흐릿하게 섞어줘»)
+	//  재질 edgeFade(m) > 0 일 때만 — glTF 에 없는 값이라 씬이 켠다(예시 행성 얼어붙은 호수, GRenderer::SetMaterialEdgeFade).
+	//  ★ «바닥까지 깊이» 로 옅게 하는 물의 물가 페이드(UE DepthFade)는 여기 안 맞는다 — 빙하 호수는 얼음 면 아래 지형이
+	//    호수 전체에서 6 cm 로 평평하고(물가에서만 지형이 면 위로 올라온다) 깊이로는 물가와 가운데를 가를 수 없다.
+	//  그래서 얼음 면을 따라 이 점 둘레(반지름 edgeFade 의 고리 셋 × 8 방향)에서 위에서 아래로 짧은 레이(RayQuery)를 쏘아
+	//  그 자리 지형이 얼음 면보다 올라와 있는지(물가) 직접 잰다. 곧은 물가에서 «땅» 비율은 물가 선 위 0.5 → edgeFade 안쪽 0
+	//  이라 얼음 = 1 − 2 × 비율 로 하면 물가 선에서 0 → edgeFade 안쪽에서 그대로가 된다.
+	//  · 화면 깊이로 재던 첫 판은 낮은 각도에서 물가 둔덕이 찍은 점을 멀리 앞에서 가려 거의 못 쟀다 → 월드 공간 레이로 바꿈.
+	//  · 투과 물체(이 얼음 자신 · 얼음 덩어리)와 알파 마스크 빈 곳은 지나간다. 지형 재질이 아닌 것(돌 · 캐릭터)에 맞으면
+	//    «모름» 으로 뺀다 — 얼음 위를 걷는 캐릭터 둘레가 옅어지지 않게. 레이가 아무것도 안 맞으면 땅 속에서 쏜 것(높은 둔덕)이라 땅.
+	//  · 옅어지는 쪽 색은 «레이가 맞은 둘레 물가 지형이 화면에 보이는 색» 의 평균이다. 얼음 바로 밑(6 cm 아래 바닥)은 얼음과
+	//    색이 거의 같아 옅게 해도 티가 안 났다 — 눈에 띄는 경계는 «어두운 얼음 ↔ 하얀 물가 둔덕» 이라서다.
+	//  · RT 를 끄면 하지 않는다(물가가 예전처럼 뚜렷하다).
+	if (mat.edgeFade > 0.0 && gRtEnabled != 0)
+	{
+		const float3 axisT = normalize(abs(N.y) < 0.99 ? cross(N, float3(0.0, 1.0, 0.0)) : cross(N, float3(1.0, 0.0, 0.0)));
+		const float3 axisB = cross(N, axisT);
+		static const uint  kFadeRings      = 3;
+		static const uint  kFadeDirections = 8;
+		static const float kLandHeight     = 0.05;   // 얼음 면보다 5 cm 이상 올라온 지형 = 땅
+		static const float kProbeHeight    = 4.0;    // 레이를 얼음 면 위 4 m 에서 쏜다
+		static const float kProbeDepth     = 0.5;    //        면 아래 0.5 m 까지
+		float  land = 0.0;
+		float  taps = 0.0;
+		float3 shoreColor  = float3(0.0, 0.0, 0.0);
+		float  shoreWeight = 0.0;
+		[loop] for (uint ring = 0; ring < kFadeRings; ++ring)
+		{
+			const float radius = mat.edgeFade * float(ring + 1) / float(kFadeRings);
+			[loop] for (uint k = 0; k < kFadeDirections; ++k)
+			{
+				const float a = (float(k) + float(ring) / float(kFadeRings)) * (2.0 * kPi / float(kFadeDirections));   // 고리마다 엇갈림
+				RayDesc probe;
+				probe.Origin    = P + (axisT * cos(a) + axisB * sin(a)) * radius + N * kProbeHeight;
+				probe.Direction = -N;
+				probe.TMin      = 0.0;
+				probe.TMax      = kProbeHeight + kProbeDepth;
+				RayQuery<RAY_FLAG_NONE> pq;
+				pq.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, probe);
+				while (pq.Proceed())
+				{
+					const RtInstance ci = gRtInstances[pq.CandidateInstanceIndex()];
+					if (gRtMaterials[ci.material].transmissive == 0 &&
+						CandidateIsSolid(gRtInstances, gRtMaterials, pq.CandidateInstanceIndex(), pq.CandidatePrimitiveIndex(),
+							pq.CandidateTriangleBarycentrics(), gWrapSampler))
+						pq.CommitNonOpaqueTriangleHit();
+				}
+				if (pq.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+				{
+					land += 1.0;   // 땅 속에서 쏜 레이 = 4 m 넘게 솟은 둔덕
+					taps += 1.0;
+					continue;
+				}
+				if (gRtMaterials[gRtInstances[pq.CommittedInstanceIndex()].material].terrain == 0)
+					continue;      // 돌 · 캐릭터 = 모름
+				const float w = saturate((kProbeHeight - pq.CommittedRayT()) / kLandHeight);
+				land += w;
+				taps += 1.0;
+				// 맞은 물가 지형이 화면에 보이면 그 색을 모은다(가려져 있으면 빼고)
+				[branch] if (w > 0.0)
+				{
+					const float3 S  = probe.Origin + probe.Direction * pq.CommittedRayT();
+					const float4 sc = mul(float4(S - gEyePos, 1.0), gViewProj);
+					if (sc.w > 1.0e-4)
+					{
+						const float2 suv = ClipToUv(sc);
+						if (all(suv >= 0.0) && all(suv <= 1.0))
+						{
+							Texture2D<float> opaqueDepth = ResourceDescriptorHeap[gDepthSrv];
+							const uint2 sp = min(uint2(suv * float2(gSize)), gSize - 1);
+							const float sd = opaqueDepth[sp];
+							if (sd < 1.0 && length(ReconstructWorldPosition(sp, sd, gSize, gInvViewProj, gEyePos) - S) <
+								0.25 + 0.002 * length(S - gEyePos))
+							{
+								shoreColor  += w * sceneColor.SampleLevel(gClampSampler, suv, 0.0).rgb;
+								shoreWeight += w;
+							}
+						}
+					}
+				}
+			}
+		}
+		const float fade = taps > 0.0 ? saturate(1.0 - 2.0 * land / taps) : 1.0;
+		// 옅어지는 쪽 = 둘레 물가 지형이 화면에 보이는 색(물가 선에서 옆 둔덕과 같아진다). 못 모았으면 얼음 없이 보이는 이 자리.
+		const float3 shore = shoreWeight > 0.0 ? shoreColor / shoreWeight
+		                                       : sceneColor.SampleLevel(gClampSampler, pixelUv, 0.0).rgb;
+		color = lerp(shore, color, fade);
+	}
 	return float4(color, 1.0);
 }

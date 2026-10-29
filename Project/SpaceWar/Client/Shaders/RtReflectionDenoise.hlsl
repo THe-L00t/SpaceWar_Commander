@@ -59,7 +59,7 @@ bool LoadSurface(uint2 q, out float3 P, out float3 N, out float rough)
 	N = float3(0.0, 0.0, 1.0);
 	if (depth >= 1.0 || rough >= gMaxRoughness)
 		return false;
-	P = ReconstructWorldPosition(q, depth, gSize, gInvViewProj);
+	P = ReconstructWorldPosition(q, depth, gSize, gInvViewProj, gEyePos);
 	N = DecodeNormalOct(normalTex[q]);
 	return true;
 }
@@ -110,7 +110,7 @@ void CSTemporal(uint3 id : SV_DispatchThreadID)
 			const float pd = prevDepthTex[q];
 			if (pd >= 1.0) continue;
 			// 같은 표면인가 — 이전 위치가 지금 표면의 평면 위에 있고, 법선이 비슷해야 한다
-			const float3 Pp = ReconstructWorldPosition(uint2(q), pd, gSize, gPrevInvViewProj);
+			const float3 Pp = ReconstructWorldPosition(uint2(q), pd, gSize, gPrevInvViewProj, gEyePos);
 			const float3 Np = DecodeNormalOct(prevNormalTex[q]);
 			if (abs(dot(N, Pp - P)) > tol || dot(N, Np) < kNormalThreshold) continue;
 			const float4 h = historyIn[q];

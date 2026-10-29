@@ -61,14 +61,17 @@ float3 DecodeNormalOct(float2 e)
 }
 
 // 픽셀 중심 + 깊이 → 월드 위치. 래스터와 같은 D3D 클립 규약(y 위가 +, z 0~1)을 거꾸로 푼다.
-//  invViewProj 는 viewProj 의 역행렬(행벡터 규약: mul(v, M)).
 //  (2026-10-27 렌더 2단계 — Lighting.hlsl 에서 옮겨 왔다. [4a] RtShadow.hlsl 도 쓴다)
-float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 size, float4x4 invViewProj)
+//  ★ 2026-10-29 — invViewProj 는 «카메라 기준» 역행렬이다(GRenderer.cpp CameraRelativeInverseViewProj, 행벡터 규약 mul(v, M)).
+//    카메라 기준 위치를 구한 뒤 eye(카메라 월드 위치)를 더한다. 예전처럼 월드 역행렬을 쓰면 카메라가 원점에서 멀 때
+//    행렬 안의 큰 값끼리 float 로 빼져 위치 오차가 거리에 비례해 커졌다(예시 행성 30 m 에서 약 2 ~ 3 cm →
+//    그림자 레이가 자기 땅에 맞아 검은 점, 카메라가 움직이면 깜빡임). 이전 프레임 역행렬도 «이번 카메라 기준» 이라 같은 eye 를 더한다.
+float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 size, float4x4 invViewProj, float3 eye)
 {
 	const float2 uv  = (float2(pixel) + 0.5) / float2(size);
 	const float4 ndc = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
 	const float4 w   = mul(ndc, invViewProj);
-	return w.xyz / w.w;
+	return w.xyz / w.w + eye;
 }
 
 GBufferOut PackGBuffer(float3 albedo, float3 N, float rough, float metallic, float3 emissive, float2 motion)

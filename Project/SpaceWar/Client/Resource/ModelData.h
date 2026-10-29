@@ -67,6 +67,10 @@ namespace swc {
 		float bumpDistance = 0.06f;      // 범프 1 — 섞은 높이맵(바위는 4배) Distance(m)
 		float reliefDistance = 0.45f;    // 범프 2 — 지면 요철 Distance(m)
 		float reliefStrength = 0.8f;     // 범프 2 — Strength(0 ~ 1)
+		// ── 레이어 좌표의 원점 (2026-10-29) — 월드 좌표의 행성 중심 ──
+		//  마스크 UV · 노이즈 · 세 방향 투영을 «월드 위치 − origin» 으로 구한다. 메시 좌표를 쓰면 노드 변환이 있는
+		//  오솔길 · 착륙 대지(리소스 규격: 지형과 같은 레이어 셰이더로 그린다)가 지형과 다른 자리를 읽는다.
+		DirectX::XMFLOAT3 origin{ 0.0f, 0.0f, 0.0f };
 	};
 
 	struct MaterialData

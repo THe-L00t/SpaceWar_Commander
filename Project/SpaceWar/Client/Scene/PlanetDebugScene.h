@@ -40,6 +40,14 @@
 //    glb 의 지형 재질은 대체 레이어 한 장뿐이다(리소스 규격). 배치 JSON 의 terrain_layers 로 레이어 4종 + 마스크의
 //    밉맵 DDS 를 읽어(LoadTerrainLayers, 로딩 스레드) 렌더러 지형 재질을 만들고 지형 노드의 재질을 바꿔 끼운다
 //    (ApplyTerrainLayers, 메인). 못 읽으면 대체 레이어 한 장 그대로 띄운다.
+//  ★ 땅 위 메시 경계 섞기 (2026-10-29, 사용자 «용암 행성에서도 길이 경계가 뚜렷하다 수정» ·
+//    «얼음 호수 경계도 뚜렷해. 모든 메시 경계도 흐릿하게 섞어줘»)
+//    · 오솔길(Walkable_Path_*) · 착륙 대지(Landing_L*_Platform) 중 glb 재질이 «지형과 같은 땅»(지형 재질 · 레이어 이름 ·
+//      행성 표의 길 재질)인 것은 지형 레이어 재질로 바꿔 그린다 — 마스크를 따라 지형과 이어진다.
+//      리소스 규격: 빙하 trail_note «렌더러가 지형과 같은 레이어 셰이더로 그리면 띠가 따로 보이지 않는다 … 착륙 대지도 같다»,
+//      화산 build_map.py «오솔길 · 착륙 대지 = 주변과 같은 굳은 껍질(티 나지 않게)», 숲 시안은 착륙 원판을 지형 재질로 그린다.
+//      네온 · 폐허의 도로 · 포장(따로 만든 재질)은 그대로 둔다.
+//    · 얼어붙은 호수(Frozen_Lake*)는 물가 페이드를 켠다 — 바닥에 가까운 가장자리에서 얼음이 옅어진다(렌더러 반투명 패스).
 // ============================================================
 
 namespace swc {
@@ -160,6 +168,14 @@ namespace swc {
 		bool                  loaded = false;
 		std::vector<NodeHandle> terrainNodes;          // 지형 메시(…_Planet_Terrain)의 그리기 노드 — 지형 레이어 재질로 바꾼다
 		bool                  terrainLayered = false;  // 지형 레이어 재질을 끼웠는가(창 제목)
+		// ── 땅 위 메시 경계 섞기 (2026-10-29) ──
+		//  오솔길 · 착륙 대지 중 «지형과 같은 땅» 재질인 것도 지형 레이어 재질로 그린다(ApplyTerrainLayers).
+		Vec3d                 center{ 0.0, 0.0, 0.0 };              // 월드의 행성 중심 — 지형 레이어 좌표의 원점
+		std::string           terrainMaterialName;                  // glb 지형 노드의 재질 이름(대체 레이어)
+		std::array<std::string, 4> terrainLayerNames;               // 배치 JSON terrain_layers 의 R G B A
+		std::vector<std::pair<NodeHandle, std::string>> overlayNodes;   // (그리기 노드, glb 재질 이름) — 오솔길 · 착륙 대지
+		size_t                layeredOverlays = 0;                  // 그중 지형 레이어 재질로 바꾼 수(창 제목)
+		size_t                fadedLakes = 0;                       // 물가 페이드를 켠 얼음 호수 노드 수(창 제목)
 
 		std::vector<ObjectType>                 objectTypes;
 		std::vector<PlanetPlacement::Instance>  instances;

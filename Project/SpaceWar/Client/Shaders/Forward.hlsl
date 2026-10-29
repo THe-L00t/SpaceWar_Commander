@@ -88,6 +88,7 @@ cbuffer TerrainCB : register(b2)
 	float  gBumpDistance;                       // 4단계 — 범프 1(레이어 높이맵) Distance(m)
 	float  gReliefDistance;                     // 4단계 — 범프 2(지면 요철) Distance(m)
 	float  gReliefStrength;                     // 4단계 — 범프 2 Strength
+	float3 gTerrainOrigin;                      // 2026-10-29 — 레이어 좌표의 원점 = 월드의 행성 중심(예전 패딩 자리)
 };
 
 // 텍스처 5칸 = 같은 종류 4장(마스크 R G B A 순)을 묶은 배열 4개 + 마스크. 슬롯 번호는 일반 재질과 같은 자리다.
@@ -136,8 +137,7 @@ struct VOut
 	// 5단계 — 모션 벡터용 클립 좌표 두 개. 나누기(w)는 픽셀 셰이더에서 한다(보간 뒤에 나눠야 원근이 맞다).
 	float4 curClip  : CURCLIP;
 	float4 prevClip : PREVCLIP;
-	// 2026-10-28 지형 레이어 — 메시 좌표(인스턴스 변환 전). 지형은 원점 = 행성 중심이라 이 방향으로 마스크 UV 를 구한다.
-	float3 meshPos  : MESHPOS;
+	// (2026-10-29 — 지형 레이어 판이 쓰던 메시 좌표 MESHPOS 를 뺐다. 레이어 좌표는 world − gTerrainOrigin 이다)
 };
 
 VOut VSMain(VIn i, uint instance : SV_InstanceID)
@@ -147,16 +147,19 @@ VOut VSMain(VIn i, uint instance : SV_InstanceID)
 	VOut o;
 	float4 wp = mul(float4(i.pos, 1.0), world);
 	o.world = wp.xyz;
-	o.pos   = mul(wp, gViewProj);
+	// ★ 2026-10-29 — 카메라 기준으로 곱한다: gViewProj 는 «T(eye) × viewProj»(GRenderer.cpp CameraRelativeViewProj).
+	//   월드 viewProj 를 그대로 곱하면 카메라가 원점에서 멀 때(예시 행성 수백 m ~ 1 km) 큰 값끼리의 float 뺄셈으로
+	//   깊이 버퍼의 깊이가 거리에 비례해 어긋났다 → 그 깊이로 되살린 위치에서 쏜 그림자 레이가 자기 땅에 맞아 검은 점 · 깜빡임.
+	o.pos   = mul(float4(wp.xyz - gEyePos, 1.0), gViewProj);
 	// ★ 5단계 — 같은 정점의 이전 프레임 위치: 이전 world(물체 움직임) × 이전 viewProj(카메라 움직임)
+	//   (2026-10-29 — 이전 viewProj 도 «이번 카메라 기준» 이라 같은 eye 를 뺀다)
 	o.curClip  = o.pos;
-	o.prevClip = mul(mul(float4(i.pos, 1.0), inst.prevWorld), gPrevViewProj);
+	o.prevClip = mul(float4(mul(float4(i.pos, 1.0), inst.prevWorld).xyz - gEyePos, 1.0), gPrevViewProj);
 	o.nrm   = mul(float4(i.nrm, 0.0), world).xyz;
 	o.col   = i.col;
 	o.uv    = i.uv;
 	// 접선도 월드로 옮긴다. 부호(w)는 그대로 넘긴다.
 	o.tan   = float4(mul(float4(i.tan.xyz, 0.0), world).xyz, i.tan.w);
-	o.meshPos = i.pos;   // 2026-10-28 지형 레이어 (지형 판만 읽는다)
 	return o;
 }
 
@@ -310,17 +313,21 @@ float SampleLayerHeight(uint layer, bool triplanar, TerrainCoords c)
 
 Surface SampleSurface(VOut i, bool frontFace)
 {
+	// 레이어 좌표 = 행성 중심 기준 위치(2026-10-29 — 예전 메시 좌표). 지형은 둘이 같고, 노드 변환이 있는
+	//  오솔길 · 착륙 대지(리소스 규격: 지형과 같은 레이어 셰이더)는 월드 쪽이라야 지형과 같은 마스크 · 무늬를 읽는다.
+	//  블렌더 시안도 착륙 원판의 마스크 UV 를 월드 위치로 계산한다(Verdant build_map.py 320 ~ 331줄).
+	const float3 meshPos = i.world - gTerrainOrigin;
 	uint maskWidth, maskHeight, maskMips;
 	gLayerMask.GetDimensions(0, maskWidth, maskHeight, maskMips);
 	// 등면적 매핑이라 마스크 텍셀 넓이 = 4πR² ÷ 픽셀 수 → 한 변 = R·√(4π) ÷ 폭
-	const float texelSize = length(i.meshPos) * 3.5449077 / float(maskWidth);
+	const float texelSize = length(meshPos) * 3.5449077 / float(maskWidth);
 	const float footprint = max(length(ddx(i.world)), length(ddy(i.world)));   // 화면 픽셀 하나가 덮는 표면 길이(m)
 	const float maskLod   = clamp(log2(max(footprint / texelSize, 1e-4)), 0.0, float(maskMips - 1));
-	const float4 mask     = gLayerMask.SampleLevel(gClampSampler, TerrainMaskUv(i.meshPos), maskLod);
+	const float4 mask     = gLayerMask.SampleLevel(gClampSampler, TerrainMaskUv(meshPos), maskLod);
 
 	// ── 3단계 좌표 ──
 	//  시안 노이즈 · 세 방향 투영은 블렌더 물체 좌표(Z 위)다 — glTF (x, y, z) → 블렌더 (x, −z, y) 로 바꿔 같은 면 · 방향을 쓴다.
-	const float3 co = float3(i.meshPos.x, -i.meshPos.z, i.meshPos.y);
+	const float3 co = float3(meshPos.x, -meshPos.z, meshPos.y);
 	TerrainCoords c;
 	c.anti = saturate(TerrainFbm(co * kTerrainAntiScale, kTerrainNoiseOctave, footprint * kTerrainAntiScale) * 3.0 - 1.0);
 	c.uvA  = i.uv;

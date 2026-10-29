@@ -15,6 +15,7 @@
 #include <DirectXMath.h>
 #include "Client/GRenderer.h"
 #include "Client/LegacyScene.h"
+#include "Client/Log.h"
 #include "Client/Resource/TextureLoader.h"
 #include "Shared/Model/Readers/JsonValue.h"
 
@@ -48,6 +49,10 @@ namespace {
 		float bumpDistance;
 		float reliefDistance;
 		float reliefStrength;
+		// 땅 위 메시 경계 섞기 (2026-10-29) — 이름이 레이어와 달라도 «지형과 같은 땅» 으로 볼 오솔길 재질(없으면 nullptr).
+		//  숲: Verdant_Trail = Dirt_Trail 레이어 텍스처(Verdant build_map.py 250줄), 마스크 A 가 길 자리에 흙길을 부드럽게
+		//  칠해 둔다(mask_gen.py 60 ~ 72줄: 가운데 0.9 m 까지 흙 → 2.3 m 에서 풀, 노이즈로 흔들림).
+		const char* trailMaterial;
 	};
 
 	// resource 브랜치 예시 행성 (fa6777c · 8bafbc6 · 6afb98d · c51ed07 · 5dfe6bd)
@@ -55,24 +60,24 @@ namespace {
 		{ L"Verdant",  L"model\\map\\Verdant_Planet\\Verdant_Planet.glb",
 		               L"model\\map\\Verdant_Planet\\Verdant_Planet_Placement.json",   { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
-		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f },
+		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f, "Verdant_Trail" },
 		{ L"Neon",     L"model\\map\\Neon_Planet\\Neon_Planet.glb",
 		               L"model\\map\\Neon_Planet\\Neon_Planet_Placement.json",         { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
-		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f },
+		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f, nullptr },
 		{ L"Ruin",     L"model\\map\\Ruin_Planet\\Ruin_Planet.glb",
 		               L"model\\map\\Ruin_Planet\\Ruin_Planet_Placement.json",         { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
-		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f },
+		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f, nullptr },
 		{ L"Volcanic", L"model\\map\\Volcanic_Planet\\Volcanic_Planet.glb",
 		               L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Placement.json", { 0.5f, 0.5f, 0.5f, 0.5f }, 1.6f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
-		               0.32f, 0.84f, 0.09f, 0.55f, 0.9f },
+		               0.32f, 0.84f, 0.09f, 0.55f, 0.9f, nullptr },
 		// 빙하: A = Snow 만 0.35 (시안 «0.35 if name == 'Snow' else 0.5»)
 		{ L"Glacier",  L"model\\map\\Glacier_Planet\\Glacier_Planet.glb",
 		               L"model\\map\\Glacier_Planet\\Glacier_Planet_Placement.json",   { 0.5f, 0.5f, 0.5f, 0.35f }, 1.4f,
 		               2u | 4u, 8.0f, 8.0f * 0.37f, true, 70.0f, 10.0f,
-		               0.22f, 0.89f, 0.07f, 0.45f, 0.7f },
+		               0.22f, 0.89f, 0.07f, 0.45f, 0.7f, nullptr },
 	} };
 
 	// 보이는 지형 메시의 노드 — «<행성>_Planet_Terrain». 같은 메시를 쓰는 접지용 «COL_Expedition_Planet_Terrain» 은 뺀다
@@ -83,6 +88,29 @@ namespace {
 		return name.size() > suffix.size() && name.substr(name.size() - suffix.size()) == suffix &&
 			name.substr(0, 4) != "COL_";
 	}
+
+	// 땅 위 메시 (2026-10-29) — 오솔길 · 착륙 대지. 다섯 행성 glb 확인: Walkable_Path_* · Landing_L1~4_Platform(노드 변환 있음).
+	//  착륙 표시(Landing_L*_Marking, 네온 · 폐허)는 표시 재질이라 넣지 않는다.
+	bool IsGroundOverlayNode(std::string_view name)
+	{
+		constexpr std::string_view path = "Walkable_Path_";
+		constexpr std::string_view padPrefix = "Landing_L";
+		constexpr std::string_view padSuffix = "_Platform";
+		if (name.substr(0, path.size()) == path) return true;
+		return name.size() > padPrefix.size() + padSuffix.size() && name.substr(0, padPrefix.size()) == padPrefix &&
+			name.substr(name.size() - padSuffix.size()) == padSuffix;
+	}
+
+	// 얼어붙은 호수 면(빙하 Frozen_Lake 15개, 재질 Lake_Ice — 투과 0.45 · 굴절률 1.31 · 두께 0)
+	bool IsFrozenLakeNode(std::string_view name)
+	{
+		constexpr std::string_view lake = "Frozen_Lake";
+		return name.substr(0, lake.size()) == lake;
+	}
+
+	// 얼음 호수 물가 페이드 폭(m) — 물가 선에서 얼음 0 → 이만큼 안쪽에서 얼음 그대로(Transparent.hlsl PSIce ⑥).
+	//  호수 15번 확인: 얼음 면 아래 지형이 가운데 ~55 m 까지 6 cm 로 평평, 물가에서 면 위로 올라온다.
+	constexpr float kLakeEdgeFade = 2.0f;
 
 	// 스폰 = 착륙 지점 L1 의 플랫폼 노드. 예시 행성은 L1 방향이 게임 맵(kPlanetSpawnUp)과 달라
 	// 맵 노드에서 읽는다(resource fa6777c 커밋의 «주의»). 다섯 행성 모두 최상위 노드다.
@@ -160,10 +188,30 @@ namespace swc {
 		}
 
 		// 지형 메시의 그리기 노드를 기억한다 — 지형 레이어 재질로 바꿔 끼울 자리(ApplyTerrainLayers, 2026-10-28).
+		//  2026-10-29 — 오솔길 · 착륙 대지(재질이 지형과 같은 땅이면 같이 바꾼다)와 얼어붙은 호수(물가 페이드)도 기억한다.
+		auto materialName = [&data](uint32_t mesh) -> std::string
+		{
+			if (mesh >= data.meshes.size()) return std::string();
+			const uint32_t material = data.meshes[mesh].material;
+			return material < data.materials.size() ? data.materials[material].name : std::string();
+		};
 		std::vector<uint32_t> terrainMeshes;
+		std::vector<uint32_t> overlayMeshes;
+		std::vector<uint32_t> lakeMeshes;
+		terrainMaterialName.clear();
 		for (const ModelNodeData& node : data.nodes)
+		{
 			if (IsTerrainNode(node.name))
+			{
 				terrainMeshes.insert(terrainMeshes.end(), node.meshes.begin(), node.meshes.end());
+				if (terrainMaterialName.empty() && !node.meshes.empty())
+					terrainMaterialName = materialName(node.meshes.front());
+			}
+			else if (IsGroundOverlayNode(node.name))
+				overlayMeshes.insert(overlayMeshes.end(), node.meshes.begin(), node.meshes.end());
+			else if (IsFrozenLakeNode(node.name))
+				lakeMeshes.insert(lakeMeshes.end(), node.meshes.begin(), node.meshes.end());
+		}
 		std::vector<std::pair<uint32_t, NodeHandle>> meshNodes;
 		root = model.Instantiate(scene, kInvalidNode, &meshNodes);
 		if (root == kInvalidNode)
@@ -171,10 +219,39 @@ namespace swc {
 			error = L"행성 모델을 장면에 등록하지 못했습니다.";
 			return false;
 		}
+		auto contains = [](const std::vector<uint32_t>& meshes, uint32_t mesh)
+		{
+			return std::find(meshes.begin(), meshes.end(), mesh) != meshes.end();
+		};
 		terrainNodes.clear();
+		overlayNodes.clear();
 		for (const auto& [mesh, node] : meshNodes)
-			if (std::find(terrainMeshes.begin(), terrainMeshes.end(), mesh) != terrainMeshes.end())
+		{
+			if (contains(terrainMeshes, mesh))
 				terrainNodes.push_back(node);
+			else if (contains(overlayMeshes, mesh))
+				overlayNodes.emplace_back(node, materialName(mesh));
+		}
+
+		// 얼어붙은 호수 — 물가 페이드를 켠다(2026-10-29). 호수들이 재질 하나(Lake_Ice)를 같이 쓰므로 재질마다 한 번.
+		fadedLakes = 0;
+		std::vector<MaterialHandle> fadedMaterials;
+		for (uint32_t mesh : lakeMeshes)
+		{
+			const MaterialHandle material = model.MeshMaterial(mesh);
+			if (material == kInvalidMaterial) continue;
+			if (std::find(fadedMaterials.begin(), fadedMaterials.end(), material) == fadedMaterials.end())
+			{
+				if (!renderer.SetMaterialEdgeFade(material, kLakeEdgeFade))
+				{
+					Log(L"[디버그 행성] 얼음 호수 물가 페이드 실패 — %s", renderer.StatusText().c_str());
+					continue;
+				}
+				fadedMaterials.push_back(material);
+			}
+			++fadedLakes;
+		}
+		center = planetCenter;
 		scene.SetLocalTransform(root,
 			XMMatrixTranslation(float(planetCenter.x), float(planetCenter.y), float(planetCenter.z)));
 		scene.SetVisible(root, false);   // 들어갈 때 Engine 이 켠다
@@ -337,6 +414,7 @@ namespace swc {
 		}
 		instances = std::move(placement.instances);
 		skippedInstances = placement.skipped;
+		terrainLayerNames = placement.terrainLayers;   // 2026-10-29 — 오솔길 · 착륙 대지 재질이 «지형과 같은 땅» 인지 볼 때
 
 		liveSlot.assign(instances.size(), kInvalidNode);
 		selectStamp.assign(instances.size(), 0);
@@ -557,6 +635,8 @@ namespace swc {
 		material.bumpDistance = kPlanets[index].bumpDistance;
 		material.reliefDistance = kPlanets[index].reliefDistance;
 		material.reliefStrength = kPlanets[index].reliefStrength;
+		// 2026-10-29 — 레이어 좌표의 원점 = 월드의 행성 중심(셰이더가 «월드 위치 − 이 값» 으로 마스크 · 무늬를 읽는다)
+		material.origin = XMFLOAT3(float(center.x), float(center.y), float(center.z));
 		const MaterialHandle handle = renderer.CreateTerrainMaterial(material,
 			handles[0], handles[1], handles[2], handles[3], handles[4]);
 		if (handle == kInvalidMaterial)
@@ -567,6 +647,23 @@ namespace swc {
 		for (const NodeHandle node : terrainNodes)
 			scene.SetMaterial(node, handle);
 		terrainLayered = true;
+
+		// 땅 위 메시 (2026-10-29) — 오솔길 · 착륙 대지 중 재질이 «지형과 같은 땅» 인 것은 같은 지형 레이어 재질로 그린다:
+		//  glb 지형 재질과 이름이 같거나(빙하 Moraine_Gravel · 숲 착륙 대지 Verdant_Ground), 레이어 이름이거나(화산 Lava_Crust),
+		//  행성 표의 길 재질(숲 Verdant_Trail = Dirt_Trail). 나머지(네온 · 폐허 도로 · 포장)는 glb 재질 그대로 둔다.
+		layeredOverlays = 0;
+		const char* const trail = kPlanets[index].trailMaterial;
+		for (const auto& [node, name] : overlayNodes)
+		{
+			const bool ground = !name.empty() && (name == terrainMaterialName ||
+				std::find(terrainLayerNames.begin(), terrainLayerNames.end(), name) != terrainLayerNames.end() ||
+				(trail != nullptr && name == trail));
+			if (!ground) continue;
+			scene.SetMaterial(node, handle);
+			++layeredOverlays;
+		}
+		Log(L"[디버그 행성] %s 땅 위 메시 — 오솔길 · 착륙 대지 %zu / %zu 개를 지형 레이어로, 얼음 호수 물가 페이드 %zu 개",
+			kPlanets[index].name, layeredOverlays, overlayNodes.size(), fadedLakes);
 		return true;
 	}
 
@@ -578,6 +675,10 @@ namespace swc {
 
 		std::wstring status = L"지형 " + std::to_wstring(ground.TriangleCount()) + L" 삼각형";
 		status += terrainLayered ? L" · 지형 레이어 섞기" : L" · 지형 대체 1장";   // 2026-10-28
+		if (layeredOverlays > 0)   // 2026-10-29 — 지형 레이어로 그리는 오솔길 · 착륙 대지
+			status += L" (길 · 대지 " + std::to_wstring(layeredOverlays) + L")";
+		if (fadedLakes > 0)        // 2026-10-29 — 물가 페이드를 켠 얼음 호수
+			status += L" · 호수 물가 " + std::to_wstring(fadedLakes);
 		if (!objectTypes.empty())
 		{
 			status += L" · 오브젝트 보임 " + std::to_wstring(liveList.size()) + L" / 배치 " +

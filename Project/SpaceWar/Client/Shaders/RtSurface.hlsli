@@ -22,6 +22,20 @@ struct HitSurface
 	float3 emissive;
 };
 
+// 물체 좌표의 점 → 월드 (2026-10-29). worldToObject = [A | b] (물체 = A·월드 + b) 이므로 월드 = A⁻¹(물체 − b).
+//  A⁻¹ 의 열 = 행끼리의 외적 ÷ 행렬식(3×3 역행렬의 수반 행렬 식). 지형 레이어 좌표(월드 − 행성 중심)를 구할 때만 쓴다.
+float3 ObjectToWorldPoint(float3x4 worldToObject, float3 p)
+{
+	const float3 a0 = worldToObject[0].xyz;
+	const float3 a1 = worldToObject[1].xyz;
+	const float3 a2 = worldToObject[2].xyz;
+	const float3 v  = p - float3(worldToObject[0].w, worldToObject[1].w, worldToObject[2].w);
+	const float3 c0 = cross(a1, a2);
+	const float3 c1 = cross(a2, a0);
+	const float3 c2 = cross(a0, a1);
+	return (c0 * v.x + c1 * v.y + c2 * v.z) / dot(a0, c0);
+}
+
 // inst · mat = 인스턴스 표 · 재질 표 한 줄, primitive = 삼각형 번호, bary = 무게중심(DXR 규약 y·z 성분),
 // worldToObject = 인스턴스의 월드 → 물체 행렬(법선을 옮길 때 — 역전치와 같다).
 HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, float2 bary, float3x4 worldToObject,
@@ -40,7 +54,7 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 	for (uint k = 0; k < 3; ++k)
 	{
 		const uint base = tri[k] * 60;   // Shared::Vertex 60바이트
-		p  += asfloat(vb.Load3(base + 0))  * w[k];   // POSITION (2026-10-28 — 지형 마스크 UV 용 메시 좌표)
+		p  += asfloat(vb.Load3(base + 0))  * w[k];   // POSITION (2026-10-28 — 지형 마스크 UV 용, 10-29 부터 월드로 옮겨 쓴다)
 		n  += asfloat(vb.Load3(base + 12)) * w[k];   // NORMAL
 		c  += asfloat(vb.Load3(base + 24)) * w[k];   // COLOR
 		uv += asfloat(vb.Load2(base + 36)) * w[k];   // TEXCOORD
@@ -59,9 +73,11 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 		Texture2DArray<float> layerHeight = ResourceDescriptorHeap[NonUniformResourceIndex(mat.textures.w)];
 		Texture2D             layerMask   = ResourceDescriptorHeap[NonUniformResourceIndex(mat.emissiveTexture)];
 
+		// 레이어 좌표 = 월드 위치 − 행성 중심(2026-10-29) — 노드 변환이 있는 오솔길 · 착륙 대지도 지형과 같은 자리를 읽는다
+		const float3 pp = ObjectToWorldPoint(worldToObject, p) - mat.terrainOrigin;
 		uint maskWidth, maskHeight;
 		layerMask.GetDimensions(maskWidth, maskHeight);
-		const uint2  maskTexel = min(uint2(TerrainMaskUv(p) * float2(maskWidth, maskHeight)), uint2(maskWidth - 1, maskHeight - 1));
+		const uint2  maskTexel = min(uint2(TerrainMaskUv(pp) * float2(maskWidth, maskHeight)), uint2(maskWidth - 1, maskHeight - 1));
 		const float4 mask      = layerMask.Load(int3(int2(maskTexel), 0));
 
 		float4 layerHeights;
@@ -82,7 +98,7 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 				ao     += lw[l] * orm.x;
 			}
 		}
-		const float3 co = float3(p.x, -p.z, p.y);   // 블렌더 물체 좌표(Forward.hlsl 지형 판과 같은 축)
+		const float3 co = float3(pp.x, -pp.z, pp.y);   // 블렌더 물체 좌표(Forward.hlsl 지형 판과 같은 축)
 		HitSurface t;
 		t.N        = normalize(mul(n, (float3x3)worldToObject));
 		t.albedo   = albedo * TerrainColorScale(co, 0.0, ao, lw[kTerrainRockLayer], mat.emissive.x, mat.emissive.y) * c;

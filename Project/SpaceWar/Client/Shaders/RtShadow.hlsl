@@ -53,7 +53,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 		return;
 	}
 
-	const float3 P = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj);
+	const float3 P = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj, gEyePos);
 	const float3 N = DecodeNormalOct(normalTex[pixel]);
 	const float3 L = normalize(-gSunDir);
 	if (dot(N, L) <= 0.0)

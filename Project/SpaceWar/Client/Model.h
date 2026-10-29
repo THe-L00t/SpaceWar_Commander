@@ -25,6 +25,12 @@ namespace swc {
 		NodeHandle Instantiate(LegacyScene&, NodeHandle parent = kInvalidNode,
 			std::vector<std::pair<uint32_t, NodeHandle>>* meshNodes = nullptr) const;
 
+		// ModelData 메시 번호의 GPU 재질(2026-10-29) — 올린 재질에 렌더러 설정을 더할 때(예시 행성 얼음 호수 물가 페이드).
+		MaterialHandle MeshMaterial(uint32_t mesh) const
+		{
+			return mesh < meshMaterials.size() ? meshMaterials[mesh] : kInvalidMaterial;
+		}
+
 		const std::wstring& LastError() const { return lastError; }
 
 	private:
