@@ -447,6 +447,11 @@ namespace swc {
 				controller.Spawn(spawn, { 0.0, 0.0, 1.0 });
 				spawnPosition = controller.Position();
 				camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+
+				// 해를 지평선에 걸친다 (2026-10-29 사용자 «태양위치 지평선에 걸치게») — 스폰 자리 기준 높이 0°, 처음 바라보는 쪽.
+				//  sunDir 는 빛이 나아가는 방향 = −해 쪽. 0° 아래로 내리면 대기 계산(지구 크기 땅)이 해를 막아 빛이 0 이 된다.
+				{ const Vec3d toSun = ProjectOntoPlane(controller.Facing(), controller.Up());
+				  renderer.SetSunDirection(XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z))); }
 				return true;
 			});
 
@@ -761,6 +766,11 @@ namespace swc {
 		spawnPosition = controller.Position();
 		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 		scene.SetLocalTransform(player, controller.WorldMatrix());
+
+		// 해를 지평선에 걸친다 (2026-10-29 사용자 «태양위치 지평선에 걸치게») — 착륙 지점 L1 기준 높이 0°, 바라보는 쪽.
+		//  sunDir 는 빛이 나아가는 방향 = −해 쪽. 0° 아래로 내리면 대기 계산(지구 크기 땅)이 해를 막아 빛이 0 이 된다.
+		{ const Vec3d toSun = ProjectOntoPlane(controller.Facing(), controller.Up());
+		  renderer.SetSunDirection(XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z))); }
 
 		// 스폰 자리 주변 오브젝트를 바로 고른다(이후는 UpdateDebugPlanetObjects 가 움직일 때마다).
 		target.StreamObjects(scene, controller.Position() - planet.center, true);
