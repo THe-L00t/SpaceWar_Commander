@@ -7,6 +7,7 @@
 #include <DirectXMath.h>
 #include "InstanceData.h"
 #include "UISprite.h"
+#include "DebugLine.h"
 #include "Vertex.h"
 #include "RayTracingParams.h"
 #include "Resource/ModelData.h"
@@ -56,6 +57,13 @@ namespace swc {
 		// BeginFrame마다 배경(view.background=true), 메인 패스를 각 한 번 호출한다.
 		//  프레임 패킷이 유일한 입력이다 — 렌더러는 Scene 을 직접 읽지 않는다(수정방향 3.2).
 		void Render(const FramePacket&);
+		// ── 디버그 선 (2026-10-29 — C 키 충돌체 와이어프레임, DebugLine.h) ──
+		//  톤맵이 끝난 백버퍼 위에 그린다. 메인 패스 깊이로 가림을 판정해 보이는 부분은 그대로, 가려진 부분은 옅게.
+		//  BeginFrame 과 EndFrame 사이, 메인 Render 뒤 · DrawSprites 앞에 부른다(UI 가 선 위에 온다).
+		//  view = 메인 패스의 RenderView(패킷 그대로), origin = 정점 좌표의 원점(월드). 정점 두 개가 선 하나다.
+		//  kMaxDebugLineVertices 를 넘는 몫은 그리지 않는다. 셰이더를 못 만든 장치에서는 아무것도 하지 않는다.
+		static constexpr size_t kMaxDebugLineVertices = 2u * 1024u * 1024u;
+		void DrawDebugLines(const RenderView& view, const DirectX::XMFLOAT3& origin, const std::vector<DebugLineVertex>& vertices);
 		// UI 를 화면 맨 위에 덮어 그린다. BeginFrame 과 EndFrame 사이, Render 뒤에 부른다.
 		void DrawSprites(const std::vector<UISprite>&);
 		void EndFrame();

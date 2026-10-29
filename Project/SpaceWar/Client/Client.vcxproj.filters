@@ -346,6 +346,9 @@
     <ClInclude Include="UISprite.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="DebugLine.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
     <ClInclude Include="Log.h">
       <Filter>클래스 목록\Log</Filter>
     </ClInclude>
@@ -448,6 +451,9 @@
       <Filter>셰이더</Filter>
     </None>
     <None Include="Shaders\TerrainLayers.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\DebugLines.hlsl">
       <Filter>셰이더</Filter>
     </None>
   </ItemGroup>
