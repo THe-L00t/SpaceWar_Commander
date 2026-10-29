@@ -24,6 +24,10 @@ enum class PacketType : uint16_t {
 
     PlayerHealth,   // 서버 -> 클라 : 이 플레이어의 남은 체력
     NpcDespawn,     // 서버 -> 클라 : 이 NPC 가 사라졌다 (쓰러짐)
+
+    // ── B안(입력 기반, 2026-10-29) — 노션 「충돌 처리 ②」 3절. ★ 기존 번호가 안 바뀌게 끝에 붙인다 ──
+    PlayerInput,    // 클라 -> 서버 : 고정 틱 하나의 입력(번호 · 이동 축 · 버튼 · 카메라 방향)
+    PlayerState,    // 서버 -> 당사자 : 마지막으로 처리한 입력 번호 + 서버가 판정한 이동 상태
 };
 
 // 모든 패킷 공통 헤더
@@ -121,6 +125,42 @@ struct NpcDespawnPacket {
     uint32_t     npcId;
 };
 
+// 클라 -> 서버 : 고정 틱(1/60 s) 하나의 입력. Shared::MoveCommand 를 그대로 싣는다(Shared/GameLogic/PlayerMovement.h).
+//
+// ★ 좌표가 아니라 입력을 보낸다 (명세 6.13 ② «같은 입력을 서버로», B안)
+//   서버가 같은 이동 코드(PlayerMovement::Step) · 같은 충돌체로 판정한다. 클라가 위치를 정하지 않는다(18절 원칙 4).
+// ★ 틱마다 하나씩 보낸다(초당 60개 × 24 B). seq 는 1 부터 늘어난다.
+struct PlayerInputPacket {
+    PacketHeader header;
+    uint32_t     seq;
+    int8_t       moveX;         // −1 · 0 · 1
+    int8_t       moveZ;         // −1 · 0 · 1
+    uint8_t      buttons;       // Shared::kMoveButton*
+    uint8_t      pad;
+    float        look[3];       // 카메라 앞 방향(월드, 단위)
+};
+
+// PlayerStatePacket::flags
+inline constexpr uint8_t kMoveStateGrounded  = 1u << 0;
+inline constexpr uint8_t kMoveStateOnObject  = 1u << 1;
+inline constexpr uint8_t kMoveStateSprinting = 1u << 2;
+
+// 서버 -> 당사자 : 서버가 판정한 내 이동 상태. 서버 틱(30 Hz)마다.
+//
+// ★ 클라는 lastSeq 를 처리한 뒤의 자기 예측과 비교해, 어긋났으면 이 상태로 되감고
+//   그 뒤 입력을 다시 적용한다 (명세 6.13 ③ · 멀티스레딩 명세 §3.2 ②).
+//   다른 사람에게는 지금처럼 PlayerMove(위치 · 속도)를 뿌린다.
+struct PlayerStatePacket {
+    PacketHeader header;
+    uint32_t     lastSeq;       // 마지막으로 처리한 입력 번호 (0 = 아직 없음)
+    float        pos[3];        // 몸통 중심(월드)
+    float        velocity[3];
+    float        facing[3];
+    float        verticalSpeed;
+    uint8_t      flags;         // kMoveState*
+    uint8_t      pad[3];
+};
+
 // ── 크기 확인 ────────────────────────────────────────────────
 //  구조체를 그대로 바이트로 보내므로 크기가 어긋나면 좌표가 통째로 깨진다.
 //  런타임에 이상한 값이 나오는 것보다 컴파일이 실패하는 편이 낫다.
@@ -133,5 +173,7 @@ static_assert(sizeof(PlayerFirePacket)        == 32, "PlayerFirePacket 크기 �
 static_assert(sizeof(PlayerHealthPacket)      == 16, "PlayerHealthPacket 크기 변경됨");
 static_assert(sizeof(PlayerNeutralizedPacket) == 28, "PlayerNeutralizedPacket 크기 변경됨");
 static_assert(sizeof(NpcDespawnPacket)        ==  8, "NpcDespawnPacket 크기 변경됨");
+static_assert(sizeof(PlayerInputPacket)       == 24, "PlayerInputPacket 크기 변경됨");
+static_assert(sizeof(PlayerStatePacket)       == 52, "PlayerStatePacket 크기 변경됨");
 
 } // namespace Shared

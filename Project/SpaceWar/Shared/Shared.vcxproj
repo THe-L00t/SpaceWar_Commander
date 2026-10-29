@@ -68,12 +68,15 @@
     <ClInclude Include="Units.h" />
     <ClInclude Include="HeightmapData.h" />
     <ClInclude Include="Vec3.h" />
+    <ClInclude Include="Vec3d.h" />
     <ClInclude Include="PlanetConst.h" />
     <ClInclude Include="Terrain\TerrainSampler.h" />
     <ClInclude Include="Terrain\HeightmapLoader.h" />
     <ClInclude Include="Terrain\PlanetSurface.h" />
     <ClInclude Include="GameLogic\GameLogic.h" />
+    <ClInclude Include="GameLogic\PlayerMovement.h" />
     <ClInclude Include="Physics\PhysicsCalculator.h" />
+    <ClInclude Include="Physics\CollisionWorld.h" />
     <ClInclude Include="GameObject\Object.h" />
     <ClInclude Include="GameObject\DynamicObject.h" />
     <ClInclude Include="GameObject\StaticObject.h" />
@@ -114,7 +117,9 @@
     <ClCompile Include="Terrain\HeightmapLoader.cpp" />
     <ClCompile Include="Terrain\PlanetSurface.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />
+    <ClCompile Include="GameLogic\PlayerMovement.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />
+    <ClCompile Include="Physics\CollisionWorld.cpp" />
     <ClCompile Include="GameObject\Object.cpp" />
     <ClCompile Include="GameObject\DynamicObject.cpp" />
     <ClCompile Include="GameObject\StaticObject.cpp" />

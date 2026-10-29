@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <cstdint>
+#include "Shared/Protocol.h"   // PlayerStatePacket 을 값으로 들고 있는다(2026-10-29) — 이 헤더는 <cstdint> 만 쓴다
 
 namespace Shared {
 	struct WelcomePacket;
@@ -17,6 +18,7 @@ namespace Shared {
 	struct PlayerHealthPacket;
 	struct PlayerNeutralizedPacket;
 	struct NpcDespawnPacket;
+	struct MoveCommand;
 }
 
 // ============================================================
@@ -70,9 +72,17 @@ namespace swc {
 		void Disconnect();
 		bool Connected() const { return connected; }
 
-		// ★ 렌더 루프에서 1/30초마다 호출한다.
+		// ★ 2026-10-29 B안 이후 쓰지 않는다 — 서버가 좌표를 받지 않는다(무시하고 로그만 남긴다).
 		//   좌표를 Shared::PlayerMovePacket 규격으로 담아 보낸다.
 		void SendToServer(float x, float y, float z);
+
+		// ★ B안(입력 기반, 2026-10-29) — 고정 틱 입력 하나를 보낸다(Shared::PlayerInputPacket).
+		//   PlayerController 가 틱마다 만든 것을 Engine 이 그대로 넘긴다. 판정은 서버가 같은 이동 코드로 한다.
+		void SendInput(const Shared::MoveCommand&);
+
+		// 서버가 판정한 내 이동 상태 중 가장 최근 것(마지막 입력 번호가 가장 큰 것). 한 번 가져가면 지워진다.
+		bool TakePlayerState(Shared::PlayerStatePacket& out);
+		unsigned StateCount() const { return nStates; }
 
 		// ★ 좌클릭 한 발. 판정은 서버가 한다 (명세 18절 원칙 4).
 		//   «어디서 어디로» 만 보낸다. 누가 맞았는지는 말하지 않는다.
@@ -139,6 +149,7 @@ namespace swc {
 		void OnPlayerHealth(const Shared::PlayerHealthPacket*);
 		void OnPlayerNeutralized(const Shared::PlayerNeutralizedPacket*);
 		void OnNpcDespawn(const Shared::NpcDespawnPacket*);
+		void OnPlayerState(const Shared::PlayerStatePacket*);
 
 		SOCKET sock = INVALID_SOCKET;
 		bool   connected = false;
@@ -158,6 +169,11 @@ namespace swc {
 		unsigned nHits = 0;             // 내가 맞은 횟수 (표시용)
 		bool     hasRespawn = false;    // 되살아날 자리를 받았는가
 		float    respawnPos[3] = { 0.0f, 0.0f, 0.0f };
+
+		// ── 이동 (B안) ──
+		Shared::PlayerStatePacket latestState{};   // 가장 최근에 받은 내 이동 상태
+		bool     hasState = false;
+		unsigned nStates = 0;
 
 		std::unordered_map<uint32_t, Remote> remotes;
 

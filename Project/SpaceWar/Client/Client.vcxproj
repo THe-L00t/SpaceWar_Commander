@@ -130,6 +130,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="Log.cpp" />
     <ClCompile Include="SkyPlanet.cpp" />
     <ClCompile Include="Net\Network.cpp" />
+    <ClCompile Include="DebugView\ColliderDebugView.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
@@ -186,6 +187,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="UI\UI.h" />
     <ClInclude Include="UISprite.h" />
     <ClInclude Include="DebugLine.h" />
+    <ClInclude Include="DebugView\ColliderDebugView.h" />
     <ClInclude Include="Log.h" />
     <ClInclude Include="Bridge\ClassBridge.h" />
     <ClInclude Include="State\StateManager.h" />
@@ -272,6 +274,26 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
         <TargetFolder>map\Volcanic_Planet</TargetFolder>
       </ModelAsset>
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 정적 오브젝트 충돌체 묶음 · 설명 JSON (2026-10-29, Shared/Physics/CollisionWorld.h · col_build.py).
+           파일명이 Shared/PlanetConst.h(게임 맵) · PlanetDebugScene::CollisionAsset(예시 행성)에도 적혀 있다 — 바꿀 때 두 곳. -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.glb;$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.json">
+        <TargetFolder>map</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.json">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.json">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.json">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.json">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.json">
         <TargetFolder>map\Glacier_Planet</TargetFolder>
       </ModelAsset>
       <!-- 지형 레이어 (2026-10-28) — 레이어 4종의 색 · ORM · 노멀 · 높이와 레이어 마스크의 밉맵 DDS(resource dfa4fe4).

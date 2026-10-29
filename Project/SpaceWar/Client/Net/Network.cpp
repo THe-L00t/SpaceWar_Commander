@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include <cstring>
 #include "Shared/Protocol.h"
+#include "Shared/GameLogic/PlayerMovement.h"
 
 #pragma comment(lib, "ws2_32")
 
@@ -136,6 +137,24 @@ namespace swc {
 		npcs.erase(p->npcId);
 	}
 
+	// ── 이동 (B안, 2026-10-29) ──
+	//  서버 틱(30 Hz)마다 온다. 한 프레임에 둘 이상 오면 입력 번호가 가장 큰 것만 남긴다 — 보정은 가장 새 것으로 한 번이면 된다.
+	void Network::OnPlayerState(const Shared::PlayerStatePacket* p)
+	{
+		++nStates;
+		if (hasState && p->lastSeq < latestState.lastSeq) return;
+		latestState = *p;
+		hasState = true;
+	}
+
+	bool Network::TakePlayerState(Shared::PlayerStatePacket& out)
+	{
+		if (!hasState) return false;
+		out = latestState;
+		hasState = false;
+		return true;
+	}
+
 	bool Network::TakeRespawn(float outPos[3])
 	{
 		if (!hasRespawn) return false;
@@ -217,6 +236,11 @@ namespace swc {
 					OnNpcDespawn((const Shared::NpcDespawnPacket*)pHead);
 				break;
 
+			case Shared::PacketType::PlayerState:
+				if (nSize == (int)sizeof(Shared::PlayerStatePacket))
+					OnPlayerState((const Shared::PlayerStatePacket*)pHead);
+				break;
+
 			default:
 				break;		// 모르는 종류는 크기만큼 건너뛴다
 			}
@@ -285,6 +309,8 @@ namespace swc {
 		myHealth = -1.0f;
 		nHits = 0;
 		hasRespawn = false;
+		hasState = false;
+		nStates = 0;
 		remotes.clear();
 		npcs.clear();
 		connected = true;
@@ -325,6 +351,29 @@ namespace swc {
 		pkt.velocity[0] = 0.0f;
 		pkt.velocity[1] = 0.0f;
 		pkt.velocity[2] = 0.0f;
+
+		if (SendRaw(&pkt, (int)sizeof(pkt)))
+			++nSent;
+	}
+
+	// ── 입력 (B안, 2026-10-29) ──────────────────────────────
+	//
+	//  ★ 좌표가 아니라 입력을 보낸다 (명세 6.13 ② «같은 입력을 서버로»)
+	//    서버가 같은 이동 코드 · 같은 충돌체로 판정해 PlayerState 로 돌려준다.
+	void Network::SendInput(const Shared::MoveCommand& command)
+	{
+		if (!connected) return;
+
+		Shared::PlayerInputPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::PlayerInput;
+		pkt.seq = command.seq;
+		pkt.moveX = command.moveX;
+		pkt.moveZ = command.moveZ;
+		pkt.buttons = command.buttons;
+		pkt.look[0] = command.look[0];
+		pkt.look[1] = command.look[1];
+		pkt.look[2] = command.look[2];
 
 		if (SendRaw(&pkt, (int)sizeof(pkt)))
 			++nSent;

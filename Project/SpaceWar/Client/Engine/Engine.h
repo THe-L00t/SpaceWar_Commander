@@ -28,6 +28,8 @@
 #include "Client/Planet.h"
 #include "Shared/Terrain/TerrainSampler.h"
 #include "Shared/Terrain/PlanetSurface.h"
+#include "Shared/Physics/CollisionWorld.h"
+#include "Client/DebugView/ColliderDebugView.h"
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -102,7 +104,6 @@ namespace swc {
 
 		Network                   network;        // Network (10절). 스레드 분리는 멀티스레딩 10장 M4
 		std::wstring              netStatus;
-		float                     sendAccumulator = 0.0f;
 		std::vector<RemoteView>   remoteViews;
 		std::vector<NpcView>      npcViews;
 
@@ -117,6 +118,14 @@ namespace swc {
 		Shared::PlanetSurface  planetSurface;     // GLB 지형. 렌더와 서버가 같은 구면 좌표를 사용한다.
 		Shared::TerrainSampler terrain;
 		std::wstring           terrainStatus;
+
+		// ── 정적 오브젝트 충돌체 (2026-10-29, Shared/Physics/CollisionWorld.h) ──
+		//  게임 맵 몫. 예시 행성 몫은 PlanetDebugScene::Collision(). 지금은 C 키 와이어프레임만 쓴다
+		//  (이동 막기 · 서버 판정은 노션 「충돌 처리 ②」 단계 C2 · C4).
+		Shared::CollisionWorld gameMapCollision;
+		ColliderDebugView      colliderView;
+		bool                   showColliders = false;   // C 키
+		const Shared::CollisionWorld* ActiveCollision() const;
 
 		// 로드 확인용 — 게임에 들어갈 때 콘솔에 «로드 N초 (행성 파싱/캐시)» 를 찍는다(Client/Log.h).
 		std::chrono::steady_clock::time_point loadStart{};

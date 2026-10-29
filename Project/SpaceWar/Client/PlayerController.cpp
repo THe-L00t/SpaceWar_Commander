@@ -1,197 +1,150 @@
 #include "PlayerController.h"
 #include "InputManager.h"
 #include "Camera.h"
-#include "Shared/Units.h"
 #include "Shared/PlanetConst.h"
+#include "Shared/Protocol.h"
 #include <cmath>
 
 using namespace DirectX;
-using namespace Shared::units;
 
-// ── 이동 감각 튜닝 (헬다이버즈 참고) ─────────────────────────
-//   조작감이 마음에 안 들면 여기 숫자만 만지면 된다.
-namespace {
-	constexpr float kWalkSpeed   = 6.5_mps;
-	constexpr float kSprintSpeed = 11.0_mps;
-	constexpr float kAimSpeed    = 3.0_mps;
-
-	constexpr float kStrafeScale = 0.80f;   // 좌우 이동 배율
-	constexpr float kBackScale   = 0.55f;   // 후진 배율
-
-	constexpr float kAcceleration = 26.0_mps2;  // 낮출수록 출발이 굼뜸
-	constexpr float kFriction     = 16.0_mps2;  // 낮출수록 멈출 때 더 미끄러짐
-
-	constexpr float kTurnRate    = 9.0_radps;   // 몸통 회전 각속도 상한
-	constexpr float kAimTurnRate = 22.0_radps;  // 조준 시 빠르게 카메라에 정렬
-
-	constexpr float kMoveEpsilon = 0.15_mps;    // 이 속도 아래면 방향 유지
-	constexpr float kJumpSpeed   = 7.0_mps;     // 중력 18 기준 약 1.4m 도약
-
-	// position 은 몸통 중심이다. 발이 지면에 닿으려면 그만큼 띄워야 한다.
-	// ★ 서버가 같은 값으로 위치를 검사하므로 Shared 에서 가져온다 (실제 캐릭터가 들어오면 거기서 교체)
-	constexpr float kGroundOffset = float(Shared::kGroundOffset);
-
-	// 내리막 스텝다운 — 이 낙차까지는 땅에 붙어 내려간다. 이보다 크면(절벽) 실제로 떨어진다.
-	// 없으면 g·dt²(60fps 에서 5mm)보다 빨리 낮아지는 경사(질주 시 1.6도)마다 공중 판정이 나고,
-	// sprinting 이 grounded 에 묶여 있어 질주가 매 프레임 켜졌다 꺼졌다 한다(속도 6.5↔11, 카메라 거리·FOV 진동).
-	// 실제 조각으로 잰 결과: 60fps 질주 중 공중 판정 24%, 초당 8회 → 보정 후 0%.
-	constexpr float kStepDown = 0.5_m;
-}
+// 이동 계산(①~⑨ · 튜닝 값 · 스텝다운 · 충돌)은 Shared/GameLogic/PlayerMovement.cpp 로 옮겼다(2026-10-29 B안).
+// 여기는 키 · 카메라 → 입력 명령, 고정 틱, 입력 기록, 서버 보정, 그릴 자세 보간만 한다.
 
 namespace swc {
 
+	Shared::MoveWorld PlayerController::World() const
+	{
+		Shared::MoveWorld world;
+		if (planet)
+		{
+			world.center = planet->center;
+			world.radius = planet->radius;
+			world.gravity = planet->gravity;
+			world.terrain = planet->terrain;
+		}
+		world.collision = collision;
+		return world;
+	}
+
 	void PlayerController::Spawn(const Vec3d& worldPosition, const Vec3d& facingDirection)
 	{
-		up = planet ? planet->Up(worldPosition) : Vec3d{ 0.0, 1.0, 0.0 };
-
-		// ★ 지형 높이 위에 놓는다.
-		//   0 중심화 때문에 타일 중앙의 지형 높이가 0이라는 보장이 없다.
-		//   고도를 고정값으로 두면 스폰하자마자 솟거나 떨어진다.
-		const Vec3d surfacePoint = Shared::kUsePlanarMap ? worldPosition : up;
-		altitude = (planet ? planet->SurfaceHeight(surfacePoint) : 0.0) + kGroundOffset;
-		position = planet ? planet->PositionAt(surfacePoint, altitude) : worldPosition;
-
-		facing = ProjectOntoPlane(facingDirection, up);
-		velocity = { 0.0, 0.0, 0.0 };
-		verticalSpeed = 0.0;
-		grounded = true;
-		speed = 0.0f;
+		Shared::PlayerMovement::Spawn(state, World(), worldPosition, facingDirection);
+		previous = state;
+		accumulator = 0.0;
+		jumpLatched = false;
+		// 되살아나기 · 맵 바꾸기 — 앞의 기록으로는 되감지 않는다(입력 번호는 이어 간다)
+		for (HistoryEntry& entry : history) entry.command.seq = 0;
+		UpdateRenderPose(1.0);
 	}
 
 	void PlayerController::Update(float dt, const InputManager& input, const Camera& camera)
 	{
+		frameCommands.clear();
 		if (dt <= 0.0f || !planet) return;
 
-		// ① 로컬 기준 갱신 — 걸어다니면 up 이 조금씩 바뀐다
-		up = planet->Up(position);
-		facing = ProjectOntoPlane(facing, up);
-		velocity = velocity - up * Dot(velocity, up);   // 접평면으로 재투영
+		// 점프는 «누른 순간» 이다 — 이번 프레임에 틱이 없으면 다음 틱까지 들고 간다
+		if (input.WasPressed(VK_SPACE)) jumpLatched = true;
 
-		// ② 카메라 기준 입력
-		float localX = 0.0f;
-		float localZ = 0.0f;
-		if (input.IsDown('W')) localZ += 1.0f;
-		if (input.IsDown('S')) localZ -= 1.0f;
-		if (input.IsDown('D')) localX += 1.0f;
-		if (input.IsDown('A')) localX -= 1.0f;
-
-		const float inputLen = std::sqrt(localX * localX + localZ * localZ);
-		const bool hasInput = inputLen > 0.0f;
-		if (hasInput)
+		const Shared::MoveWorld world = World();
+		const double tick = Shared::PlayerMovement::kTickSeconds;
+		accumulator += double(dt);
+		int steps = 0;
+		while (accumulator >= tick)
 		{
-			localX /= inputLen;
-			localZ /= inputLen;
+			if (++steps > kMaxStepsPerFrame)
+			{
+				accumulator = 0.0;   // 너무 길게 멈췄다 — 따라잡지 않고 버린다
+				break;
+			}
+			accumulator -= tick;
+
+			// ② 카메라 기준 입력 → 입력 명령 (명세 6.6.3 — 이동 계산은 키를 모른다)
+			Shared::MoveCommand command;
+			command.seq = nextSeq++;
+			command.moveX = int8_t((input.IsDown('D') ? 1 : 0) - (input.IsDown('A') ? 1 : 0));
+			command.moveZ = int8_t((input.IsDown('W') ? 1 : 0) - (input.IsDown('S') ? 1 : 0));
+			if (input.IsDown(VK_SHIFT)) command.buttons |= Shared::kMoveButtonSprint;
+			if (camera.Aiming()) command.buttons |= Shared::kMoveButtonAim;
+			if (jumpLatched)
+			{
+				command.buttons |= Shared::kMoveButtonJump;
+				jumpLatched = false;
+			}
+			const Vec3d look = camera.Forward();
+			command.look[0] = float(look.x);
+			command.look[1] = float(look.y);
+			command.look[2] = float(look.z);
+
+			previous = state;
+			Shared::PlayerMovement::Step(state, command, tick, world);
+
+			HistoryEntry& entry = history[command.seq % kHistory];
+			entry.command = command;
+			entry.after = state;
+			frameCommands.push_back(command);
 		}
 
-		const bool aiming = camera.Aiming();
-		sprinting = !aiming && hasInput && grounded && input.IsDown(VK_SHIFT);
+		UpdateRenderPose(accumulator / tick);
+	}
 
-		// ③ 방향별 속도 배율 — 전진 1.0 / 좌우 0.8 / 후진 0.55 를 성분비로 보간
-		float dirScale = 1.0f;
-		if (hasInput)
+	double PlayerController::Reconcile(const ServerMoveState& server)
+	{
+		if (!planet || server.lastSeq == 0 || server.lastSeq >= nextSeq) return 0.0;
+		const Shared::MoveWorld world = World();
+
+		Shared::MoveState authoritative;
+		authoritative.position = { server.pos[0], server.pos[1], server.pos[2] };
+		authoritative.velocity = { server.velocity[0], server.velocity[1], server.velocity[2] };
+		authoritative.up = world.Up(authoritative.position);
+		authoritative.facing = ProjectOntoPlane(Vec3d{ server.facing[0], server.facing[1], server.facing[2] }, authoritative.up);
+		authoritative.altitude = world.Altitude(authoritative.position);
+		authoritative.verticalSpeed = server.verticalSpeed;
+		authoritative.grounded = (server.flags & Shared::kMoveStateGrounded) != 0;
+		authoritative.onObject = (server.flags & Shared::kMoveStateOnObject) != 0;
+		authoritative.sprinting = (server.flags & Shared::kMoveStateSprinting) != 0;
+
+		// 서버가 처리한 그 입력 뒤의 내 예측과 비교 — 가까우면 그대로 둔다
+		const HistoryEntry& at = history[server.lastSeq % kHistory];
+		if (at.command.seq == server.lastSeq &&
+			Length(at.after.position - authoritative.position) <= kCorrectionThreshold)
+			return 0.0;
+
+		// 되감기 — 서버 상태에서 그 뒤 입력을 다시 적용한다(기록이 빠진 번호는 건너뛴다)
+		Shared::MoveState replay = authoritative;
+		for (uint32_t seq = server.lastSeq + 1; seq < nextSeq; ++seq)
 		{
-			const float fwd = localZ > 0.0f ? localZ : 0.0f;
-			const float back = localZ < 0.0f ? -localZ : 0.0f;
-			const float side = std::fabs(localX);
-			dirScale = (fwd + back * kBackScale + side * kStrafeScale) / (fwd + back + side);
+			HistoryEntry& entry = history[seq % kHistory];
+			if (entry.command.seq != seq) continue;
+			Shared::PlayerMovement::Step(replay, entry.command, Shared::PlayerMovement::kTickSeconds, world);
+			entry.after = replay;
 		}
 
-		float maxSpeed = kWalkSpeed;
-		if (aiming) maxSpeed = kAimSpeed;
-		else if (sprinting) maxSpeed = kSprintSpeed;
+		const double moved = Length(replay.position - state.position);
+		state = replay;
+		previous = replay;   // 보간을 끊고 바로 옮긴다
+		UpdateRenderPose(1.0);
+		++corrections;
+		lastCorrection = moved;
+		return moved;
+	}
 
-		// 카메라의 접평면 축을 현재 up 기준으로 다시 정렬해서 쓴다
-		const Vec3d camForward = ProjectOntoPlane(camera.Forward(), up);
-		const Vec3d camRight = Cross(up, camForward);
-
-		const Vec3d target = (camForward * double(localZ) + camRight * double(localX))
-			* (double(maxSpeed) * double(dirScale));
-
-		// ④ 가속/감속 — 목표 속도로 일정 비율씩 접근. 관성감의 핵심.
-		const double rate = hasInput ? double(kAcceleration) : double(kFriction);
-		Vec3d delta = target - velocity;
-		const double deltaLen = Length(delta);
-		const double step = rate * dt;
-		if (deltaLen > step && deltaLen > 0.0)
-			delta = delta * (step / deltaLen);
-		velocity = velocity + delta;
-
-		// ⑤ 이동 평면을 따라 직선 이동 (⑧에서 지면 좌표와 고도를 결합한다)
-		position = position + velocity * dt;
-
-		// ⑥ 점프 / 중력 — 지형 높이와 고도를 분리해 공중에서는 포물선을 유지한다
-		if (grounded && input.WasPressed(VK_SPACE))
-		{
-			verticalSpeed = kJumpSpeed;
-			grounded = false;
-		}
-		verticalSpeed -= planet->gravity * dt;
-		altitude += verticalSpeed * dt;
-
-		// ⑦ 착지 판정 — 지형 높이는 여기서만 쓴다
-		const Vec3d newUp = planet->Up(position);
-		const Vec3d surfacePoint = Shared::kUsePlanarMap ? position : newUp;
-		const double groundAltitude = planet->SurfaceHeight(surfacePoint) + kGroundOffset;
-		const bool wasGrounded = grounded;   // 점프한 프레임은 이미 false 라 스텝다운에 안 걸린다
-		if (altitude <= groundAltitude)
-		{
-			altitude = groundAltitude;
-			verticalSpeed = 0.0;
-			grounded = true;
-		}
-		else if (wasGrounded && verticalSpeed <= 0.0 && altitude - groundAltitude <= double(kStepDown))
-		{
-			altitude = groundAltitude;
-			verticalSpeed = 0.0;
-			grounded = true;
-		}
-		else
-		{
-			grounded = false;
-		}
-
-		// ⑧ 지면 방향과 고도 결합 — 현재 구면 또는 평면 규약으로 재투영한다.
-		position = planet->PositionAt(surfacePoint, altitude);
-		up = newUp;
-		facing = ProjectOntoPlane(facing, up);
-		velocity = velocity - up * Dot(velocity, up);
-
-		speed = float(Length(velocity));
-
-		// ⑨ 몸통 회전 — 조준 중엔 카메라를, 아니면 이동 방향을 향해 서서히
-		Vec3d desired = facing;
-		double turnRate = kTurnRate;
-		if (aiming)
-		{
-			desired = ProjectOntoPlane(camera.Forward(), up);
-			turnRate = kAimTurnRate;
-		}
-		else if (speed > kMoveEpsilon)
-		{
-			desired = Normalize(velocity);
-		}
-
-		// up 축 기준 부호 있는 각도차를 구해 상한만큼만 돌린다
-		const double cosA = std::fmax(-1.0, std::fmin(1.0, Dot(facing, desired)));
-		double angle = std::acos(cosA);
-		if (angle > 1e-6)
-		{
-			const double sign = (Dot(Cross(facing, desired), up) >= 0.0) ? 1.0 : -1.0;
-			const double maxTurn = turnRate * dt;
-			if (angle > maxTurn) angle = maxTurn;
-			facing = Normalize(RotateAround(facing, up, angle * sign));
-		}
+	void PlayerController::UpdateRenderPose(double alpha)
+	{
+		alpha = std::fmax(0.0, std::fmin(1.0, alpha));
+		renderPosition = previous.position + (state.position - previous.position) * alpha;
+		renderUp = Normalize(previous.up + (state.up - previous.up) * alpha);
+		renderFacing = ProjectOntoPlane(previous.facing + (state.facing - previous.facing) * alpha, renderUp);
 	}
 
 	XMMATRIX PlayerController::WorldMatrix() const
 	{
-		const Vec3d right = Cross(up, facing);
+		const Vec3d right = Cross(renderUp, renderFacing);
 
 		XMFLOAT4X4 m;
-		m._11 = float(right.x);    m._12 = float(right.y);    m._13 = float(right.z);    m._14 = 0.0f;
-		m._21 = float(up.x);       m._22 = float(up.y);       m._23 = float(up.z);       m._24 = 0.0f;
-		m._31 = float(facing.x);   m._32 = float(facing.y);   m._33 = float(facing.z);   m._34 = 0.0f;
-		m._41 = float(position.x); m._42 = float(position.y); m._43 = float(position.z); m._44 = 1.0f;
+		m._11 = float(right.x);          m._12 = float(right.y);          m._13 = float(right.z);          m._14 = 0.0f;
+		m._21 = float(renderUp.x);       m._22 = float(renderUp.y);       m._23 = float(renderUp.z);       m._24 = 0.0f;
+		m._31 = float(renderFacing.x);   m._32 = float(renderFacing.y);   m._33 = float(renderFacing.z);   m._34 = 0.0f;
+		m._41 = float(renderPosition.x); m._42 = float(renderPosition.y); m._43 = float(renderPosition.z); m._44 = 1.0f;
 		return XMLoadFloat4x4(&m);
 	}
 }

@@ -164,6 +164,21 @@ namespace swc {
 		return index < kPlanets.size() ? kPlanets[index].placement : L"";
 	}
 
+	// 충돌체 묶음 (2026-10-29) — «model\map\X\X.glb» → «…\X_Collision.glb» · «…\X_Collision.json»
+	std::wstring PlanetDebugScene::CollisionAsset(size_t index)
+	{
+		if (index >= kPlanets.size()) return std::wstring();
+		std::filesystem::path path(kPlanets[index].asset);
+		return (path.parent_path() / (path.stem().wstring() + L"_Collision.glb")).wstring();
+	}
+
+	std::wstring PlanetDebugScene::CollisionManifestAsset(size_t index)
+	{
+		if (index >= kPlanets.size()) return std::wstring();
+		std::filesystem::path path(kPlanets[index].asset);
+		return (path.parent_path() / (path.stem().wstring() + L"_Collision.json")).wstring();
+	}
+
 	bool PlanetDebugScene::Build(const ModelData& data, Shared::PlanetSurface&& parsedGround, GRenderer& renderer,
 		LegacyScene& scene, const Vec3d& planetCenter, std::wstring& error)
 	{

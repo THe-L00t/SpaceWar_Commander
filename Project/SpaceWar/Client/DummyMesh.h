@@ -143,8 +143,8 @@ namespace swc {
 				{
 					const Vec3d d = DirAt(face, i, j);
 					Vertex v;
-					v.position = ToVec3(SurfaceAt(d).ToFloat3());
-					v.normal = ToVec3(NormalAt(d).ToFloat3());
+					v.position = ToVec3(ToFloat3(SurfaceAt(d)));
+					v.normal = ToVec3(ToFloat3(NormalAt(d)));
 					v.color = ToVec3(color);
 					m.vertices.push_back(v);
 				}

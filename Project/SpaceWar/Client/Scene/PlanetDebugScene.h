@@ -8,6 +8,7 @@
 #include "Client/Scene/Scene.h"
 #include "Client/Model.h"
 #include "Client/Vec3d.h"
+#include "Shared/Physics/CollisionWorld.h"
 #include "Shared/Terrain/PlanetSurface.h"
 
 // ============================================================
@@ -48,6 +49,10 @@
 //      화산 build_map.py «오솔길 · 착륙 대지 = 주변과 같은 굳은 껍질(티 나지 않게)», 숲 시안은 착륙 원판을 지형 재질로 그린다.
 //      네온 · 폐허의 도로 · 포장(따로 만든 재질)은 그대로 둔다.
 //    · 얼어붙은 호수(Frozen_Lake*)는 물가 페이드를 켠다 — 바닥에 가까운 가장자리에서 얼음이 옅어진다(렌더러 반투명 패스).
+//  ★ 충돌체 (2026-10-29, 사용자 «… 나머진은 저폴리로 충돌 가자. … c키를 눌러 저폴리 충돌체를 와이어 프레임으로»)
+//    맵 glb 옆 «<행성>_Collision.glb · .json»(Resource_Work/_tools/collision/col_build.py)을 로딩 스레드에서 읽어
+//    배치 인스턴스를 씌운 Shared::CollisionWorld 를 들고 있다(SetCollision). 지금은 C 키 와이어프레임만 쓴다 —
+//    이동 막기 · 서버 판정은 노션 「충돌 처리 ②」 단계 C2 · C4.
 // ============================================================
 
 namespace swc {
@@ -107,6 +112,9 @@ namespace swc {
 		// exe 옆 assets\ 기준. ★ Client.vcxproj 의 CopyModelAssets 에도 적혀 있다 — 바꿀 때 두 곳.
 		static const wchar_t* Asset(size_t index);
 		static const wchar_t* PlacementAsset(size_t index);
+		// 충돌체 묶음 · 설명 JSON — 맵 glb 이름에 «_Collision» 을 붙인 것. ★ Client.vcxproj CopyModelAssets 에도 적혀 있다.
+		static std::wstring CollisionAsset(size_t index);
+		static std::wstring CollisionManifestAsset(size_t index);
 
 		// 로딩 스레드에서 부른다(멤버를 건드리지 않는다). 실패하면 out.error 에 원인.
 		static bool ReadPlacement(const std::wstring& path, PlanetPlacement& out);
@@ -144,6 +152,10 @@ namespace swc {
 		std::wstring Status() const;
 
 		const Shared::PlanetSurface& Ground() const { return ground; }
+
+		// ── 충돌체 (2026-10-29) — 로딩 스레드가 만든 것을 메인이 넘겨받는다. 못 읽었으면 비어 있다(Loaded() false) ──
+		void SetCollision(Shared::CollisionWorld&& world) { collision = std::move(world); }
+		const Shared::CollisionWorld& Collision() const { return collision; }
 		NodeHandle Root() const { return root; }
 
 		// 스폰 방향(행성 중심 기준 단위 벡터) = 착륙 지점 L1. 게임 맵과 같은 규칙이다(PlanetConst.h kPlanetSpawnUp).
@@ -163,6 +175,7 @@ namespace swc {
 
 		Model                 model;
 		Shared::PlanetSurface ground;
+		Shared::CollisionWorld collision;              // 배치 오브젝트 충돌체(2026-10-29)
 		NodeHandle            root = kInvalidNode;
 		Vec3d                 spawnUp{ 0.0, 1.0, 0.0 };
 		bool                  loaded = false;
