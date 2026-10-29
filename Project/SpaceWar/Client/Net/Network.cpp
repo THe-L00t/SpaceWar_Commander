@@ -434,8 +434,16 @@ namespace swc {
 
 		for (;;)
 		{
-			const int nSpace = (int)sizeof(recvBuf) - nRecvd;
-			if (nSpace <= 0) { nRecvd = 0; break; }   // 방어: 해석 못 하는 쓰레기가 찼다
+			int nSpace = (int)sizeof(recvBuf) - nRecvd;
+			if (nSpace <= 0)
+			{
+				// 버퍼가 찼다 — 먼저 완전한 패킷을 꺼내 자리를 만든다(2026-10-29).
+				//  NPC 100마리면 초당 약 60 KB 가 와서, 프레임이 0.13 s 만 멈춰도 8 KB 가 찬다.
+				//  예전처럼 바로 비우면 패킷 중간부터 이어 읽게 돼 스트림이 어긋난다.
+				ProcessPackets();
+				nSpace = (int)sizeof(recvBuf) - nRecvd;
+				if (nSpace <= 0) { nRecvd = 0; break; }   // 방어: 해석 못 하는 쓰레기가 찼다
+			}
 
 			const int n = ::recv(sock, recvBuf + nRecvd, nSpace, 0);
 

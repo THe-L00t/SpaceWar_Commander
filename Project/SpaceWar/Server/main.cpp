@@ -1021,14 +1021,15 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 			}
 		}
 
-		//2) 첫 플레이어가 자리를 잡으면 그 주변에 한 번 깔아둔다.
+		//2) 첫 틱에 한 번 — 시작 지점(SpawnPoint, Landing L1 지면)에서 떨어진 띠에 무리지어 깐다(2026-10-29).
+		//   자리가 플레이어 위치에 매이지 않으므로 첫 플레이어를 기다리지 않는다. 값은 NpcWorld.cpp 상단.
 		if (g_npcWorld.Empty())
 		{
-			if (players.empty()) continue;
-
-			g_npcWorld.SpawnAround(players[0].pos, srv::kNpcSpawnCount);
-			printf("NPC %zu 마리를 플레이어 %u 주변에 배치했습니다.\n",
-				g_npcWorld.Count(), players[0].playerId);
+			float spawn[3];
+			SpawnPoint(spawn);
+			g_npcWorld.SpawnGroups(Shared::Vec3{ spawn[0], spawn[1], spawn[2] }, srv::kNpcSpawnCount);
+			printf("NPC %zu 마리를 무리 %zu개로 시작 지점 둘레에 배치했습니다. (빈자리를 못 찾고 세운 자리 %d)\n",
+				g_npcWorld.Count(), g_npcWorld.GroupCount(), g_npcWorld.BlockedPlacements());
 		}
 
 		//3) 행동 트리를 돌리고 결정대로 위치를 옮긴다. 쓰러진 NPC 의 재등장 시계도 여기서 돈다.
@@ -1190,6 +1191,8 @@ int main()
 	//이동 판정 세계 (B안, 2026-10-29) — 충돌체는 없어도 켠다(지형만 막는다).
 	g_moveWorld.terrain = &g_terrain;
 	g_moveWorld.collision = LoadCollision() ? &g_collision : NULL;
+	//NPC 스폰 자리도 같은 충돌체를 피한다(2026-10-29). 없으면 지형만 본다.
+	g_npcWorld.SetCollision(g_moveWorld.collision);
 
 	WSADATA wsa = { 0 };
 	if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -1258,7 +1261,7 @@ int main()
 				(LPVOID)NULL, 0, &dwThreadID);
 	::CloseHandle(hThread);
 
-	//NPC 행동 스레드. 첫 플레이어가 좌표를 보내면 그 주변에 NPC 를 깔고 굴린다.
+	//NPC 행동 스레드. 첫 틱에 시작 지점 둘레에 NPC 를 무리지어 깔고 굴린다.
 	hThread = ::CreateThread(NULL, 0, ThreadNpcTick,
 				(LPVOID)NULL, 0, &dwThreadID);
 	::CloseHandle(hThread);
@@ -1267,7 +1270,7 @@ int main()
 	printf("    좌표 패킷 크기 = %d 바이트 / NPC 패킷 크기 = %d 바이트\n",
 		(int)sizeof(Shared::PlayerMovePacket),
 		(int)sizeof(Shared::NpcStatePacket));
-	printf("    NPC %d 마리를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount);
+	printf("    NPC %d 마리(무리당 %d)를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount, srv::kNpcGroupSize);
 	printf("    플레이어 이동은 입력(%d 바이트, 초당 60개)으로 받아 서버가 판정합니다 — 상태 %d 바이트를 당사자에게 30Hz.\n",
 		(int)sizeof(Shared::PlayerInputPacket), (int)sizeof(Shared::PlayerStatePacket));
 	while (1)

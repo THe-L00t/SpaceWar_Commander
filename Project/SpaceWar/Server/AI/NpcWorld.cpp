@@ -5,6 +5,8 @@
 
 #include "Shared/PlanetConst.h"
 #include "Shared/GameLogic/GameLogic.h"
+#include "Shared/GameLogic/PlayerMovement.h"
+#include "Shared/Physics/CollisionWorld.h"
 #include "Shared/Physics/PhysicsCalculator.h"
 #include "Shared/Terrain/TerrainSampler.h"
 #include "Shared/AI/Node/SelectorNode.h"
@@ -18,13 +20,27 @@ namespace srv {
 	namespace {
 
 		// ── 실험 스위치는 실행 인자가 아니라 여기 상수로 둔다 ──
-		//  스폰 고리(80m) > 인지 거리(60m) 로 잡아 두었다.
-		//  깔린 직후에는 대기하고, 플레이어가 다가가야 쫓기 시작한다 —
-		//  Selector 가 갈래를 바꾸는 것을 눈으로 볼 수 있다.
-		constexpr float kSpawnRing = 80.0f;     // 플레이어에서 이만큼 떨어져 스폰 (m)
 		constexpr float kDetectRange = 60.0f;   // 이 안에 들어오면 쫓는다 (m)
 		constexpr float kStopDistance = 3.0f;   // 이만큼 붙으면 멈춘다 (m)
 		constexpr float kNpcSpeed = 4.0f;       // m/s — 걷는 플레이어(6.5)보다 느리다
+
+		// ── 무리 배치 (2026-10-29, 사용자 «스폰 위치에서 일정 거리 떨어진 범위에 무리지어») ──
+		//  무리 중심 = 시작 지점에서 지면 거리 kGroupDistanceMin ~ kGroupDistanceMax 띠 안.
+		//  띠 안쪽 끝 100 m − 무리 반지름 10 m = 90 m > 인지 거리 60 m — 시작 지점에 막 선 플레이어를 바로 쫓지 않는다.
+		//  깔린 직후에는 대기하고, 플레이어가 다가가야 쫓기 시작한다 — Selector 가 갈래를 바꾸는 것을 눈으로 볼 수 있다.
+		//  무리 방향은 한 바퀴를 무리 수로 나눈 칸마다 하나(칸 가운데 60 % 안에서 흔든다) — 무리끼리 겹치지 않고 사방에 흩어진다.
+		//  (무리 10개면 칸 36°, 이웃 무리 중심은 최소 14.4° · 100 m 에서 약 25 m 떨어진다 > 무리 지름 20 m)
+		constexpr float    kGroupDistanceMin = 100.0f;  // 시작 지점 → 무리 중심 최소 (m)
+		constexpr float    kGroupDistanceMax = 180.0f;  // 시작 지점 → 무리 중심 최대 (m)
+		constexpr float    kGroupRadius = 10.0f;        // 무리 중심에서 이 원 안에 선다 (m)
+		constexpr float    kMemberSpacing = 1.5f;       // 같은 무리 NPC 끼리 최소 간격 (m) — 캡슐 지름 0.8 m
+		constexpr int      kPlacementTries = 24;        // 빈자리 찾기 시도 수(무리 중심 · NPC 자리 각각)
+		constexpr uint32_t kLayoutSeed = 20261029u;     // 서버를 켤 때마다 같은 배치
+
+		// ── 오브젝트 충돌 (2026-10-29, 사용자 «npc도 오브젝트와 충돌하도록») — PushOutOfObjects ──
+		constexpr int   kNpcCollisionIterations = 4;    // 한 틱에 밀어내는 횟수(플레이어 kCollisionIterations 와 같다)
+		constexpr float kNpcMinSidePush = 0.3f;         // 법선의 접평면 성분이 이보다 작으면 누운 면(바닥 · 천장) — 옆으로 밀지 않는다
+		constexpr float kNpcSkin = 0.001f;              // 밀어낼 때 더 띄우는 몫(m) — 다음 틱에 같은 면에 다시 닿지 않게
 
 		// Shared::Vec3 는 연산자가 없는 순수 데이터다. 여기서만 쓰는 계산을 붙인다.
 		Shared::Vec3 Add(const Shared::Vec3& a, const Shared::Vec3& b)
@@ -75,6 +91,7 @@ namespace srv {
 	} // namespace
 
 	NpcWorld::NpcWorld()
+		: rng(kLayoutSeed)
 	{
 		BuildTree();
 	}
@@ -134,12 +151,19 @@ namespace srv {
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  플레이어 둘레 고리 위의 한 점. 접평면에 그린 뒤 그 방향의 지면으로 내린다.
-	Shared::Vec3 NpcWorld::RingPosition(const Shared::Vec3& playerPos, float angle) const
+	//  from 에서 지면을 따라 distance 떨어진 angle 방향의 한 점을 지면 위로 올려 돌려준다.
+	//  무리 중심(시작 지점 기준)과 무리 안 자리(무리 중심 기준)가 같은 계산을 쓴다.
+	//
+	//  ★ 구면 맵은 접평면에 그리지 않고 대원을 따라 돌린다 — 접평면으로 180 m 를 그리면 지면 거리는 약 176 m 다(반지름 650 m).
+	Shared::Vec3 NpcWorld::SurfacePoint(const Shared::Vec3& from, float angle, float distance) const
 	{
+		if constexpr (Shared::kUsePlanarMap)
+		{
+			return OnGround({ from.x + std::cos(angle) * distance, from.y, from.z + std::sin(angle) * distance });
+		}
+
 		const Shared::Vec3 center = PlanetCenter();
-		const Shared::Vec3 up = Shared::kUsePlanarMap
-			? Shared::Vec3{ 0.0f, 1.0f, 0.0f } : Normalize(Sub(playerPos, center));
+		const Shared::Vec3 up = Normalize(Sub(from, center));
 
 		// 접평면의 기준축 두 개. up 과 나란하지 않은 아무 벡터에서 만든다.
 		const Shared::Vec3 seed = (std::fabs(up.z) < 0.9f)
@@ -147,24 +171,141 @@ namespace srv {
 			: Shared::Vec3{ 1.0f, 0.0f, 0.0f };
 		const Shared::Vec3 axisX = Normalize(Cross(up, seed));
 		const Shared::Vec3 axisY = Cross(up, axisX);
+		const Shared::Vec3 heading = Add(Scale(axisX, std::cos(angle)), Scale(axisY, std::sin(angle)));
 
-		const Shared::Vec3 offset = Add(Scale(axisX, std::cos(angle) * kSpawnRing),
-										Scale(axisY, std::sin(angle) * kSpawnRing));
+		// 중심각 = 호 길이 ÷ 반지름. 방향만 정하면 높이는 OnGround 가 지형으로 잡는다.
+		const float theta = distance / float(Shared::kPlanetRadius);
+		const Shared::Vec3 direction = Add(Scale(up, std::cos(theta)), Scale(heading, std::sin(theta)));
 
-		return OnGround(Add(playerPos, offset));
+		return OnGround(Add(center, Scale(direction, float(Shared::kPlanetRadius))));
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  플레이어 주위에 고리 모양으로 깔아둔다.
-	void NpcWorld::SpawnAround(const Shared::Vec3& playerPos, int count)
+	//  몸통 중심에 선 캡슐이 정적 충돌체와 겹치는가.
+	//
+	//  ★ 플레이어 이동(Shared/GameLogic/PlayerMovement.cpp ResolveCollisions)과 같은 캡슐 · 같은 맵 공간 변환이다.
+	//    NPC 도 플레이어와 같은 캐릭터 모델을 쓴다(클라 Engine — characterModel).
+	bool NpcWorld::ObjectContact(const Shared::Vec3& position, Shared::CapsuleContact& out) const
 	{
+		if (!collision || !collision->Loaded()) return false;
+
+		const Shared::Vec3 center = PlanetCenter();
+		const Shared::Vec3 up = Shared::kUsePlanarMap
+			? Shared::Vec3{ 0.0f, 1.0f, 0.0f } : Normalize(Sub(position, center));
+		const Shared::Vec3 local = Sub(position, center);   // 맵 공간
+
+		const float radius = Shared::PlayerMovement::kCapsuleRadius;
+		const float bottom = float(Shared::kGroundOffset) - radius;                                  // 몸통 중심 → 아래 구 중심
+		const float top = Shared::PlayerMovement::kCapsuleHeight - float(Shared::kGroundOffset) - radius; // 몸통 중심 → 위 구 중심
+
+		return collision->DeepestCapsuleContact(Sub(local, Scale(up, bottom)), Add(local, Scale(up, top)),
+			radius, out);
+	}
+
+	bool NpcWorld::Blocked(const Shared::Vec3& position) const
+	{
+		Shared::CapsuleContact contact;
+		return ObjectContact(position, contact);
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  이동한 자리(지면 위)가 오브젝트와 겹치면 밀어낸다 (2026-10-29 사용자 «npc도 오브젝트와 충돌하도록 해줘»).
+	//
+	//  ★ 접평면으로만 민다 — NPC 높이는 지형이 정한다(OnGround). 위로 올라서거나 뛰어넘지 않는다.
+	//    겹친 깊이를 옆으로만 풀므로 경사진 면일수록 더 민다(깊이 ÷ 법선의 옆 성분).
+	//    벽에 비스듬히 부딪히면 벽으로 들어간 몫만 빠져 벽을 따라 미끄러진다 — 플레이어(PlayerMovement ResolveCollisions)와 같은 느낌.
+	//  ★ 누운 면(법선이 거의 위 · 아래 — 바닥 판 · 천장)은 옆으로 밀어 풀 수 없다 — 그 자리를 그대로 둔다(멈춰 서지 않게).
+	//  ★ kNpcCollisionIterations 번 밀어도 겹치면(구석) 이번 틱은 움직이지 않는다 — 벽에 박히는 것보다 낫다.
+	Shared::Vec3 NpcWorld::PushOutOfObjects(const Shared::Vec3& previous, Shared::Vec3 position) const
+	{
+		if (!collision || !collision->Loaded()) return position;
+
+		const Shared::Vec3 center = PlanetCenter();
+		for (int iteration = 0; iteration < kNpcCollisionIterations; ++iteration)
+		{
+			Shared::CapsuleContact contact;
+			if (!ObjectContact(position, contact)) return position;   // 빈자리
+
+			const Shared::Vec3 up = Shared::kUsePlanarMap
+				? Shared::Vec3{ 0.0f, 1.0f, 0.0f } : Normalize(Sub(position, center));
+			const Shared::Vec3 side = Sub(contact.normal, Scale(up, Dot(contact.normal, up)));
+			const float        sideLength = Length(side);
+			if (sideLength < kNpcMinSidePush) return position;          // 누운 면
+
+			const float push = (contact.depth + kNpcSkin) / sideLength;
+			position = OnGround(Add(position, Scale(side, push / sideLength)));
+		}
+
+		return Blocked(position) ? previous : position;
+	}
+
+	float NpcWorld::Random01()
+	{
+		// 위 24비트만 쓴다 — float 가 1.0 으로 반올림되지 않는다.
+		return float(rng() >> 8) * (1.0f / 16777216.0f);
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  무리 원 안의 빈자리. 원 안에 고르게 퍼지도록 반지름은 √u 로 뽑는다.
+	Shared::Vec3 NpcWorld::PickMemberPosition(uint32_t group)
+	{
+		const Shared::Vec3& groupCenter = groupCenters[group];
+		Shared::Vec3 candidate = groupCenter;
+
+		for (int attempt = 0; attempt < kPlacementTries; ++attempt)
+		{
+			const float angle = 6.2831853f * Random01();
+			const float distance = kGroupRadius * std::sqrt(Random01());
+			candidate = SurfacePoint(groupCenter, angle, distance);
+
+			if (Blocked(candidate)) continue;
+
+			bool crowded = false;
+			for (size_t i = 0; i < entries.size(); ++i)
+			{
+				if (!entries[i].alive || entries[i].group != group) continue;
+				if (Length(Sub(entries[i].npc.position, candidate)) < kMemberSpacing) { crowded = true; break; }
+			}
+			if (!crowded) return candidate;
+		}
+
+		++blockedPlacements;   // 못 찾았다 — 마지막 후보에 그냥 세운다(콘솔에 누계가 찍힌다)
+		return candidate;
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  시작 지점에서 떨어진 띠에 무리지어 깐다.
+	//
+	//  ① 무리 중심을 고른다 — 방향은 칸마다 하나, 거리는 띠 안에서. 충돌체 안이면 다시 고른다.
+	//  ② 무리마다 kNpcGroupSize 마리씩 중심 둘레 원 안의 빈자리에 세운다.
+	void NpcWorld::SpawnGroups(const Shared::Vec3& spawnPos, int count)
+	{
+		if (count <= 0) return;
+
+		const int   groupSize = kNpcGroupSize > 0 ? kNpcGroupSize : 1;
+		const int   groups = (count + groupSize - 1) / groupSize;
+		const float sector = 6.2831853f / float(groups);
+		const uint32_t firstGroup = (uint32_t)groupCenters.size();
+
+		for (int g = 0; g < groups; ++g)
+		{
+			Shared::Vec3 groupCenter = spawnPos;
+			for (int attempt = 0; attempt < kPlacementTries; ++attempt)
+			{
+				const float angle = sector * (float(g) + 0.2f + 0.6f * Random01());
+				const float distance = kGroupDistanceMin + (kGroupDistanceMax - kGroupDistanceMin) * Random01();
+				groupCenter = SurfacePoint(spawnPos, angle, distance);
+				if (!Blocked(groupCenter)) break;   // 못 찾으면 마지막 후보 — NPC 자리는 따로 다시 검사한다
+			}
+			groupCenters.push_back(groupCenter);
+		}
+
 		for (int i = 0; i < count; ++i)
 		{
-			const float angle = 6.2831853f * float(i) / float(count);
-
 			Entry e;
 			e.npcId = nextNpcId++;
-			e.npc.position = RingPosition(playerPos, angle);
+			e.group = firstGroup + uint32_t(i / groupSize);
+			e.npc.position = PickMemberPosition(e.group);
 			e.npc.speed = kNpcSpeed;
 			e.npc.health = Shared::kMaxHealth;
 			e.ctx.npc = e.npcId;
@@ -248,16 +389,14 @@ namespace srv {
 			Entry& e = entries[i];
 
 			// ── 0) 쓰러져 있으면 재등장 시계만 돈다 ──
-			//  자리는 «그때의 플레이어 둘레» 라 매번 달라진다. 플레이어가 없으면 기다린다.
+			//  자리는 자기 무리 원 안의 빈자리(2026-10-29 — 예전엔 «그때의 플레이어 둘레» 80 m 고리).
+			//  플레이어 위치가 필요 없으므로 플레이어가 없어도 다시 선다.
 			if (!e.alive)
 			{
 				e.respawnTimer -= dt;
-				if (e.respawnTimer > 0.0f || players.empty()) continue;
+				if (e.respawnTimer > 0.0f) continue;
 
-				const size_t pick = size_t(e.npcId) % players.size();
-				const float  angle = 6.2831853f * float(e.npcId % 8u) / 8.0f;
-
-				e.npc.position = RingPosition(players[pick].pos, angle);
+				e.npc.position = PickMemberPosition(e.group);
 				e.npc.health = Shared::kMaxHealth;
 				e.alive = true;
 				continue;
@@ -312,7 +451,8 @@ namespace srv {
 										  Scale(Scale(tangent, 1.0f / tangentLen), move));
 
 			// 높이는 지형이 정한다. 쫓는 플레이어가 오르내려도 NPC 고도는 끌려가지 않는다.
-			e.npc.position = OnGround(next);
+			// 오브젝트(정적 충돌체)에 막히면 접평면으로 밀려나 벽을 따라 미끄러진다(2026-10-29).
+			e.npc.position = PushOutOfObjects(e.npc.position, OnGround(next));
 
 			// 바라보는 방향도 갱신해 둔다. 아직 아무도 쓰지 않는다.
 			e.npc.direction = Scale(tangent, 1.0f / tangentLen);

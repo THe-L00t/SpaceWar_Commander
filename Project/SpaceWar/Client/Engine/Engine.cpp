@@ -1259,6 +1259,25 @@ namespace swc {
 		if (showColliders)
 		{
 			colliderView.Update(ActiveCollision(), controller.Position() - planet.center, false);
+
+			// 캐릭터 충돌 캡슐 — 매 프레임 그 자리에(2026-10-29 사용자 «플레이어 충돌 캡슐도 그려줘, npc도»).
+			//  내 플레이어 = 그릴 자세(모델과 같은 자리). 다른 플레이어 · NPC = 모델을 놓은 것과 같은 받은 좌표.
+			//  디버그 행성에서는 서버 목록이 멈춰 있어(UpdateNetwork 가 돌지 않는다) 내 것만 그린다.
+			colliderView.ClearCapsules();
+			colliderView.AddCapsule(controller.Position() - planet.center, controller.Up(), ColliderDebugView::kPlayerColor);
+			if (network.Connected() && !InDebugPlanet())
+			{
+				for (const RemoteView& v : remoteViews)
+				{
+					const Vec3d p{ v.pos[0], v.pos[1], v.pos[2] };
+					colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kRemotePlayerColor);
+				}
+				for (const NpcView& v : npcViews)
+				{
+					const Vec3d p{ v.pos[0], v.pos[1], v.pos[2] };
+					colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kNpcColor);
+				}
+			}
 			renderer.DrawDebugLines(packet.view,
 				XMFLOAT3(float(planet.center.x), float(planet.center.y), float(planet.center.z)), colliderView.Vertices());
 		}
@@ -1366,10 +1385,10 @@ namespace swc {
 		{
 			const Shared::CollisionWorld* world = ActiveCollision();
 			if (world && world->Loaded())
-				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 선 %zu%s", colliderView.InstanceCount(), colliderView.LineCount(),
-					colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
+				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 캡슐 %zu · 선 %zu%s", colliderView.InstanceCount(),
+					colliderView.CapsuleCount(), colliderView.LineCount(), colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
 			else
-				swprintf_s(colliderText, L"  |  충돌체(C) 없음");
+				swprintf_s(colliderText, L"  |  충돌체(C) 없음 · 캡슐 %zu", colliderView.CapsuleCount());
 		}
 
 		wchar_t title[1280];
