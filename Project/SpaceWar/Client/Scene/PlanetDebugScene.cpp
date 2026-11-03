@@ -18,16 +18,16 @@
 #include "Client/Log.h"
 #include "Client/Resource/TextureLoader.h"
 #include "Shared/Model/Readers/JsonValue.h"
+#include "Shared/World/WorldCatalog.h"
 
 using namespace DirectX;
 
 namespace {
 
+	// 맵 glb · 배치 JSON · 충돌체 경로는 Shared/World/WorldCatalog.h 의 kWorlds(맵 번호 1 ~ 5)에 있다(2026-11-01 — 서버도 같은 파일을 읽는다).
 	struct PlanetEntry
 	{
 		const wchar_t* name;
-		const wchar_t* asset;
-		const wchar_t* placement;
 		// 지형 레이어 (2026-10-28) — 블렌더 시안 재질 값(Resource_Work/<행성>/scripts/build_map.py draft_terrain_material).
 		//  heightBlend = 레이어(마스크 R G B A)마다 Height 에 곱하는 값, normalStrength = Normal Map 노드 Strength.
 		//  경계 폭(0.2)은 다섯 행성 모두 같아 TerrainMaterialData 기본값을 쓴다.
@@ -57,25 +57,20 @@ namespace {
 
 	// resource 브랜치 예시 행성 (fa6777c · 8bafbc6 · 6afb98d · c51ed07 · 5dfe6bd)
 	constexpr std::array<PlanetEntry, swc::PlanetDebugScene::kCount> kPlanets{ {
-		{ L"Verdant",  L"model\\map\\Verdant_Planet\\Verdant_Planet.glb",
-		               L"model\\map\\Verdant_Planet\\Verdant_Planet_Placement.json",   { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
+		{ L"Verdant",  { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
 		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f, "Verdant_Trail" },
-		{ L"Neon",     L"model\\map\\Neon_Planet\\Neon_Planet.glb",
-		               L"model\\map\\Neon_Planet\\Neon_Planet_Placement.json",         { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
+		{ L"Neon",     { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
 		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f, nullptr },
-		{ L"Ruin",     L"model\\map\\Ruin_Planet\\Ruin_Planet.glb",
-		               L"model\\map\\Ruin_Planet\\Ruin_Planet_Placement.json",         { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
+		{ L"Ruin",     { 0.5f, 0.5f, 0.5f, 0.5f }, 1.2f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
 		               0.32f, 0.84f, 0.06f, 0.45f, 0.8f, nullptr },
-		{ L"Volcanic", L"model\\map\\Volcanic_Planet\\Volcanic_Planet.glb",
-		               L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Placement.json", { 0.5f, 0.5f, 0.5f, 0.5f }, 1.6f,
+		{ L"Volcanic", { 0.5f, 0.5f, 0.5f, 0.5f }, 1.6f,
 		               2u, 9.0f, 2.7f, false, 0.0f, 0.0f,
 		               0.32f, 0.84f, 0.09f, 0.55f, 0.9f, nullptr },
 		// 빙하: A = Snow 만 0.35 (시안 «0.35 if name == 'Snow' else 0.5»)
-		{ L"Glacier",  L"model\\map\\Glacier_Planet\\Glacier_Planet.glb",
-		               L"model\\map\\Glacier_Planet\\Glacier_Planet_Placement.json",   { 0.5f, 0.5f, 0.5f, 0.35f }, 1.4f,
+		{ L"Glacier",  { 0.5f, 0.5f, 0.5f, 0.35f }, 1.4f,
 		               2u | 4u, 8.0f, 8.0f * 0.37f, true, 70.0f, 10.0f,
 		               0.22f, 0.89f, 0.07f, 0.45f, 0.7f, nullptr },
 	} };
@@ -114,11 +109,15 @@ namespace {
 
 	// 스폰 = 착륙 지점 L1 의 플랫폼 노드. 예시 행성은 L1 방향이 게임 맵(kPlanetSpawnUp)과 달라
 	// 맵 노드에서 읽는다(resource fa6777c 커밋의 «주의»). 다섯 행성 모두 최상위 노드다.
-	constexpr std::string_view kSpawnNode = "Landing_L1_Platform";
+	//  ★ 2026-11-01 — 서버도 같은 노드로 스폰 방향을 잡는다(Shared/World/WorldMap.cpp LoadWorldGround). 이름은 Shared 한 곳.
+	constexpr std::string_view kSpawnNode = Shared::kWorldSpawnNode;
 
-	// 배치 JSON 의 인스턴스 배열 키. instances 는 JSON 의 마지막 키다(다섯 행성 모두 확인, 2026-10-28).
-	constexpr std::string_view kInstancesKey = "\"instances\"";
-	constexpr size_t kInstanceFields = 9;   // [id, x, y, z, qx, qy, qz, qw, scale]
+	// 디버그 씬 번호(0 ~ 4)의 맵 정보 — Shared/World/WorldCatalog.h 맵 번호 1 ~ 5. 범위 밖이면 nullptr.
+	const Shared::WorldInfo* WorldOf(size_t index)
+	{
+		const uint32_t world = Shared::WorldOfDebugPlanet(index);
+		return world < Shared::kWorldCount ? &Shared::kWorlds[world] : nullptr;
+	}
 
 	// JSON 문자열(UTF-8) → 와이드. 경로 · 오류 메시지용. 잘못된 UTF-8 이면 바이트를 그대로 넓힌다.
 	std::wstring FromUtf8(const std::string& text)
@@ -133,16 +132,37 @@ namespace {
 		}
 	}
 
-	// 인스턴스 변환 — 파서의 노드 변환과 같은 S · R · T (행 벡터, GltfReader.cpp NodeLocal).
-	XMMATRIX InstanceMatrix(const swc::PlanetPlacement::Instance& instance)
+	// JSON 회전(쿼터니언 x y z w) → 명세 6.3 Rotation. 소수 셋째 자리로 반올림돼 있어 정규화한다. 길이가 0 이면 회전 없음.
+	Shared::Vec4 PlacementRotation(const float q[4])
 	{
-		XMVECTOR rotation = XMVectorSet(instance.rotation[0], instance.rotation[1],
-			instance.rotation[2], instance.rotation[3]);
+		XMVECTOR rotation = XMVectorSet(q[0], q[1], q[2], q[3]);
 		rotation = XMVectorGetX(XMVector4LengthSq(rotation)) > 1.0e-12f
-			? XMQuaternionNormalize(rotation) : XMQuaternionIdentity();   // JSON 은 소수 셋째 자리로 반올림돼 있다
-		return XMMatrixScaling(instance.scale, instance.scale, instance.scale) *
-			XMMatrixRotationQuaternion(rotation) *
-			XMMatrixTranslation(instance.position[0], instance.position[1], instance.position[2]);
+			? XMQuaternionNormalize(rotation) : XMQuaternionIdentity();
+		XMFLOAT4 out;
+		XMStoreFloat4(&out, rotation);
+		return Shared::Vec4{ out.x, out.y, out.z, out.w };
+	}
+
+	XMVECTOR LoadRotation(const Shared::Vec4& q)
+	{
+		return XMVectorSet(q.x, q.y, q.z, q.w);
+	}
+
+	// 배치 오브젝트의 변환 — 파서의 노드 변환과 같은 S · R · T (행 벡터, GltfReader.cpp NodeLocal).
+	//  StaticObject 의 Scale · Rotation · Position (명세 6.3).
+	XMMATRIX InstanceMatrix(const Shared::StaticObject& object)
+	{
+		return XMMatrixScaling(object.scale.x, object.scale.y, object.scale.z) *
+			XMMatrixRotationQuaternion(LoadRotation(object.rotation)) *
+			XMMatrixTranslation(object.position.x, object.position.y, object.position.z);
+	}
+
+	// 명세 6.3 Direction — 오브젝트가 바라보는 쪽. glTF 앞쪽(+Z)을 Rotation 으로 돌린 단위 벡터.
+	Shared::Vec3 PlacementDirection(const Shared::Vec4& rotation)
+	{
+		XMFLOAT3 forward;
+		XMStoreFloat3(&forward, XMVector3Rotate(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), LoadRotation(rotation)));
+		return Shared::Vec3{ forward.x, forward.y, forward.z };
 	}
 
 }
@@ -154,29 +174,30 @@ namespace swc {
 		return index < kPlanets.size() ? kPlanets[index].name : L"";
 	}
 
+	// 경로 네 가지는 Shared::kWorlds 를 읽는다(2026-11-01 — 서버와 한 곳).
 	const wchar_t* PlanetDebugScene::Asset(size_t index)
 	{
-		return index < kPlanets.size() ? kPlanets[index].asset : L"";
+		const Shared::WorldInfo* world = WorldOf(index);
+		return world ? world->map : L"";
 	}
 
 	const wchar_t* PlanetDebugScene::PlacementAsset(size_t index)
 	{
-		return index < kPlanets.size() ? kPlanets[index].placement : L"";
+		const Shared::WorldInfo* world = WorldOf(index);
+		return world && world->placement ? world->placement : L"";
 	}
 
-	// 충돌체 묶음 (2026-10-29) — «model\map\X\X.glb» → «…\X_Collision.glb» · «…\X_Collision.json»
+	// 충돌체 묶음 (2026-10-29) — «model\map\X\X_Collision.glb» · «…\X_Collision.json»
 	std::wstring PlanetDebugScene::CollisionAsset(size_t index)
 	{
-		if (index >= kPlanets.size()) return std::wstring();
-		std::filesystem::path path(kPlanets[index].asset);
-		return (path.parent_path() / (path.stem().wstring() + L"_Collision.glb")).wstring();
+		const Shared::WorldInfo* world = WorldOf(index);
+		return world ? std::wstring(world->collision) : std::wstring();
 	}
 
 	std::wstring PlanetDebugScene::CollisionManifestAsset(size_t index)
 	{
-		if (index >= kPlanets.size()) return std::wstring();
-		std::filesystem::path path(kPlanets[index].asset);
-		return (path.parent_path() / (path.stem().wstring() + L"_Collision.json")).wstring();
+		const Shared::WorldInfo* world = WorldOf(index);
+		return world ? std::wstring(world->collisionManifest) : std::wstring();
 	}
 
 	bool PlanetDebugScene::Build(const ModelData& data, Shared::PlanetSurface&& parsedGround, GRenderer& renderer,
@@ -294,127 +315,10 @@ namespace swc {
 	}
 
 	// ── 배치 JSON 읽기 (로딩 스레드) ─────────────────────────────
-	//  ① 머리말(instances 앞까지)만 최소 JSON 파서(Shared::JsonValue)로 읽는다 — objects 목록.
-	//     instances 를 값 트리로 만들면 37만 × 9 개 값이라 수백 MB 가 된다.
-	//  ② instances 는 [id, x, y, z, qx, qy, qz, qw, scale] 배열의 배열이라 숫자만 직접 훑는다(from_chars).
+	//  2026-11-01 — 본문을 Shared/World/Placement.cpp 로 옮겼다(서버도 같은 배치로 충돌체를 씌운다 — 맵 번호).
 	bool PlanetDebugScene::ReadPlacement(const std::wstring& path, PlanetPlacement& out)
 	{
-		out = PlanetPlacement{};
-
-		std::ifstream file(std::filesystem::path(path), std::ios::binary);
-		if (!file)
-		{
-			out.error = L"배치 JSON 을 열지 못했습니다: " + path;
-			return false;
-		}
-		const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
-		const size_t key = text.rfind(kInstancesKey);
-		if (key == std::string::npos)
-		{
-			out.error = L"배치 JSON 에 instances 가 없습니다: " + path;
-			return false;
-		}
-
-		// ① 머리말 — instances 를 빈 배열로 바꿔 닫는다. (instances 는 마지막 키라 앞에 쉼표가 있다)
-		const std::string header = text.substr(0, key) + "\"instances\": []}";
-		Shared::JsonValue root;
-		std::string jsonError;
-		if (!Shared::JsonValue::Parse(header.data(), header.size(), root, jsonError))
-		{
-			out.error = L"배치 JSON 머리말 해석 실패: " + FromUtf8(jsonError);
-			return false;
-		}
-
-		std::unordered_map<uint32_t, uint32_t> typeOfId;   // JSON id → types 번호
-		const Shared::JsonValue& objects = root["objects"];
-		for (size_t i = 0; i < objects.Size(); ++i)
-		{
-			const Shared::JsonValue& object = objects[i];
-			PlanetPlacement::Type type;
-			type.name = object["name"].AsString();
-			type.file = object["file"].AsString();
-			if (type.file.empty() || !object.Has("id")) continue;
-			typeOfId.emplace(object["id"].AsUint(), static_cast<uint32_t>(out.types.size()));
-			out.types.push_back(std::move(type));
-		}
-		out.instances.reserve(root["instance_count"].AsUint(0));
-
-		// 지형 레이어 (2026-10-28) — terrain_layers.channels 의 R G B A = 레이어 이름, mask = 마스크 PNG 이름.
-		//  없으면 빈 채로 둔다 → 지형은 glb 의 대체 레이어 한 장으로 그린다.
-		const Shared::JsonValue& terrainLayers = root["terrain_layers"];
-		const Shared::JsonValue& channels = terrainLayers["channels"];
-		const char* const channelKeys[4] = { "R", "G", "B", "A" };
-		for (size_t c = 0; c < 4; ++c)
-			out.terrainLayers[c] = channels[channelKeys[c]].AsString();
-		out.terrainMask = terrainLayers["mask"].AsString();
-
-		// ② 인스턴스
-		const char* const begin = text.data();
-		const char* const end = begin + text.size();
-		const char* c = begin + key + kInstancesKey.size();
-		const auto skipSpace = [&]()
-		{
-			while (c < end && (*c == ' ' || *c == '\n' || *c == '\r' || *c == '\t')) ++c;
-		};
-		const auto fail = [&](const wchar_t* what)
-		{
-			out.error = std::wstring(L"배치 JSON instances 해석 실패(") + what + L", 바이트 " +
-				std::to_wstring(size_t(c - begin)) + L"): " + path;
-			return false;
-		};
-
-		skipSpace();
-		if (c >= end || *c != ':') return fail(L"':' 없음");
-		++c;
-		skipSpace();
-		if (c >= end || *c != '[') return fail(L"'[' 없음");
-		++c;
-
-		for (;;)
-		{
-			skipSpace();
-			if (c >= end) return fail(L"배열이 닫히지 않음");
-			if (*c == ']') break;
-			if (*c == ',') { ++c; continue; }
-			if (*c != '[') return fail(L"인스턴스가 배열이 아님");
-			++c;
-
-			double values[kInstanceFields] = {};
-			for (size_t k = 0; k < kInstanceFields; ++k)
-			{
-				skipSpace();
-				const std::from_chars_result parsed = std::from_chars(c, end, values[k]);
-				if (parsed.ec != std::errc()) return fail(L"숫자가 아님");
-				c = parsed.ptr;
-				skipSpace();
-				if (k + 1 < kInstanceFields)
-				{
-					if (c >= end || *c != ',') return fail(L"숫자 9개가 아님");
-					++c;
-				}
-			}
-			skipSpace();
-			if (c >= end || *c != ']') return fail(L"숫자 9개가 아님");
-			++c;
-
-			bool finite = true;
-			for (const double value : values) finite = finite && std::isfinite(value);
-			const auto found = (finite && values[0] >= 0.0) ? typeOfId.find(static_cast<uint32_t>(values[0])) : typeOfId.end();
-			if (found == typeOfId.end())
-			{
-				++out.skipped;
-				continue;
-			}
-
-			PlanetPlacement::Instance instance;
-			instance.type = found->second;
-			for (size_t a = 0; a < 3; ++a) instance.position[a] = static_cast<float>(values[1 + a]);
-			for (size_t a = 0; a < 4; ++a) instance.rotation[a] = static_cast<float>(values[4 + a]);
-			instance.scale = static_cast<float>(values[8]);
-			out.instances.push_back(instance);
-		}
-		return true;
+		return Shared::ReadPlacement(path, out);
 	}
 
 	// ── 배치 오브젝트 (메인) ──────────────────────────────────────
@@ -427,12 +331,26 @@ namespace swc {
 			objectTypes[t].name = std::move(placement.types[t].name);
 			objectTypes[t].file = std::move(placement.types[t].file);
 		}
-		instances = std::move(placement.instances);
 		skippedInstances = placement.skipped;
 		terrainLayerNames = placement.terrainLayers;   // 2026-10-29 — 오솔길 · 착륙 대지 재질이 «지형과 같은 땅» 인지 볼 때
 
-		liveSlot.assign(instances.size(), kInvalidNode);
-		selectStamp.assign(instances.size(), 0);
+		// 인스턴스마다 StaticObject 하나 (2026-11-02, 명세 6.5 · 6.10) — 필드 규칙은 PlanetDebugScene.h 머리 주석.
+		staticObjects.clear();
+		staticObjects.reserve(placement.instances.size());
+		for (const PlanetPlacement::Instance& instance : placement.instances)
+		{
+			Shared::StaticObject& object = staticObjects.emplace_back();
+			object.position = Shared::Vec3{ instance.position[0], instance.position[1], instance.position[2] };
+			object.rotation = PlacementRotation(instance.rotation);
+			object.direction = PlacementDirection(object.rotation);
+			object.scale = Shared::Vec3{ instance.scale, instance.scale, instance.scale };
+			object.meshIndex = instance.type;          // → objectTypes[meshIndex].model (그 종류의 GPU 메시 묶음)
+			object.renderObjectId = kInvalidNode;      // 장면에 올리면 루트 노드(StreamObjects)
+		}
+		placement.instances.clear();
+		placement.instances.shrink_to_fit();
+
+		selectStamp.assign(staticObjects.size(), 0);
 		liveList.clear();
 		stamp = 0;
 		streamed = false;
@@ -482,23 +400,23 @@ namespace swc {
 	// ── 오브젝트 고르기 (메인 · 매 프레임) ───────────────────────────
 	bool PlanetDebugScene::StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force)
 	{
-		if (!loaded || root == kInvalidNode || instances.empty()) return false;
+		if (!loaded || root == kInvalidNode || staticObjects.empty()) return false;
 		if (!force && streamed && Length(eye - lastStreamEye) < kRestreamDistance) return false;
 		lastStreamEye = eye;
 		streamed = true;
 
 		// ① 점수 = 반지름 × 배율 ÷ 거리 (화면 크기 근사). 모델을 못 올린 종류는 뺀다.
 		scratch.clear();
-		for (uint32_t i = 0; i < static_cast<uint32_t>(instances.size()); ++i)
+		for (uint32_t i = 0; i < static_cast<uint32_t>(staticObjects.size()); ++i)
 		{
-			const PlanetPlacement::Instance& instance = instances[i];
-			const ObjectType& type = objectTypes[instance.type];
+			const Shared::StaticObject& object = staticObjects[i];
+			const ObjectType& type = objectTypes[object.meshIndex];
 			if (!type.loaded) continue;
-			const double dx = double(instance.position[0]) - eye.x;
-			const double dy = double(instance.position[1]) - eye.y;
-			const double dz = double(instance.position[2]) - eye.z;
+			const double dx = double(object.position.x) - eye.x;
+			const double dy = double(object.position.y) - eye.y;
+			const double dz = double(object.position.z) - eye.z;
 			const double distance = (std::max)(std::sqrt(dx * dx + dy * dy + dz * dz), 1.0);
-			scratch.emplace_back(static_cast<float>(type.radius * std::fabs(instance.scale) / distance), i);
+			scratch.emplace_back(static_cast<float>(type.radius * std::fabs(object.scale.x) / distance), i);
 		}
 
 		// ② 점수 높은 순으로 메시 노드 예산까지. 인스턴스 하나는 메시 1개 이상이라 앞쪽 kObjectMeshBudget 개면 충분하다.
@@ -521,7 +439,7 @@ namespace swc {
 		for (; selected < candidates; ++selected)
 		{
 			const uint32_t i = scratch[selected].second;
-			const size_t cost = objectTypes[instances[i].type].meshCount;
+			const size_t cost = objectTypes[staticObjects[i].meshIndex].meshCount;
 			if (meshes + cost > kObjectMeshBudget) break;
 			meshes += cost;
 			selectStamp[i] = stamp;
@@ -536,9 +454,10 @@ namespace swc {
 				liveList[kept++] = i;
 				continue;
 			}
-			scene.SetVisible(liveSlot[i], false);
-			objectTypes[instances[i].type].freeSlots.push_back(liveSlot[i]);
-			liveSlot[i] = kInvalidNode;
+			Shared::StaticObject& object = staticObjects[i];
+			scene.SetVisible(object.renderObjectId, false);
+			objectTypes[object.meshIndex].freeSlots.push_back(object.renderObjectId);
+			object.renderObjectId = kInvalidNode;
 		}
 		liveList.resize(kept);
 
@@ -546,9 +465,10 @@ namespace swc {
 		for (size_t k = 0; k < selected; ++k)
 		{
 			const uint32_t i = scratch[k].second;
-			if (liveSlot[i] != kInvalidNode) continue;
+			Shared::StaticObject& object = staticObjects[i];
+			if (object.renderObjectId != kInvalidNode) continue;
 
-			ObjectType& type = objectTypes[instances[i].type];
+			ObjectType& type = objectTypes[object.meshIndex];
 			NodeHandle slot = kInvalidNode;
 			if (!type.freeSlots.empty())
 			{
@@ -561,8 +481,8 @@ namespace swc {
 				slot = type.model.Instantiate(scene, root);   // 맵 루트 아래 — 행성을 숨기면 같이 숨는다
 				if (slot == kInvalidNode) continue;
 			}
-			scene.SetLocalTransform(slot, InstanceMatrix(instances[i]));
-			liveSlot[i] = slot;
+			scene.SetLocalTransform(slot, InstanceMatrix(object));
+			object.renderObjectId = slot;   // StaticObject → 렌더 데이터(명세 6.11 RenderObjectID)
 			liveList.push_back(i);
 		}
 		return true;
@@ -577,7 +497,7 @@ namespace swc {
 		for (const std::string& layer : placement.terrainLayers)
 			if (layer.empty()) return assets;
 
-		const std::wstring folder = std::filesystem::path(kPlanets[index].asset).parent_path().wstring() + L"\\";
+		const std::wstring folder = std::filesystem::path(Asset(index)).parent_path().wstring() + L"\\";
 		const wchar_t* const kinds[4] = { L"_BaseColor.dds", L"_Normal.dds", L"_ORM.dds", L"_Height.dds" };
 		for (const wchar_t* kind : kinds)
 			for (const std::string& layer : placement.terrainLayers)
@@ -697,7 +617,7 @@ namespace swc {
 		if (!objectTypes.empty())
 		{
 			status += L" · 오브젝트 보임 " + std::to_wstring(liveList.size()) + L" / 배치 " +
-				std::to_wstring(instances.size()) + L" · 종류 " + std::to_wstring(loadedTypes) + L"/" +
+				std::to_wstring(staticObjects.size()) + L" · 종류 " + std::to_wstring(loadedTypes) + L"/" +
 				std::to_wstring(objectTypes.size());
 			if (skippedInstances > 0)
 				status += L" · 건너뜀 " + std::to_wstring(skippedInstances);

@@ -248,6 +248,14 @@ namespace
 		Shared::CollisionWorld              world;
 		std::wstring                        error;
 	};
+
+	// 맵 번호(2026-11-01, Shared/World/WorldCatalog.h)의 이름 — 로그 · 창 제목용
+	const wchar_t* WorldLabel(uint32_t world)
+	{
+		if (world == Shared::kWorldGameMap) return L"게임 맵";
+		if (world < Shared::kWorldCount) return swc::PlanetDebugScene::Name(world - 1);
+		return L"없음";
+	}
 }
 
 namespace swc {
@@ -430,7 +438,7 @@ namespace swc {
 
 		// ── 정적 오브젝트 충돌체 (2026-10-29, Shared/Physics/CollisionWorld.h) ──
 		//  맵 glb 옆 충돌체 묶음(Resource_Work/_tools/collision/col_build.py)을 로딩 스레드에서 읽는다.
-		//  못 읽어도 게임은 띄운다 — 지금은 C 키 와이어프레임만 쓴다(로그만 남긴다).
+		//  이동 예측(controller.SetCollision)과 C 키 와이어프레임이 쓴다. 못 읽어도 게임은 띄운다 — 지형만 막는다(로그만 남긴다).
 		{
 			auto collision = std::make_shared<CollisionLoadSlot>();
 			const std::wstring collisionPack = AssetPath(Shared::kPlanetCollisionAsset);
@@ -623,6 +631,9 @@ namespace swc {
 
 			if (sceneManager.IsLoading())
 			{
+				// 로딩 중에도 받기는 한다(2026-11-01 맵 번호) — 행성을 처음 읽는 동안 서버가 보낸 것이 소켓 · 서버에 쌓이지 않게.
+				//  받은 것을 쓰는 일(보정 · 원격 노드 · 맵 답)은 들어간 뒤 UpdateNetwork 가 한다.
+				network.Poll();
 				RenderLoading();
 				UpdateLoadingTitle(dt);
 				continue;
@@ -711,16 +722,30 @@ namespace swc {
 		return InDebugPlanet() ? &sceneManager.DebugPlanet(activeDebugPlanet).Collision() : &gameMapCollision;
 	}
 
+	// 지금 보이는 맵의 번호(2026-11-01) — 서버의 맵 번호와 같은 규칙(Shared/World/WorldCatalog.h).
+	uint32_t Engine::CurrentWorld() const
+	{
+		return InDebugPlanet() ? Shared::WorldOfDebugPlanet(activeDebugPlanet) : Shared::kWorldGameMap;
+	}
+
 	// ── 예시 행성 디버그 씬 (2026-10-28) ─────────────────────────
 	//  숫자키 1~5 = Verdant · Neon · Ruin · Volcanic · Glacier (PlanetDebugScene.h).
 	//  처음 고르면 로딩 씬을 띄우고 맵을 읽는다. 한 번 읽은 행성은 묶음 없이 바로 넘어간다.
 	//  게임 맵으로 돌아가는 키는 없다(지시 범위 밖).
+	//  ★ 맵 번호 (2026-11-01) — 고르는 순간 서버에 JoinWorld 를 보낸다. 서버는 옛 맵에서 이 플레이어를 빼고
+	//    (다른 사람에게 PlayerLeave) 새 맵을 준비해 WorldJoined 로 답한다. 그 전까지 입력 · 사격은 보내지 않는다.
 	void Engine::HandleDebugPlanetKeys()
 	{
 		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
 		{
 			if (!input.WasPressed('1' + int(i))) continue;
 			if (i == activeDebugPlanet) return;   // 이미 그 행성이다
+
+			if (network.Connected())
+			{
+				network.SendJoinWorld(Shared::WorldOfDebugPlanet(i));
+				Log(L"[맵] 서버에 맵 %u(%s)로 옮긴다고 알렸다", Shared::WorldOfDebugPlanet(i), PlanetDebugScene::Name(i));
+			}
 
 			loadStart = std::chrono::steady_clock::now();
 			const SceneId next = DebugPlanetSceneId(i);
@@ -929,7 +954,7 @@ namespace swc {
 		terrain.Configure(&target.Ground(), planet.radius);
 		planet.terrain = &terrain;
 
-		// 서버 세계는 게임 맵이다. 받아 둔 원격 플레이어 · NPC 를 치운다(이 씬에서는 UpdateNetwork 가 돌지 않는다).
+		// 옛 맵의 원격 플레이어 · NPC 를 치운다. 새 맵 사람들은 서버가 이 맵에 넣은 뒤(WorldJoined) 다시 받는다(2026-11-01 맵 번호).
 		ParkNetworkNodes();
 
 		// 충돌체도 이 행성 것으로(2026-10-29) — 못 읽었으면 지형만 막는다.
@@ -1032,8 +1057,8 @@ namespace swc {
 		const Vec3d aim = camera.LookDirection();
 
 		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
-		// 디버그 행성에서는 보내지 않는다 — 서버 세계(게임 맵)와 좌표가 맞지 않는다.
-		if (network.Connected() && !InDebugPlanet())
+		// 서버가 지금 맵에 넣어 준 뒤에만 보낸다(2026-11-01 맵 번호) — 들어가는 중 · 서버에 맵이 없으면 판정할 곳이 없다.
+		if (network.Connected() && network.JoinedWorld() == CurrentWorld())
 		{
 			const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
 			const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
@@ -1093,22 +1118,48 @@ namespace swc {
 	//   송신은 Class Bridge → Network(9절), 수신은 Network → State Manager → OtherPlayer · NPC(6.13) 로 옮길 대상이다.
 	void Engine::UpdateNetwork(float dt)
 	{
-		// 디버그 행성에서는 돌리지 않는다 — 서버 세계는 게임 맵이라 위치 · 리스폰 · 원격 좌표가 맞지 않는다.
-		if (!network.Connected() || InDebugPlanet())
+		if (!network.Connected())
 			return;
+
+		// ★ 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») — 서버가 지금 맵(CurrentWorld)에 넣어 준 뒤에만 입력을 보내고 판정을 받는다.
+		//   행성을 고르면 HandleDebugPlanetKeys 가 JoinWorld 를 보냈다. 답(WorldJoined)이 오기 전 · 서버가 맵을 못 읽었으면 혼자 움직인다(예측만).
+		const uint32_t world = CurrentWorld();
 
 		// ★ B안(입력 기반, 2026-10-29) — 좌표가 아니라 이번 프레임에 돈 고정 틱의 입력을 보낸다(틱마다 하나, 초당 60개).
 		//   서버가 같은 이동 코드 · 같은 충돌체로 판정한다(명세 6.13 ②, 18절 원칙 4).
-		for (const Shared::MoveCommand& command : controller.FrameCommands())
-			network.SendInput(command);
+		if (network.JoinedWorld() == world)
+			for (const Shared::MoveCommand& command : controller.FrameCommands())
+				network.SendInput(command);
 
 		//서버가 뿌린 다른 플레이어의 좌표와 내 판정 상태를 받는다. 논블로킹이라 즉시 돌아온다.
 		network.Poll();
 
+		// ── 서버가 이 맵에 넣었다 (2026-11-01) ──
+		//  서버가 정한 자리 · 방향에 다시 선다 — 되감기 기록을 끊으므로, 답을 기다리는 동안 혼자 움직인 것은 버린다.
+		//  이 뒤로 받는 판정 · 원격 좌표는 모두 이 맵 것이다(Network 가 들어가는 중의 옛 맵 패킷을 버렸다).
+		Network::WorldJoin join;
+		if (network.TakeWorldJoined(world, join))
+		{
+			if (join.ok)
+			{
+				controller.Spawn(Vec3d(double(join.pos[0]), double(join.pos[1]), double(join.pos[2])),
+					Vec3d(double(join.facing[0]), double(join.facing[1]), double(join.facing[2])));
+				spawnPosition = controller.Position();
+				camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+				Log(L"[맵] 서버가 맵 %u(%s)에 넣었다 — 이제 서버가 이 맵을 판정한다", world, WorldLabel(world));
+			}
+			else
+			{
+				Log(L"[맵] 서버가 맵 %u(%s)을 준비하지 못했다 — 이 맵에서는 혼자 움직인다(서버 콘솔 참고)", world, WorldLabel(world));
+			}
+		}
+
 		// ── 서버 판정으로 보정 (명세 6.13 ③ · 멀티스레딩 명세 §3.2 ②) ──
 		//  서버가 마지막으로 처리한 입력 뒤의 내 예측과 벌어졌으면 서버 상태로 되감고 남은 입력을 다시 적용한다.
+		//  서버가 이 맵에 넣어 주지 않았으면(들어가는 중 · 실패) 보정 · 리스폰을 하지 않는다 — 판정이 없다.
+		const bool judged = network.JoinedWorld() == world;
 		Shared::PlayerStatePacket serverState;
-		if (network.TakePlayerState(serverState))
+		if (judged && network.TakePlayerState(serverState))
 		{
 			ServerMoveState state;
 			state.lastSeq = serverState.lastSeq;
@@ -1126,7 +1177,7 @@ namespace swc {
 		//  ★ 클라가 스스로 되살아나지 않는다. 체력이 0 인지도 서버가 판정하고,
 		//    돌아갈 좌표도 서버가 보낸 것을 그대로 쓴다 (명세 18절 원칙 4).
 		float respawn[3];
-		if (network.TakeRespawn(respawn))
+		if (judged && network.TakeRespawn(respawn))
 		{
 			controller.Spawn(Vec3d(double(respawn[0]), double(respawn[1]), double(respawn[2])),
 				controller.Facing());
@@ -1259,6 +1310,25 @@ namespace swc {
 		if (showColliders)
 		{
 			colliderView.Update(ActiveCollision(), controller.Position() - planet.center, false);
+
+			// 캐릭터 충돌 캡슐 — 매 프레임 그 자리에(2026-10-29 사용자 «플레이어 충돌 캡슐도 그려줘, npc도»).
+			//  내 플레이어 = 그릴 자세(모델과 같은 자리). 다른 플레이어 · NPC = 모델을 놓은 것과 같은 받은 좌표.
+			//  서버가 지금 맵에 넣어 주지 않았으면(들어가는 중 · 실패) 원격 목록이 비어 있거나 옛 맵 것이라 내 것만 그린다(2026-11-01 맵 번호).
+			colliderView.ClearCapsules();
+			colliderView.AddCapsule(controller.Position() - planet.center, controller.Up(), ColliderDebugView::kPlayerColor);
+			if (network.Connected() && network.JoinedWorld() == CurrentWorld())
+			{
+				for (const RemoteView& v : remoteViews)
+				{
+					const Vec3d p{ v.pos[0], v.pos[1], v.pos[2] };
+					colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kRemotePlayerColor);
+				}
+				for (const NpcView& v : npcViews)
+				{
+					const Vec3d p{ v.pos[0], v.pos[1], v.pos[2] };
+					colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kNpcColor);
+				}
+			}
 			renderer.DrawDebugLines(packet.view,
 				XMFLOAT3(float(planet.center.x), float(planet.center.y), float(planet.center.z)), colliderView.Vertices());
 		}
@@ -1332,10 +1402,19 @@ namespace swc {
 			else
 				swprintf_s(healthText, L"?");
 
+			// 2026-11-01 맵 번호 — 서버가 넣어 준 맵(들어가는 중 · 서버에 맵 없음)
+			wchar_t worldText[48];
+			if (network.Joining())
+				swprintf_s(worldText, L"맵 들어가는 중");
+			else if (network.JoinFailed())
+				swprintf_s(worldText, L"서버에 맵 없음(혼자)");
+			else
+				swprintf_s(worldText, L"맵 %u %s", network.JoinedWorld(), WorldLabel(network.JoinedWorld()));
+
 			// 2026-10-29 B안 — 송신 = 입력 수, 판정 = 받은 서버 상태 수, 보정 = 되감은 횟수(마지막 거리)
 			swprintf_s(netText,
-				L"나=%u  체력 %s  피격 %u  입력 %u  판정 %u  보정 %u회(%.2fm)  다른플레이어 %u명  NPC %u마리",
-				network.MyId(), healthText, network.HitCount(),
+				L"나=%u  %s  체력 %s  피격 %u  입력 %u  판정 %u  보정 %u회(%.2fm)  다른플레이어 %u명  NPC %u마리",
+				network.MyId(), worldText, healthText, network.HitCount(),
 				network.SentCount(), network.StateCount(),
 				controller.Corrections(), controller.LastCorrection(),
 				network.RemoteCount(), network.NpcCount());
@@ -1366,10 +1445,10 @@ namespace swc {
 		{
 			const Shared::CollisionWorld* world = ActiveCollision();
 			if (world && world->Loaded())
-				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 선 %zu%s", colliderView.InstanceCount(), colliderView.LineCount(),
-					colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
+				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 캡슐 %zu · 선 %zu%s", colliderView.InstanceCount(),
+					colliderView.CapsuleCount(), colliderView.LineCount(), colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
 			else
-				swprintf_s(colliderText, L"  |  충돌체(C) 없음");
+				swprintf_s(colliderText, L"  |  충돌체(C) 없음 · 캡슐 %zu", colliderView.CapsuleCount());
 		}
 
 		wchar_t title[1280];

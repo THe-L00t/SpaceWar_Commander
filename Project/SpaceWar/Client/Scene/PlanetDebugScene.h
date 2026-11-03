@@ -10,6 +10,8 @@
 #include "Client/Vec3d.h"
 #include "Shared/Physics/CollisionWorld.h"
 #include "Shared/Terrain/PlanetSurface.h"
+#include "Shared/World/Placement.h"
+#include "Shared/GameObject/StaticObject.h"
 
 // ============================================================
 //  Client/Scene/PlanetDebugScene.h — 예시 행성 디버그 씬 (2026-10-28)
@@ -51,8 +53,19 @@
 //    · 얼어붙은 호수(Frozen_Lake*)는 물가 페이드를 켠다 — 바닥에 가까운 가장자리에서 얼음이 옅어진다(렌더러 반투명 패스).
 //  ★ 충돌체 (2026-10-29, 사용자 «… 나머진은 저폴리로 충돌 가자. … c키를 눌러 저폴리 충돌체를 와이어 프레임으로»)
 //    맵 glb 옆 «<행성>_Collision.glb · .json»(Resource_Work/_tools/collision/col_build.py)을 로딩 스레드에서 읽어
-//    배치 인스턴스를 씌운 Shared::CollisionWorld 를 들고 있다(SetCollision). 지금은 C 키 와이어프레임만 쓴다 —
-//    이동 막기 · 서버 판정은 노션 「충돌 처리 ②」 단계 C2 · C4.
+//    배치 인스턴스를 씌운 Shared::CollisionWorld 를 들고 있다(SetCollision). C 키 와이어프레임 · 이동 예측(PlayerController)이 쓴다.
+//  ★ 서버 판정 (2026-11-01, 사용자 «맵번호 적용해줘») — 이 행성은 맵 번호 1 ~ 5(Shared/World/WorldCatalog.h).
+//    들어갈 때 Engine 이 서버에 JoinWorld 를 보내고, 서버가 같은 맵 glb · 배치 JSON · 충돌체로 판정한다(Server/main.cpp).
+//    경로(Asset · PlacementAsset · Collision*)는 Shared::kWorlds 한 곳에서 읽는다.
+//  ★ 배치 오브젝트 = StaticObject (2026-11-02, 사용자 «지금 JSON을 기준으로 읽어오는 오브젝트를 스태틱오브젝트 생성해서
+//    메쉬를 연결해줘») — 명세 6.5 · 6.10 «Scene 이 StaticObject 를 든다».
+//    JSON 인스턴스마다 Shared::StaticObject 하나(SetPlacement). 필드는 이렇게 채운다:
+//      position · scale = JSON 값, rotation = JSON 쿼터니언(정규화), direction = 그 회전으로 돌린 glTF 앞쪽 +Z,
+//      meshIndex = 배치 종류 번호 → objectTypes[meshIndex].model 이 그 종류의 GPU 메시 묶음이다
+//        (리소스 RAM 사본은 GPU 업로드 뒤 버리므로 Resource Manager 핸들 대신 종류 번호로 잇는다 — 명세 수정기록 2026-11-02),
+//      renderObjectId = 장면에 올린 노드(LegacyScene — Render World 몫). 장면에 없으면 kInvalidNode.
+//    장면 노드의 변환 = StaticObject 의 scale · rotation · position(InstanceMatrix).
+//    (처음엔 명세 Object 에 회전이 없어 rotations[] 에 따로 두었다가, 같은 날 명세 6.3 에 Rotation 이 들어가 Object 로 옮겼다.)
 // ============================================================
 
 namespace swc {
@@ -61,30 +74,8 @@ namespace swc {
 	class LegacyScene;
 
 	// 배치 JSON 을 읽은 결과 — 로딩 스레드가 채우고 메인이 PlanetDebugScene::SetPlacement 로 넘겨받는다.
-	struct PlanetPlacement
-	{
-		struct Type
-		{
-			std::string name;
-			std::string file;   // assets\model 기준 상대 경로 (JSON 그대로 — UTF-8, '/')
-		};
-		struct Instance
-		{
-			uint32_t type = 0;              // types 번호 (JSON 의 id 가 아니다)
-			float    position[3] = {};      // glTF 좌표, 행성 중심 기준 (오브젝트 원점 = 바닥 가운데)
-			float    rotation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };   // 쿼터니언 x y z w
-			float    scale = 1.0f;          // 균일 배율
-		};
-
-		std::vector<Type>     types;
-		std::vector<Instance> instances;
-		size_t                skipped = 0;   // 모르는 id · 잘못된 숫자로 건너뛴 인스턴스 수
-		std::wstring          error;         // 실패 원인 (로딩 스레드 → 메인)
-
-		// 지형 레이어 (2026-10-28) — JSON terrain_layers. channels 의 R G B A = 레이어 이름, mask = 마스크 PNG 이름.
-		std::array<std::string, 4> terrainLayers;
-		std::string                terrainMask;
-	};
+	//  2026-11-01 — 서버도 같은 배치로 충돌체를 씌우므로 Shared 로 옮겼다(Shared/World/Placement.h). 필드는 그대로다.
+	using PlanetPlacement = Shared::PlacementData;
 
 	// 지형 레이어 텍스처 — 로딩 스레드가 DDS 를 읽어 채우고, 메인이 PlanetDebugScene::ApplyTerrainLayers 로 GPU 에 올린다(2026-10-28).
 	struct TerrainLayerSet
@@ -109,10 +100,10 @@ namespace swc {
 
 		// 0 ~ 4 = 숫자키 1 ~ 5. 순서 = 만든 순서(Verdant · Neon · Ruin · Volcanic · Glacier).
 		static const wchar_t* Name(size_t index);
-		// exe 옆 assets\ 기준. ★ Client.vcxproj 의 CopyModelAssets 에도 적혀 있다 — 바꿀 때 두 곳.
+		// exe 옆 assets\ 기준 — Shared::kWorlds(WorldCatalog.h). ★ Client · Server.vcxproj 의 복사 목록에도 적혀 있다.
 		static const wchar_t* Asset(size_t index);
 		static const wchar_t* PlacementAsset(size_t index);
-		// 충돌체 묶음 · 설명 JSON — 맵 glb 이름에 «_Collision» 을 붙인 것. ★ Client.vcxproj CopyModelAssets 에도 적혀 있다.
+		// 충돌체 묶음 · 설명 JSON — 맵 glb 이름에 «_Collision» 을 붙인 것(Shared::kWorlds).
 		static std::wstring CollisionAsset(size_t index);
 		static std::wstring CollisionManifestAsset(size_t index);
 
@@ -153,6 +144,9 @@ namespace swc {
 
 		const Shared::PlanetSurface& Ground() const { return ground; }
 
+		// 배치 JSON 의 오브젝트 — 인스턴스 하나에 StaticObject 하나(2026-11-02). 순서 = JSON instances 순서(건너뛴 것 제외).
+		const std::vector<Shared::StaticObject>& StaticObjects() const { return staticObjects; }
+
 		// ── 충돌체 (2026-10-29) — 로딩 스레드가 만든 것을 메인이 넘겨받는다. 못 읽었으면 비어 있다(Loaded() false) ──
 		void SetCollision(Shared::CollisionWorld&& world) { collision = std::move(world); }
 		const Shared::CollisionWorld& Collision() const { return collision; }
@@ -191,10 +185,10 @@ namespace swc {
 		size_t                fadedLakes = 0;                       // 물가 페이드를 켠 얼음 호수 노드 수(창 제목)
 
 		std::vector<ObjectType>                 objectTypes;
-		std::vector<PlanetPlacement::Instance>  instances;
+		// 배치 오브젝트 (2026-11-02) — meshIndex = objectTypes 번호, renderObjectId = 보이는 루트(없으면 kInvalidNode)
+		std::vector<Shared::StaticObject>       staticObjects;
 		size_t                                  skippedInstances = 0;
-		std::vector<NodeHandle>                 liveSlot;      // 인스턴스 → 보이는 루트(없으면 kInvalidNode)
-		std::vector<uint32_t>                   liveList;      // 지금 보이는 인스턴스 번호
+		std::vector<uint32_t>                   liveList;      // 지금 보이는 오브젝트 번호
 		std::vector<uint32_t>                   selectStamp;   // 이번에 골랐는가(stamp 와 같으면)
 		uint32_t                                stamp = 0;
 		std::vector<std::pair<float, uint32_t>> scratch;       // (점수, 인스턴스) — 고를 때마다 다시 쓴다

@@ -2,6 +2,7 @@
 #pragma comment(lib, "ws2_32")
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <string>
@@ -17,6 +18,9 @@
 #include "Shared/Physics/PhysicsCalculator.h"
 #include "Shared/Terrain/PlanetSurface.h"
 #include "Shared/Terrain/TerrainSampler.h"
+#include "Shared/World/Placement.h"
+#include "Shared/World/WorldCatalog.h"
+#include "Shared/World/WorldMap.h"
 #include "AI/NpcWorld.h"
 
 #define MAX_THREAD_CNT		4
@@ -31,6 +35,13 @@
 #define INPUT_RATE			60.0		//클라가 초당 보내는 입력 수 (= 1 / PlayerMovement::kTickSeconds)
 #define INPUT_BUDGET_MAX	10.0		//밀린 입력을 한 틱에 최대 이만큼까지 따라잡는다
 #define INPUT_QUEUE_MAX		30			//이보다 밀리면(0.5초) 오래된 것부터 버린다 — 지연이 끝없이 쌓이지 않게
+
+// ── 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») ────────────────────
+//  세션마다 맵 번호(0 = 게임 맵, 1 ~ 5 = 예시 행성, Shared/World/WorldCatalog.h)를 들고,
+//  같은 맵에 있는 사람끼리만 판정 · 송신한다(이동 · 사격 · 체력 · 위치). NPC 는 게임 맵에만 있다.
+//  접속하면 게임 맵에 선다. 클라가 JoinWorld 를 보내면 틱 스레드가 옛 맵에서 빼고(PlayerLeave),
+//  그 맵을 준비해(처음이면 ThreadLoadWorld 가 따로 읽는다) 스폰 자리에 세운 뒤 WorldJoined 로 알린다(HandleWorldJoin).
+//  근거: 노션 「충돌 처리 ②」 0절 결정 1번 «예시행성돠 게임맵 둘 다» · 4번 B안 · 3절 서버 표 «맵 — WorldSet, 세션마다 worldId».
 
 //세션이 정의되기 전에 쓰이므로 미리 선언해 둔다.
 void SendToAll(const void *pData, int nLen, UINT32 nExceptId);
@@ -107,12 +118,80 @@ public:
 	//    (예외: InitMove 는 접속 스레드가 세션을 목록에 넣기 «전에» 부른다 — 아직 아무도 이 세션을 모른다.)
 
 	//접속 직후 스폰 자리에 세운다. 클라도 같은 스폰 계산(PlayerMovement::Spawn)을 하므로 첫 상태가 같다.
-	void InitMove(const Shared::MoveWorld &world, const float spawn[3])
+	//  worldId = 처음 서는 맵(게임 맵, 2026-11-01 맵 번호).
+	void InitMove(uint32_t worldId, const Shared::MoveWorld &world, const float spawn[3])
 	{
 		Shared::PlayerMovement::Spawn(m_move, world,
 			Shared::Vec3d(spawn[0], spawn[1], spawn[2]), Shared::Vec3d(0.0, 0.0, 1.0));
 		m_lastSeq = 0;
 		StorePosition();
+		m_world = worldId;
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  맵 번호 (2026-11-01) — 맵 바꾸기. 판정 · 위치는 틱 스레드만 쓰므로 워커는 요청만 남긴다(입력 · 사격과 같은 규칙).
+
+	//워커 — JoinWorld 를 받았다. 이 앞에 쌓인 입력은 옛 맵의 것이라 버린다.
+	void RequestWorld(uint32_t worldId)
+	{
+		::EnterCriticalSection(&m_csInput);
+		m_inputs.clear();
+		m_requestedWorld = worldId;
+		m_bHasWorldRequest = true;
+		::LeaveCriticalSection(&m_csInput);
+	}
+
+	//틱 스레드 — 워커가 남긴 요청을 가져간다.
+	bool TakeWorldRequest(uint32_t &worldId)
+	{
+		bool bHas = false;
+		::EnterCriticalSection(&m_csInput);
+		if (m_bHasWorldRequest)
+		{
+			worldId = m_requestedWorld;
+			m_bHasWorldRequest = false;
+			bHas = true;
+		}
+		::LeaveCriticalSection(&m_csInput);
+		return bHas;
+	}
+
+	//틱 스레드 — 지금 맵에서 빠져 worldId 를 기다린다. 그동안 판정 · 송신 · 사격 · NPC 추격 대상에서 빠진다.
+	void BeginJoin(uint32_t worldId)
+	{
+		m_world = Shared::kNoWorld;
+		m_joinWorld = worldId;
+	}
+
+	//틱 스레드 — 맵에 넣는다. 스폰 자리에 세우고(몸 방향은 이어 간다) 밀린 입력을 버린다.
+	//  클라는 WorldJoined 를 받고 같은 자리 · 방향에 다시 선 뒤부터 입력을 보낸다.
+	void EnterWorld(uint32_t worldId, const Shared::MoveWorld &world, const float spawn[3])
+	{
+		Shared::PlayerMovement::Spawn(m_move, world,
+			Shared::Vec3d(spawn[0], spawn[1], spawn[2]), m_move.facing);
+		::EnterCriticalSection(&m_csInput);
+		m_inputs.clear();
+		m_inputBudget = 0.0;
+		::LeaveCriticalSection(&m_csInput);
+		m_joinWorld = Shared::kNoWorld;
+		StorePosition();
+		m_world = worldId;
+	}
+
+	//틱 스레드 — 맵을 준비하지 못했다. 어느 맵에도 없는 채로 둔다(클라는 그 맵에서 혼자 움직인다).
+	void FailJoin() { m_joinWorld = Shared::kNoWorld; }
+
+	//지금 맵. 맵을 바꾸는 중 · 맵 없음이면 kNoWorld. 틱 스레드가 쓰고 다른 스레드(접속 명단)는 읽기만 한다.
+	uint32_t World() const		{ return m_world.load(); }
+	bool     InWorld() const	{ return m_world.load() < Shared::kWorldCount; }
+	uint32_t JoiningWorld() const { return m_joinWorld; }		//틱 스레드만
+
+	//몸 방향(접평면 단위 벡터) — WorldJoined 에 싣는다. 틱 스레드만.
+	void Facing(float out[3]) const
+	{
+		out[0] = (float)m_move.facing.x;
+		out[1] = (float)m_move.facing.y;
+		out[2] = (float)m_move.facing.z;
 	}
 
 	//되살아난다 — 시작 위치로 옮기고 밀린 입력을 버린다(틱 스레드, ResolveFire).
@@ -327,6 +406,11 @@ private:
 				OnPlayerFire((const Shared::PlayerFirePacket *)pHead);
 			break;
 
+		case Shared::PacketType::JoinWorld:
+			if (nSize == (int)sizeof(Shared::JoinWorldPacket))
+				OnJoinWorld((const Shared::JoinWorldPacket *)pHead);
+			break;
+
 		default:
 			break;		//모르는 종류는 크기만큼 건너뛴다
 		}
@@ -385,6 +469,18 @@ private:
 		::LeaveCriticalSection(&m_csInput);
 	}
 
+	/////////////////////////////////////////////////////////////////////
+	//  맵 번호 (2026-11-01) — 이 맵으로 옮긴다. ★ 여기서 옮기지 않는다 — 요청만 남기고 틱 스레드가 처리한다(HandleWorldJoin).
+	void OnJoinWorld(const Shared::JoinWorldPacket *pJoin)
+	{
+		if (pJoin->worldId >= Shared::kWorldCount)
+		{
+			printf("[맵] 플레이어 %u : 모르는 맵 번호 %u 는 무시합니다\n", m_nPlayerId, pJoin->worldId);
+			return;
+		}
+		RequestWorld(pJoin->worldId);
+	}
+
 	//판정한 위치를 다른 스레드가 읽는 사본(m_lastPos)에 옮긴다 — NPC 추격 · 사격 · 접속자 명단이 이것을 본다.
 	void StorePosition()
 	{
@@ -413,6 +509,12 @@ private:
 	UINT32								m_nDroppedInputs = 0;	//큐가 넘쳐 버린 입력 수 — 잠금 안에서만 늘린다
 	bool								m_bWarnedLegacyMove = false;
 
+	// ── 맵 번호 (2026-11-01) ──
+	std::atomic<uint32_t>				m_world{ Shared::kWorldGameMap };	//지금 맵 — 틱 스레드가 쓴다(접속 스레드는 목록에 넣기 전 InitMove 한 번)
+	uint32_t							m_joinWorld = Shared::kNoWorld;		//들어가려는 맵(그 맵을 읽는 중) — 틱 스레드만
+	uint32_t							m_requestedWorld = Shared::kNoWorld;	//워커가 받은 JoinWorld — 잠금 안에서만
+	bool								m_bHasWorldRequest = false;			//〃
+
 	float		m_fHealth;			//남은 체력. 쓰는 쪽은 행동 스레드 하나
 	ULONGLONG	m_nLastFireMs;		//마지막 발사 시각 (연사 제한). 이 세션의 워커만 만진다
 
@@ -435,83 +537,198 @@ CRITICAL_SECTION			g_csFire;
 std::vector<FireRequest>	g_fireQueue;
 volatile LONG	g_bRunning = 1;						//종료 시 행동 스레드를 세운다
 
-//지형. 시작할 때 한 번 읽고 그 뒤로는 읽기만 하므로 스레드 간에 락이 필요 없다.
-Shared::PlanetSurface	g_planetSurface;
-Shared::TerrainSampler	g_terrain;
-
-//정적 오브젝트 충돌체(2026-10-29) — 클라와 같은 묶음(Shared::kPlanetCollisionAsset). 시작할 때 한 번 읽고 그 뒤로는 읽기만 한다.
-Shared::CollisionWorld	g_collision;
-//이동이 보는 세계 — 행성 기하 · 지형 · 충돌체. 클라 PlayerController::World() 와 같은 값이어야 같은 판정이 나온다.
-Shared::MoveWorld		g_moveWorld;
-
 /////////////////////////////////////////////////////////////////////////
-//  클라이언트와 같은 맵(Shared::kPlanetModelAsset)의 접지 삼각형을 읽는다.
+//  맵 (2026-11-01 맵 번호) — Shared/World/WorldCatalog.h 의 번호마다 하나.
 //
-//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 대상이 맵 파일을 복사해 둔다.
-//    작업 디렉터리 기준으로 찾으면 VS 에서 켤 때와 exe 를 직접 켤 때가 갈린다.
-//  ★ 서버는 Shared에서 접지 삼각형만 읽으며 렌더 재질·텍스처를 불러오지 않는다.
-bool LoadTerrain()
+//  0 = 게임 맵(시작할 때 읽는다), 1 ~ 5 = 예시 행성(누가 처음 들어오려 할 때 ThreadLoadWorld 가 따로 읽는다).
+//  ★ 다 읽은 맵은 그 뒤로 읽기만 한다 — g_worldState 가 WORLD_READY 가 된 뒤에만 보므로 락이 필요 없다.
+//  ★ 맵마다 다른 것은 접지면 · 충돌체 · 스폰 방향뿐이다(모든 맵이 같은 행성 중심 · 반경 — PlanetConst.h).
+//  ★ NPC 는 게임 맵에만 있다 — g_npcWorld 는 맵 0 의 지형 · 충돌체를 본다.
+struct ServerWorld
 {
-	wchar_t szExe[MAX_PATH] = { 0 };
-	::GetModuleFileNameW(NULL, szExe, MAX_PATH);
+	Shared::PlanetSurface	surface;		//접지면 — 클라와 같은 맵 glb 의 같은 노드(PlanetSurface::IsGroundObject)
+	Shared::TerrainSampler	terrain;
+	Shared::CollisionWorld	collision;		//정적 오브젝트 충돌체 — 클라와 같은 묶음(예시 행성은 같은 배치 JSON 을 씌운다)
+	Shared::MoveWorld		move;			//이동이 보는 세계 — 클라 PlayerController::World() 와 같은 값이어야 같은 판정이 나온다
+	double					spawnUp[3] = { 0.0, 1.0, 0.0 };		//스폰 방향(행성 중심 기준 단위 벡터)
+};
 
-	std::wstring path(szExe);
-	const size_t nSlash = path.find_last_of(L"\\/");
-	path = (nSlash == std::wstring::npos) ? std::wstring() : path.substr(0, nSlash + 1);
-	path += L"assets\\";
-	path += Shared::kPlanetModelAsset;
+enum : LONG { WORLD_NOT_LOADED = 0, WORLD_LOADING = 1, WORLD_READY = 2, WORLD_FAILED = 3 };
 
-	std::wstring error;
-	const bool bLoaded = g_planetSurface.Load(path.c_str(), error);
+ServerWorld		g_worlds[Shared::kWorldCount];
+volatile LONG	g_worldState[Shared::kWorldCount] = {};		//WORLD_* — 바꾸는 쪽 · 읽는 쪽 모두 Interlocked 로
 
-	if (!bLoaded)
-	{
-		char szPath[MAX_PATH * 2] = { 0 };
-		char szError[256] = { 0 };
-		::WideCharToMultiByte(CP_ACP, 0, path.c_str(), -1, szPath, sizeof(szPath), NULL, NULL);
-		::WideCharToMultiByte(CP_ACP, 0, error.c_str(), -1, szError, sizeof(szError), NULL, NULL);
-		printf("ERROR: 지형을 읽을 수 없습니다. (%s)\n\t%s\n", szError, szPath);
-		return false;
-	}
-
-	g_terrain.Configure(&g_planetSurface, Shared::kPlanetRadius);
-	if constexpr (Shared::kUsePlanarMap)
-		printf("평면 맵 접지 삼각형 %zu개를 읽었습니다.\n", g_planetSurface.TriangleCount());
-	else
-		printf("행성 접지 삼각형 %zu개를 읽었습니다. (반지름 %.0fm)\n",
-			g_planetSurface.TriangleCount(), Shared::kPlanetRadius);
-	return true;
+LONG WorldState(uint32_t nWorld)
+{
+	return nWorld < Shared::kWorldCount ? ::InterlockedCompareExchange(&g_worldState[nWorld], 0, 0) : WORLD_FAILED;
 }
 
 /////////////////////////////////////////////////////////////////////////
-//  정적 오브젝트 충돌체 (2026-10-29) — 맵 glb 옆 묶음(Resource_Work/_tools/collision/col_build.py).
+//  exe 옆 assets\ (끝에 \ 가 붙는다).
 //
-//  ★ 클라와 같은 파일을 읽는다 — 클라 예측과 서버 판정이 같은 충돌체여야 보정이 생기지 않는다.
-//  ★ 못 읽어도 서버는 켠다. 그때는 지형만 막는다(예전처럼) — 로그로 알린다.
-//  ★ ClampToGround(클라 좌표를 지면 위로 올리던 검사)는 지웠다. 위치를 서버가 직접 계산하므로 필요 없다.
-bool LoadCollision()
+//  ★ 경로는 exe 옆 assets\ 기준이다. 빌드 후 대상이 맵 파일을 복사해 둔다(Server.vcxproj CopyPlanetSurfaceAsset).
+//    작업 디렉터리 기준으로 찾으면 VS 에서 켤 때와 exe 를 직접 켤 때가 갈린다.
+std::wstring AssetDir()
 {
 	wchar_t szExe[MAX_PATH] = { 0 };
 	::GetModuleFileNameW(NULL, szExe, MAX_PATH);
 	std::wstring dir(szExe);
 	const size_t nSlash = dir.find_last_of(L"\\/");
 	dir = (nSlash == std::wstring::npos) ? std::wstring() : dir.substr(0, nSlash + 1);
-	dir += L"assets\\";
+	return dir + L"assets\\";
+}
 
+//콘솔(CP949)에 찍을 수 있게 바꾼다 — 오류 메시지 · 경로용.
+std::string Narrow(const std::wstring &text)
+{
+	if (text.empty()) return std::string();
+	const int n = ::WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, NULL, 0, NULL, NULL);
+	std::string out(n > 0 ? n - 1 : 0, '\0');
+	if (n > 1) ::WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, &out[0], n, NULL, NULL);
+	return out;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  게임 맵(맵 0)의 접지 삼각형을 읽는다 — 클라이언트와 같은 맵(Shared::kPlanetModelAsset).
+//
+//  ★ 서버는 Shared에서 접지 삼각형만 읽으며 렌더 재질·텍스처를 불러오지 않는다.
+//  ★ 스폰 방향은 게임 맵의 Landing L1 상수(kPlanetSpawnUp) — 클라 게임 맵과 같다.
+bool LoadTerrain()
+{
+	ServerWorld &world = g_worlds[Shared::kWorldGameMap];
+	const std::wstring path = AssetDir() + Shared::kPlanetModelAsset;
+
+	std::wstring error;
+	const bool bLoaded = world.surface.Load(path.c_str(), error);
+
+	if (!bLoaded)
+	{
+		printf("ERROR: 지형을 읽을 수 없습니다. (%s)\n\t%s\n", Narrow(error).c_str(), Narrow(path).c_str());
+		return false;
+	}
+
+	world.terrain.Configure(&world.surface, Shared::kPlanetRadius);
+
+	const double length = std::sqrt(Shared::kPlanetSpawnUpX * Shared::kPlanetSpawnUpX +
+		Shared::kPlanetSpawnUpY * Shared::kPlanetSpawnUpY + Shared::kPlanetSpawnUpZ * Shared::kPlanetSpawnUpZ);
+	world.spawnUp[0] = Shared::kPlanetSpawnUpX / length;
+	world.spawnUp[1] = Shared::kPlanetSpawnUpY / length;
+	world.spawnUp[2] = Shared::kPlanetSpawnUpZ / length;
+
+	if constexpr (Shared::kUsePlanarMap)
+		printf("평면 맵 접지 삼각형 %zu개를 읽었습니다.\n", world.surface.TriangleCount());
+	else
+		printf("행성 접지 삼각형 %zu개를 읽었습니다. (반지름 %.0fm)\n",
+			world.surface.TriangleCount(), Shared::kPlanetRadius);
+	return true;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  정적 오브젝트 충돌체 (2026-10-29) — 맵 glb 옆 묶음(Resource_Work/_tools/collision/col_build.py). 게임 맵(맵 0) 몫.
+//
+//  ★ 클라와 같은 파일을 읽는다 — 클라 예측과 서버 판정이 같은 충돌체여야 보정이 생기지 않는다.
+//  ★ 못 읽어도 서버는 켠다. 그때는 지형만 막는다(예전처럼) — 로그로 알린다.
+//  ★ ClampToGround(클라 좌표를 지면 위로 올리던 검사)는 지웠다. 위치를 서버가 직접 계산하므로 필요 없다.
+bool LoadCollision()
+{
+	ServerWorld &world = g_worlds[Shared::kWorldGameMap];
+	const std::wstring dir = AssetDir();
 	const std::wstring pack = dir + Shared::kPlanetCollisionAsset;
 	const std::wstring manifest = dir + Shared::kPlanetCollisionManifestAsset;
 	std::wstring error;
-	if (!g_collision.LoadPack(pack.c_str(), manifest.c_str(), error))
+	if (!world.collision.LoadPack(pack.c_str(), manifest.c_str(), error))
 	{
-		char szError[512] = { 0 };
-		::WideCharToMultiByte(CP_ACP, 0, error.c_str(), -1, szError, sizeof(szError), NULL, NULL);
-		printf("경고: 충돌체를 읽지 못해 오브젝트에 막히지 않습니다 (%s)\n", szError);
+		printf("경고: 충돌체를 읽지 못해 오브젝트에 막히지 않습니다 (%s)\n", Narrow(error).c_str());
 		return false;
 	}
-	g_collision.Finalize();
+	world.collision.Finalize();
 	printf("충돌체 %zu개(메시 %zu종 · 삼각형 %zu)를 읽었습니다.\n",
-		g_collision.InstanceCount(), g_collision.MeshCount(), g_collision.MeshTriangleCount());
+		world.collision.InstanceCount(), world.collision.MeshCount(), world.collision.MeshTriangleCount());
 	return true;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  예시 행성 맵 하나를 읽는다 (2026-11-01 맵 번호) — 맵 읽기 스레드(ThreadLoadWorld)에서. 다른 맵은 건드리지 않는다.
+//
+//  ★ 클라 디버그 행성과 같은 것을 만든다(Client/Engine/Engine.cpp BuildDebugPlanetLoad · PlanetDebugScene::Build).
+//    접지면 = 맵 glb 의 IsGroundObject 노드, 스폰 = Landing_L1_Platform 방향(Shared::LoadWorldGround),
+//    충돌체 = 묶음 + 배치 JSON 인스턴스(AddPlacement).
+//  ★ 배치 JSON 이나 묶음을 못 읽으면 클라처럼 충돌체 없이(지형만 막는다) 둔다 — 클라도 그때는 충돌체 없이 예측한다.
+//    지형을 못 읽으면 실패 — 그 맵에 들어오려는 사람에게 WorldJoined(ok = 0).
+bool LoadExampleWorld(uint32_t nWorld)
+{
+	ServerWorld &world = g_worlds[nWorld];
+	const Shared::WorldInfo &info = Shared::kWorlds[nWorld];
+	const std::wstring dir = AssetDir();
+	const ULONGLONG nStart = ::GetTickCount64();
+
+	std::wstring error;
+	bool bSpawnFromNode = false;
+	const std::wstring mapPath = dir + info.map;
+	if (!Shared::LoadWorldGround(mapPath.c_str(), Shared::kWorldSpawnNode, world.surface, world.spawnUp, bSpawnFromNode, error))
+	{
+		printf("[맵] 맵 %u(%s) 지형을 읽지 못했습니다 (%s)\n\t%s\n",
+			nWorld, info.name, Narrow(error).c_str(), Narrow(mapPath).c_str());
+		return false;
+	}
+	world.terrain.Configure(&world.surface, Shared::kPlanetRadius);
+
+	bool bCollision = false;
+	Shared::PlacementData placement;
+	if (!info.placement || !Shared::ReadPlacement(dir + info.placement, placement))
+	{
+		printf("[맵] 경고: 맵 %u(%s) 배치 JSON 을 읽지 못해 충돌체 없이 둡니다 (%s)\n",
+			nWorld, info.name, Narrow(placement.error).c_str());
+	}
+	else if (!world.collision.LoadPack((dir + info.collision).c_str(), (dir + info.collisionManifest).c_str(), error))
+	{
+		printf("[맵] 경고: 맵 %u(%s) 충돌체를 읽지 못해 지형만 막습니다 (%s)\n",
+			nWorld, info.name, Narrow(error).c_str());
+	}
+	else
+	{
+		world.collision.AddPlacement(Shared::PlacementTypeNames(placement), placement.instances);
+		world.collision.Finalize();
+		bCollision = true;
+	}
+
+	world.move.terrain = &world.terrain;
+	world.move.collision = bCollision ? &world.collision : NULL;
+
+	printf("[맵] 맵 %u(%s) 을 읽었습니다 — 접지 삼각형 %zu · 충돌체 %zu개(작은 돌 제외 %zu) · 스폰 %s · %.1fs\n",
+		nWorld, info.name, world.surface.TriangleCount(),
+		bCollision ? world.collision.InstanceCount() : (size_t)0, bCollision ? world.collision.SkippedSmallRocks() : (size_t)0,
+		bSpawnFromNode ? "L1 노드" : "게임 맵 L1 방향(노드 없음)",
+		double(::GetTickCount64() - nStart) / 1000.0);
+	return true;
+}
+
+//맵 읽기 스레드 — 맵 하나에 하나. 다 읽으면 상태만 바꾸고 끝난다(틱 스레드가 다음 틱에 본다).
+DWORD WINAPI ThreadLoadWorld(LPVOID pParam)
+{
+	const uint32_t nWorld = (uint32_t)(UINT_PTR)pParam;
+	const bool bOk = LoadExampleWorld(nWorld);
+	::InterlockedExchange(&g_worldState[nWorld], bOk ? WORLD_READY : WORLD_FAILED);
+	return 0;
+}
+
+//맵 상태를 돌려준다. 아직 안 읽었으면 읽기 스레드를 띄운다(틱 스레드가 부른다).
+LONG RequestWorldLoad(uint32_t nWorld)
+{
+	if (nWorld >= Shared::kWorldCount) return WORLD_FAILED;
+
+	const LONG nPrev = ::InterlockedCompareExchange(&g_worldState[nWorld], WORLD_LOADING, WORLD_NOT_LOADED);
+	if (nPrev != WORLD_NOT_LOADED) return nPrev;
+
+	printf("[맵] 맵 %u(%s) 을 읽기 시작합니다 — 처음 들어오려는 플레이어가 있습니다\n", nWorld, Shared::WorldName(nWorld));
+	HANDLE hThread = ::CreateThread(NULL, 0, ThreadLoadWorld, (LPVOID)(UINT_PTR)nWorld, 0, NULL);
+	if (hThread == NULL)
+	{
+		::InterlockedExchange(&g_worldState[nWorld], WORLD_FAILED);
+		return WORLD_FAILED;
+	}
+	::CloseHandle(hThread);
+	return WORLD_LOADING;
 }
 
 SessionPtr FindSession(UINT32 nPlayerId)
@@ -559,6 +776,21 @@ void SendToAll(const void *pData, int nLen, UINT32 nExceptId)
 
 	for (size_t i = 0; i < list.size(); ++i)
 	{
+		if (list[i]->PlayerId() == nExceptId) continue;
+		list[i]->Send(pData, nLen);
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  이 맵에 있는 사람에게만 보낸다 (2026-11-01 맵 번호). nExceptId 는 제외한다 (0 이면 그 맵 전원).
+//  ★ 맵을 바꾸는 중 · 맵 없음인 세션은 어느 맵에도 들지 않으므로 받지 않는다.
+void SendToWorld(uint32_t nWorld, const void *pData, int nLen, UINT32 nExceptId)
+{
+	std::vector<SessionPtr> list = SnapshotSessions();
+
+	for (size_t i = 0; i < list.size(); ++i)
+	{
+		if (list[i]->World() != nWorld) continue;
 		if (list[i]->PlayerId() == nExceptId) continue;
 		list[i]->Send(pData, nLen);
 	}
@@ -758,21 +990,20 @@ void TakeFires(std::vector<FireRequest> &out)
 //
 //  ★ 클라와 같은 스폰 좌표·지형 높이·kGroundOffset을 사용한다.
 //    클라가 자기 판단으로 되살아나지 않고 이 좌표를 받아 옮겨간다(서버 권위).
-void SpawnPoint(float outPos[3])
+//  ★ 맵마다 따로(2026-11-01 맵 번호) — 그 맵의 지형과 스폰 방향(게임 맵 = kPlanetSpawnUp, 예시 행성 = L1 노드).
+void SpawnPoint(const ServerWorld &world, float outPos[3])
 {
 	if constexpr (Shared::kUsePlanarMap)
 	{
 		outPos[0] = float(Shared::kMapSpawnX);
-		outPos[1] = float(g_terrain.Height(Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ) + Shared::kGroundOffset);
+		outPos[1] = float(world.terrain.Height(Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ) + Shared::kGroundOffset);
 		outPos[2] = float(Shared::kMapSpawnZ);
 		return;
 	}
-	const double length = std::sqrt(Shared::kPlanetSpawnUpX * Shared::kPlanetSpawnUpX +
-		Shared::kPlanetSpawnUpY * Shared::kPlanetSpawnUpY + Shared::kPlanetSpawnUpZ * Shared::kPlanetSpawnUpZ);
-	const double ux = Shared::kPlanetSpawnUpX / length;
-	const double uy = Shared::kPlanetSpawnUpY / length;
-	const double uz = Shared::kPlanetSpawnUpZ / length;
-	const double height = g_terrain.Height(ux, uy, uz);
+	const double ux = world.spawnUp[0];
+	const double uy = world.spawnUp[1];
+	const double uz = world.spawnUp[2];
+	const double height = world.terrain.Height(ux, uy, uz);
 	const double radius = Shared::kPlanetRadius + height + Shared::kGroundOffset;
 
 	outPos[0] = float(Shared::kPlanetCenterX + ux * radius);
@@ -780,7 +1011,8 @@ void SpawnPoint(float outPos[3])
 	outPos[2] = float(Shared::kPlanetCenterZ + uz * radius);
 }
 
-void BroadcastHealth(UINT32 nPlayerId, UINT32 nAttackerId, float fHealth)
+//체력 · 쓰러짐은 그 맵 사람에게만 알린다(2026-11-01 맵 번호) — 다른 맵 사람은 그 플레이어를 그리지 않는다.
+void BroadcastHealth(uint32_t nWorld, UINT32 nPlayerId, UINT32 nAttackerId, float fHealth)
 {
 	Shared::PlayerHealthPacket pkt = {};
 	pkt.header.size = (uint16_t)sizeof(pkt);
@@ -789,10 +1021,10 @@ void BroadcastHealth(UINT32 nPlayerId, UINT32 nAttackerId, float fHealth)
 	pkt.attackerId = nAttackerId;
 	pkt.health = fHealth;
 
-	SendToAll(&pkt, (int)sizeof(pkt), 0);
+	SendToWorld(nWorld, &pkt, (int)sizeof(pkt), 0);
 }
 
-void BroadcastNeutralized(UINT32 nPlayerId, UINT32 nAttackerId,
+void BroadcastNeutralized(uint32_t nWorld, UINT32 nPlayerId, UINT32 nAttackerId,
 	const float pos[3], float fHealth)
 {
 	Shared::PlayerNeutralizedPacket pkt = {};
@@ -805,9 +1037,10 @@ void BroadcastNeutralized(UINT32 nPlayerId, UINT32 nAttackerId,
 	pkt.pos[2] = pos[2];
 	pkt.health = fHealth;
 
-	SendToAll(&pkt, (int)sizeof(pkt), 0);
+	SendToWorld(nWorld, &pkt, (int)sizeof(pkt), 0);
 }
 
+//NPC 는 게임 맵에만 있다(2026-11-01 맵 번호).
 void BroadcastNpcDespawn(UINT32 nNpcId)
 {
 	Shared::NpcDespawnPacket pkt = {};
@@ -815,7 +1048,7 @@ void BroadcastNpcDespawn(UINT32 nNpcId)
 	pkt.header.type = Shared::PacketType::NpcDespawn;
 	pkt.npcId = nNpcId;
 
-	SendToAll(&pkt, (int)sizeof(pkt), 0);
+	SendToWorld(Shared::kWorldGameMap, &pkt, (int)sizeof(pkt), 0);
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -823,15 +1056,18 @@ void BroadcastNpcDespawn(UINT32 nNpcId)
 //
 //  순서: 쏜 사람 -> 방향·원점 검사 -> 가장 가까운 대상 -> 지형 가림 -> 피해.
 //  클라는 «누가 맞았는지» 를 말하지 않는다 (명세 18절 원칙 4).
+//  ★ 쏜 사람의 맵 안에서만 판정한다(2026-11-01 맵 번호) — 대상 = 같은 맵 플레이어(+ 게임 맵이면 NPC), 가림 = 그 맵 지형.
 void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 {
-	//1) 쏜 사람. 그 사이 나갔으면 버린다.
+	//1) 쏜 사람. 그 사이 나갔거나 맵을 바꾸는 중이면 버린다.
 	SessionPtr pShooter;
 	for (size_t i = 0; i < list.size(); ++i)
 	{
 		if (list[i]->PlayerId() == req.nShooterId) { pShooter = list[i]; break; }
 	}
-	if (!pShooter || !pShooter->HasPos()) return;
+	if (!pShooter || !pShooter->HasPos() || !pShooter->InWorld()) return;
+	const uint32_t nWorld = pShooter->World();
+	const ServerWorld &world = g_worlds[nWorld];
 
 	//2) 방향. 길이가 0 이면 버린다.
 	const double dx = req.dir[0], dy = req.dir[1], dz = req.dir[2];
@@ -868,7 +1104,7 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	for (size_t i = 0; i < list.size(); ++i)
 	{
 		if (list[i]->PlayerId() == req.nShooterId) continue;
-		if (!list[i]->HasPos()) continue;
+		if (!list[i]->HasPos() || list[i]->World() != nWorld) continue;
 
 		float target[3];
 		list[i]->LastPos(target);
@@ -886,6 +1122,7 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 		nHitNpc = 0;
 	}
 
+	if (nWorld == Shared::kWorldGameMap)	//NPC 는 게임 맵에만 있다
 	{
 		uint32_t nNpcId = 0;
 		float    fNpcDist = 0.0f;
@@ -901,7 +1138,7 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	if (!bHit) return;
 
 	//5) 지형이 막고 있으면 맞지 않는다.
-	if (Shared::PhysicsCalculator::TerrainBlocks(&g_terrain, origin, dir, fBest))
+	if (Shared::PhysicsCalculator::TerrainBlocks(&world.terrain, origin, dir, fBest))
 	{
 		printf("[사격] 플레이어 %u : 지형에 막혔습니다 (%.1fm)\n", req.nShooterId, fBest);
 		return;
@@ -926,7 +1163,7 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 
 	const float fLeft = Shared::GameLogic::ApplyDamage(pVictim->Health(), Shared::kShotDamage);
 	pVictim->SetHealth(fLeft);
-	BroadcastHealth(nHitPlayer, req.nShooterId, fLeft);
+	BroadcastHealth(nWorld, nHitPlayer, req.nShooterId, fLeft);
 
 	printf("[명중] 플레이어 %u -> 플레이어 %u : 남은 체력 %.0f (%.1fm)\n",
 		req.nShooterId, nHitPlayer, fLeft, fBest);
@@ -934,15 +1171,88 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	if (!Shared::GameLogic::IsDown(fLeft)) return;
 
 	//★ 쓰러진 상태가 따로 없다 — 교수님 지시대로 시작 위치로 옮기고 체력을 채운다.
+	//  그 맵의 시작 위치다(2026-11-01 맵 번호).
 	float spawn[3];
-	SpawnPoint(spawn);
+	SpawnPoint(world, spawn);
 
 	pVictim->SetHealth(Shared::kMaxHealth);
-	pVictim->Respawn(g_moveWorld, spawn);
-	BroadcastNeutralized(nHitPlayer, req.nShooterId, spawn, Shared::kMaxHealth);
+	pVictim->Respawn(world.move, spawn);
+	BroadcastNeutralized(nWorld, nHitPlayer, req.nShooterId, spawn, Shared::kMaxHealth);
 
 	printf("[무력화] 플레이어 %u 가 시작 위치로 돌아갑니다 (가해 %u)\n",
 		nHitPlayer, req.nShooterId);
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  맵 바꾸기 (2026-11-01 맵 번호, 사용자 «맵번호 적용해줘») — ★ 틱 스레드에서만 부른다.
+//
+//  ① 워커가 받은 JoinWorld 가 있으면 지금 맵에서 뺀다 — 옛 맵 사람들에게 PlayerLeave(화면에서 지우게).
+//     그 뒤로는 판정 · 송신 · 사격 · NPC 추격 대상에서 빠진다.
+//  ② 그 맵이 준비됐으면(처음이면 ThreadLoadWorld 가 읽는 동안 틱마다 다시 본다) 스폰 자리에 세우고
+//     WorldJoined(ok, 자리 · 방향) + 체력을 보낸다.
+//     ★ WorldJoined 를 이 맵의 다른 패킷보다 먼저 보낸다 — 클라는 이 패킷 뒤의 것만 새 맵 것으로 받는다
+//       (TCP 순서. 맵 패킷은 모두 이 스레드에서 보낸다).
+//  ③ 준비하지 못했으면 WorldJoined(ok = 0) — 어느 맵에도 없는 채로 둔다(클라는 그 맵에서 혼자 움직인다).
+void HandleWorldJoin(const SessionPtr &pSession)
+{
+	uint32_t nRequested = Shared::kNoWorld;
+	if (pSession->TakeWorldRequest(nRequested))
+	{
+		const uint32_t nOld = pSession->World();
+		pSession->BeginJoin(nRequested);
+		if (nOld < Shared::kWorldCount)
+		{
+			Shared::PlayerLeavePacket leave = {};
+			leave.header.size = (uint16_t)sizeof(leave);
+			leave.header.type = Shared::PacketType::PlayerLeave;
+			leave.playerId = pSession->PlayerId();
+			SendToWorld(nOld, &leave, (int)sizeof(leave), pSession->PlayerId());
+		}
+		printf("[맵] 플레이어 %u : 맵 %u(%s) -> %u(%s)\n", pSession->PlayerId(),
+			nOld, Shared::WorldName(nOld), nRequested, Shared::WorldName(nRequested));
+	}
+
+	const uint32_t nTarget = pSession->JoiningWorld();
+	if (nTarget >= Shared::kWorldCount) return;
+
+	const LONG nState = RequestWorldLoad(nTarget);
+	if (nState == WORLD_LOADING) return;		//아직 읽는 중 — 다음 틱에 다시 본다
+
+	Shared::WorldJoinedPacket joined = {};
+	joined.header.size = (uint16_t)sizeof(joined);
+	joined.header.type = Shared::PacketType::WorldJoined;
+	joined.worldId = nTarget;
+
+	if (nState != WORLD_READY)
+	{
+		pSession->FailJoin();
+		joined.ok = 0;
+		pSession->Send(&joined, (int)sizeof(joined));
+		printf("[맵] 플레이어 %u : 맵 %u(%s) 을 준비하지 못해 어느 맵에도 넣지 않았습니다\n",
+			pSession->PlayerId(), nTarget, Shared::WorldName(nTarget));
+		return;
+	}
+
+	const ServerWorld &world = g_worlds[nTarget];
+	float spawn[3];
+	SpawnPoint(world, spawn);
+	pSession->EnterWorld(nTarget, world.move, spawn);
+
+	joined.ok = 1;
+	pSession->LastPos(joined.pos);
+	pSession->Facing(joined.facing);
+	pSession->Send(&joined, (int)sizeof(joined));
+
+	//체력 — 클라는 들어가는 중에 온 옛 맵의 쓰러짐 알림을 버렸으므로 지금 값을 다시 알린다.
+	Shared::PlayerHealthPacket health = {};
+	health.header.size = (uint16_t)sizeof(health);
+	health.header.type = Shared::PacketType::PlayerHealth;
+	health.playerId = pSession->PlayerId();
+	health.attackerId = 0;			//피해가 아니라 알림
+	health.health = pSession->Health();
+	pSession->Send(&health, (int)sizeof(health));
+
+	printf("[맵] 플레이어 %u : 맵 %u(%s) 에 들어왔습니다\n", pSession->PlayerId(), nTarget, Shared::WorldName(nTarget));
 }
 
 DWORD WINAPI ThreadNpcTick(LPVOID pParam)
@@ -977,14 +1287,25 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 		//0) 플레이어 이동 (B안, 2026-10-29) — 받은 입력을 같은 이동 코드 · 같은 충돌체로 판정한다.
 		//   ★ 판정은 이 스레드 한 곳에서만 한다(사격과 같은 규칙, 사용자 결정 5번). 워커는 큐에 넣기만 했다.
 		//   당사자 = PlayerState(마지막 입력 번호 + 상태, 클라가 어긋나면 되감는다), 다른 사람 = PlayerMove(위치).
+		//   ★ 맵 번호 (2026-11-01) — 그 사람이 있는 맵의 지형 · 충돌체로 판정하고, 같은 맵 사람에게만 보낸다.
+		//     맵을 바꾸는 중 · 맵 없음인 세션은 판정하지 않고 아무것도 받지 않는다.
 		{
 			std::vector<SessionPtr> list = SnapshotSessions();
+
+			//0-1) 맵 바꾸기 — 판정보다 먼저. 워커가 받은 JoinWorld 를 여기서 처리한다(HandleWorldJoin).
 			for (size_t i = 0; i < list.size(); ++i)
-				nInputsThisSecond += list[i]->Simulate(g_moveWorld, elapsed);
+				HandleWorldJoin(list[i]);
 
 			for (size_t i = 0; i < list.size(); ++i)
 			{
-				if (!list[i]->HasPos()) continue;
+				if (!list[i]->InWorld()) continue;
+				nInputsThisSecond += list[i]->Simulate(g_worlds[list[i]->World()].move, elapsed);
+			}
+
+			for (size_t i = 0; i < list.size(); ++i)
+			{
+				if (!list[i]->HasPos() || !list[i]->InWorld()) continue;
+				const uint32_t nWorld = list[i]->World();
 
 				Shared::PlayerStatePacket state;
 				list[i]->FillState(state);
@@ -994,20 +1315,21 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 				list[i]->FillMove(move);
 				for (size_t j = 0; j < list.size(); ++j)
 				{
-					if (j == i) continue;
+					if (j == i || list[j]->World() != nWorld) continue;
 					list[j]->Send(&move, (int)sizeof(move));
 				}
 			}
 		}
 
 		//1) 스폰한 플레이어를 모은다(접속하면 서버가 바로 스폰한다 — B안).
+		//   NPC 는 게임 맵에만 있으므로 게임 맵에 있는 사람만 쫓는다(2026-11-01 맵 번호).
 		players.clear();
 		{
 			std::vector<SessionPtr> list = SnapshotSessions();
 
 			for (size_t i = 0; i < list.size(); ++i)
 			{
-				if (!list[i]->HasPos()) continue;
+				if (!list[i]->HasPos() || list[i]->World() != Shared::kWorldGameMap) continue;
 
 				float pos[3];
 				list[i]->LastPos(pos);
@@ -1021,14 +1343,15 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 			}
 		}
 
-		//2) 첫 플레이어가 자리를 잡으면 그 주변에 한 번 깔아둔다.
+		//2) 첫 틱에 한 번 — 시작 지점(SpawnPoint, Landing L1 지면)에서 떨어진 띠에 무리지어 깐다(2026-10-29).
+		//   자리가 플레이어 위치에 매이지 않으므로 첫 플레이어를 기다리지 않는다. 값은 NpcWorld.cpp 상단.
 		if (g_npcWorld.Empty())
 		{
-			if (players.empty()) continue;
-
-			g_npcWorld.SpawnAround(players[0].pos, srv::kNpcSpawnCount);
-			printf("NPC %zu 마리를 플레이어 %u 주변에 배치했습니다.\n",
-				g_npcWorld.Count(), players[0].playerId);
+			float spawn[3];
+			SpawnPoint(g_worlds[Shared::kWorldGameMap], spawn);
+			g_npcWorld.SpawnGroups(Shared::Vec3{ spawn[0], spawn[1], spawn[2] }, srv::kNpcSpawnCount);
+			printf("NPC %zu 마리를 무리 %zu개로 시작 지점 둘레에 배치했습니다. (빈자리를 못 찾고 세운 자리 %d)\n",
+				g_npcWorld.Count(), g_npcWorld.GroupCount(), g_npcWorld.BlockedPlacements());
 		}
 
 		//3) 행동 트리를 돌리고 결정대로 위치를 옮긴다. 쓰러진 NPC 의 재등장 시계도 여기서 돈다.
@@ -1050,7 +1373,7 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 		for (size_t i = 0; i < despawned.size(); ++i)
 			BroadcastNpcDespawn((UINT32)despawned[i]);
 
-		//4) 전원에게 뿌린다. PlayerMove 브로드캐스트와 같은 방식이다.
+		//4) 게임 맵에 있는 사람에게 뿌린다(2026-11-01 맵 번호 — 다른 맵 사람에게는 보내지 않는다). PlayerMove 와 같은 방식이다.
 		g_npcWorld.Snapshot(views);
 
 		for (size_t i = 0; i < views.size(); ++i)
@@ -1063,7 +1386,7 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 			pkt.pos[1] = views[i].pos.y;
 			pkt.pos[2] = views[i].pos.z;
 
-			SendToAll(&pkt, (int)sizeof(pkt), 0);
+			SendToWorld(Shared::kWorldGameMap, &pkt, (int)sizeof(pkt), 0);
 		}
 
 		//1초에 한 번만 상태를 찍는다. 매 틱 찍으면 좌표 로그에 묻힌다.
@@ -1076,13 +1399,32 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 					views.size(), g_npcWorld.ChasingCount(), players.size());
 			}
 			//이동 판정 계측(2026-10-29) — 초당 처리한 입력 수(1명당 약 60이 정상) · 넘쳐 버린 입력 누계
-			if (!players.empty())
+			//  2026-11-01 맵 번호 — 맵별 인원(맵 번호:인원, 맵 없음 = 바꾸는 중 · 실패)과 그 맵 충돌체 유무를 함께 찍는다.
 			{
 				std::vector<SessionPtr> list = SnapshotSessions();
-				UINT32 nDropped = 0;
-				for (size_t i = 0; i < list.size(); ++i) nDropped += list[i]->DroppedInputs();
-				printf("[이동] 플레이어 %zu명 · 입력 %d개/초 · 버린 입력 누계 %u · 충돌체 %s\n",
-					players.size(), nInputsThisSecond, nDropped, g_collision.Loaded() ? "켬" : "없음");
+				if (!list.empty())
+				{
+					UINT32 nDropped = 0;
+					size_t nInWorld[Shared::kWorldCount] = {};
+					size_t nNoWorld = 0;
+					for (size_t i = 0; i < list.size(); ++i)
+					{
+						nDropped += list[i]->DroppedInputs();
+						if (list[i]->InWorld()) ++nInWorld[list[i]->World()];
+						else ++nNoWorld;
+					}
+					std::string perWorld;
+					for (uint32_t w = 0; w < Shared::kWorldCount; ++w)
+					{
+						if (nInWorld[w] == 0) continue;
+						char szItem[64] = { 0 };
+						sprintf_s(szItem, " %u:%zu명(충돌체 %s)", w, nInWorld[w],
+							g_worlds[w].move.collision ? "켬" : "없음");
+						perWorld += szItem;
+					}
+					printf("[이동] 플레이어 %zu명 · 입력 %d개/초 · 버린 입력 누계 %u · 맵%s · 맵 바꾸는 중/없음 %zu명\n",
+						list.size(), nInputsThisSecond, nDropped, perWorld.c_str(), nNoWorld);
+				}
 			}
 			nInputsThisSecond = 0;
 		}
@@ -1106,10 +1448,12 @@ DWORD WINAPI ThreadAcceptLoop(LPVOID pParam)
 		SessionPtr pNewUser = std::make_shared<Session>(hClient, nPlayerId);
 
 		//★ 서버가 스폰한다(B안) — 목록에 넣기 전에. 클라도 같은 자리(Landing L1 지면)에 같은 계산으로 선다.
+		//  접속하면 게임 맵에 선다(2026-11-01 맵 번호) — 클라도 접속 직후 게임 맵에 있다.
 		{
+			const ServerWorld &gameWorld = g_worlds[Shared::kWorldGameMap];
 			float spawn[3];
-			SpawnPoint(spawn);
-			pNewUser->InitMove(g_moveWorld, spawn);
+			SpawnPoint(gameWorld, spawn);
+			pNewUser->InitMove(Shared::kWorldGameMap, gameWorld.move, spawn);
 		}
 
 		::EnterCriticalSection(&g_cs);
@@ -1146,6 +1490,7 @@ DWORD WINAPI ThreadAcceptLoop(LPVOID pParam)
 		//2) 이미 들어와 있는 사람들의 위치를 한 명씩 보낸다.
 		//   이게 없으면 새로 들어온 사람 화면엔, 기존 플레이어가 "움직일 때까지"
 		//   아무도 안 보인다. 가만히 서 있는 사람은 영영 안 보인다.
+		//   게임 맵에 있는 사람만(2026-11-01 맵 번호) — 예시 행성에 간 사람은 이 맵에 없다.
 		{
 			std::vector<SessionPtr> list = SnapshotSessions();
 			int nSentRoster = 0;
@@ -1153,7 +1498,7 @@ DWORD WINAPI ThreadAcceptLoop(LPVOID pParam)
 			for (size_t i = 0; i < list.size(); ++i)
 			{
 				if (list[i]->PlayerId() == nPlayerId) continue;
-				if (!list[i]->HasPos()) continue;
+				if (!list[i]->HasPos() || list[i]->World() != Shared::kWorldGameMap) continue;
 
 				Shared::PlayerMovePacket intro = {};
 				intro.header.size = (uint16_t)sizeof(intro);
@@ -1185,11 +1530,16 @@ int main()
 	//  «지형 아래» 로 오판하고, NPC 고도도 클라 화면과 어긋난다.
 	if (!LoadTerrain())
 		return 0;
-	g_npcWorld.SetTerrain(&g_terrain);
+	ServerWorld &gameWorld = g_worlds[Shared::kWorldGameMap];
+	g_npcWorld.SetTerrain(&gameWorld.terrain);
 
 	//이동 판정 세계 (B안, 2026-10-29) — 충돌체는 없어도 켠다(지형만 막는다).
-	g_moveWorld.terrain = &g_terrain;
-	g_moveWorld.collision = LoadCollision() ? &g_collision : NULL;
+	gameWorld.move.terrain = &gameWorld.terrain;
+	gameWorld.move.collision = LoadCollision() ? &gameWorld.collision : NULL;
+	//NPC 스폰 자리도 같은 충돌체를 피한다(2026-10-29). 없으면 지형만 본다.
+	g_npcWorld.SetCollision(gameWorld.move.collision);
+	//게임 맵은 다 읽었다(2026-11-01 맵 번호). 예시 행성(1 ~ 5)은 누가 처음 들어오려 할 때 읽는다(RequestWorldLoad).
+	::InterlockedExchange(&g_worldState[Shared::kWorldGameMap], WORLD_READY);
 
 	WSADATA wsa = { 0 };
 	if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -1258,7 +1608,7 @@ int main()
 				(LPVOID)NULL, 0, &dwThreadID);
 	::CloseHandle(hThread);
 
-	//NPC 행동 스레드. 첫 플레이어가 좌표를 보내면 그 주변에 NPC 를 깔고 굴린다.
+	//NPC 행동 스레드. 첫 틱에 시작 지점 둘레에 NPC 를 무리지어 깔고 굴린다.
 	hThread = ::CreateThread(NULL, 0, ThreadNpcTick,
 				(LPVOID)NULL, 0, &dwThreadID);
 	::CloseHandle(hThread);
@@ -1267,7 +1617,7 @@ int main()
 	printf("    좌표 패킷 크기 = %d 바이트 / NPC 패킷 크기 = %d 바이트\n",
 		(int)sizeof(Shared::PlayerMovePacket),
 		(int)sizeof(Shared::NpcStatePacket));
-	printf("    NPC %d 마리를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount);
+	printf("    NPC %d 마리(무리당 %d)를 30Hz 로 굴려 전원에게 뿌립니다.\n", srv::kNpcSpawnCount, srv::kNpcGroupSize);
 	printf("    플레이어 이동은 입력(%d 바이트, 초당 60개)으로 받아 서버가 판정합니다 — 상태 %d 바이트를 당사자에게 30Hz.\n",
 		(int)sizeof(Shared::PlayerInputPacket), (int)sizeof(Shared::PlayerStatePacket));
 	while (1)

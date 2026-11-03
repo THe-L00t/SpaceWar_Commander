@@ -155,6 +155,70 @@ namespace swc {
 		return true;
 	}
 
+	// ── 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») ──────────────
+	//  행성을 바꿀 때 Engine 이 부른다. 서버가 WorldJoined 로 답할 때까지 «들어가는 중» 이다.
+	//  ★ 원격 · NPC 목록을 지금 비운다 — 옛 맵 사람들이 새 행성 화면에 남지 않게.
+	void Network::SendJoinWorld(uint32_t worldId)
+	{
+		if (!connected) return;
+
+		requestedWorld = worldId;
+		joinState = JoinState::Joining;
+		hasJoinResult = false;
+		ClearWorldState();
+
+		joinUnsent = true;
+		TrySendJoinWorld();
+	}
+
+	void Network::TrySendJoinWorld()
+	{
+		if (!joinUnsent || !connected) return;
+
+		Shared::JoinWorldPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::JoinWorld;
+		pkt.worldId = requestedWorld;
+
+		// 송신 버퍼가 차서 못 보냈으면 다음 Poll 에서 다시 보낸다 — 안 보내면 답이 영영 오지 않는다.
+		if (SendRaw(&pkt, (int)sizeof(pkt)))
+			joinUnsent = false;
+	}
+
+	// 서버의 답. 마지막으로 요청한 맵의 답만 받는다(빠르게 두 번 바꿨으면 앞 요청의 답은 버린다).
+	void Network::OnWorldJoined(const Shared::WorldJoinedPacket* p)
+	{
+		if (joinState != JoinState::Joining || p->worldId != requestedWorld) return;
+
+		joinState = p->ok ? JoinState::Joined : JoinState::Failed;
+		joinResult = WorldJoin{};
+		joinResult.world = p->worldId;
+		joinResult.ok = p->ok != 0;
+		for (int a = 0; a < 3; ++a)
+		{
+			joinResult.pos[a] = p->pos[a];
+			joinResult.facing[a] = p->facing[a];
+		}
+		hasJoinResult = true;
+		ClearWorldState();   // 들어가는 중에 받은 것은 이미 버렸다 — 혹시 남은 것도 지운다
+	}
+
+	bool Network::TakeWorldJoined(uint32_t world, WorldJoin& out)
+	{
+		if (!hasJoinResult || joinResult.world != world) return false;
+		out = joinResult;
+		hasJoinResult = false;
+		return true;
+	}
+
+	void Network::ClearWorldState()
+	{
+		remotes.clear();
+		npcs.clear();
+		hasState = false;
+		hasRespawn = false;
+	}
+
 	bool Network::TakeRespawn(float outPos[3])
 	{
 		if (!hasRespawn) return false;
@@ -199,6 +263,17 @@ namespace swc {
 			if (nRecvd - nOffset < nSize)
 				break;
 
+			// ★ 맵을 바꾸는 중(2026-11-01) — 옛 맵의 위치 · 판정 패킷은 버린다. WorldJoined 뒤로 오는 것만 새 맵 것이다.
+			const bool worldScoped =
+				pHead->type == Shared::PacketType::PlayerMove || pHead->type == Shared::PacketType::NpcState ||
+				pHead->type == Shared::PacketType::NpcDespawn || pHead->type == Shared::PacketType::PlayerState ||
+				pHead->type == Shared::PacketType::PlayerNeutralized;
+			if (worldScoped && joinState == JoinState::Joining)
+			{
+				nOffset += nSize;
+				continue;
+			}
+
 			switch (pHead->type)
 			{
 			case Shared::PacketType::Welcome:
@@ -239,6 +314,11 @@ namespace swc {
 			case Shared::PacketType::PlayerState:
 				if (nSize == (int)sizeof(Shared::PlayerStatePacket))
 					OnPlayerState((const Shared::PlayerStatePacket*)pHead);
+				break;
+
+			case Shared::PacketType::WorldJoined:
+				if (nSize == (int)sizeof(Shared::WorldJoinedPacket))
+					OnWorldJoined((const Shared::WorldJoinedPacket*)pHead);
 				break;
 
 			default:
@@ -313,6 +393,11 @@ namespace swc {
 		nStates = 0;
 		remotes.clear();
 		npcs.clear();
+		// 맵 번호 (2026-11-01) — 서버는 접속한 세션을 게임 맵에 세운다(Server/main.cpp ThreadAcceptLoop).
+		requestedWorld = Shared::kWorldGameMap;
+		joinState = JoinState::Joined;
+		joinUnsent = false;
+		hasJoinResult = false;
 		connected = true;
 		return true;
 	}
@@ -432,10 +517,20 @@ namespace swc {
 	{
 		if (!connected) return;
 
+		TrySendJoinWorld();   // 맵 번호(2026-11-01) — 못 보낸 것이 있으면 먼저 보낸다
+
 		for (;;)
 		{
-			const int nSpace = (int)sizeof(recvBuf) - nRecvd;
-			if (nSpace <= 0) { nRecvd = 0; break; }   // 방어: 해석 못 하는 쓰레기가 찼다
+			int nSpace = (int)sizeof(recvBuf) - nRecvd;
+			if (nSpace <= 0)
+			{
+				// 버퍼가 찼다 — 먼저 완전한 패킷을 꺼내 자리를 만든다(2026-10-29).
+				//  NPC 100마리면 초당 약 60 KB 가 와서, 프레임이 0.13 s 만 멈춰도 8 KB 가 찬다.
+				//  예전처럼 바로 비우면 패킷 중간부터 이어 읽게 돼 스트림이 어긋난다.
+				ProcessPackets();
+				nSpace = (int)sizeof(recvBuf) - nRecvd;
+				if (nSpace <= 0) { nRecvd = 0; break; }   // 방어: 해석 못 하는 쓰레기가 찼다
+			}
 
 			const int n = ::recv(sock, recvBuf + nRecvd, nSpace, 0);
 

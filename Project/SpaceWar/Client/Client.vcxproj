@@ -244,7 +244,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
         <TargetFolder>sky_planet\LOD3</TargetFolder>
       </ModelAsset>
-      <!-- 예시 행성 디버그 씬 1~5 (2026-10-28) — 파일명이 Client/Scene/PlanetDebugScene.cpp 에도 적혀 있다. 바꿀 때 두 곳. -->
+      <!-- 예시 행성 디버그 씬 1~5 (2026-10-28) — 파일명이 Shared/World/WorldCatalog.h(맵 번호 1 ~ 5, 2026-11-01) · Server.vcxproj 에도 적혀 있다. 바꿀 때 세 곳. -->
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet.glb">
         <TargetFolder>map\Verdant_Planet</TargetFolder>
       </ModelAsset>
@@ -277,7 +277,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
         <TargetFolder>map\Glacier_Planet</TargetFolder>
       </ModelAsset>
       <!-- 정적 오브젝트 충돌체 묶음 · 설명 JSON (2026-10-29, Shared/Physics/CollisionWorld.h · col_build.py).
-           파일명이 Shared/PlanetConst.h(게임 맵) · PlanetDebugScene::CollisionAsset(예시 행성)에도 적혀 있다 — 바꿀 때 두 곳. -->
+           파일명이 Shared/PlanetConst.h(게임 맵) · Shared/World/WorldCatalog.h(예시 행성) · Server.vcxproj 에도 적혀 있다 — 바꿀 때 세 곳. -->
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.glb;$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.json">
         <TargetFolder>map</TargetFolder>
       </ModelAsset>
