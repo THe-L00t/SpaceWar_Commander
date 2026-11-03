@@ -104,6 +104,9 @@
     <ClInclude Include="Model\Readers\ObjReader.h" />
     <ClInclude Include="Model\Readers\GltfReader.h" />
     <ClInclude Include="Model\Readers\JsonValue.h" />
+    <ClInclude Include="World\WorldCatalog.h" />
+    <ClInclude Include="World\Placement.h" />
+    <ClInclude Include="World\WorldMap.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
@@ -120,6 +123,8 @@
     <ClCompile Include="GameLogic\PlayerMovement.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />
     <ClCompile Include="Physics\CollisionWorld.cpp" />
+    <ClCompile Include="World\Placement.cpp" />
+    <ClCompile Include="World\WorldMap.cpp" />
     <ClCompile Include="GameObject\Object.cpp" />
     <ClCompile Include="GameObject\DynamicObject.cpp" />
     <ClCompile Include="GameObject\StaticObject.cpp" />

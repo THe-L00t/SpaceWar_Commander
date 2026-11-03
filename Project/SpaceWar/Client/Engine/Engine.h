@@ -76,13 +76,16 @@ namespace swc {
 		// ── 예시 행성 디버그 씬 (2026-10-28, PlanetDebugScene.h) ──
 		//  숫자키 1~5 로 행성을 고른다. 처음이면 로드 묶음을 만들어 로딩 씬을 거치고,
 		//  씬에 들어가면 보이는 맵 · 접지면 · 스폰을 그 행성으로 바꿔 끼운다.
-		//  서버 세계는 게임 맵이라 디버그 행성에서는 네트워크를 돌리지 않는다.
+		//  ★ 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») — 행성을 고르면 서버에 JoinWorld 를 보내고,
+		//    서버가 그 행성을 판정한다(Shared/World/WorldCatalog.h · Network.h). 답이 오기 전 · 서버가 못 읽었으면 혼자 움직인다.
 		void HandleDebugPlanetKeys();
 		void BuildDebugPlanetLoad(LoadBatch&, size_t index);
 		void EnterDebugPlanet(size_t index);
 		void UpdateDebugPlanetObjects();
 		void ParkNetworkNodes();
 		bool InDebugPlanet() const { return activeDebugPlanet != kNoDebugPlanet; }
+		// 지금 보이는 맵의 번호 — 게임 맵 0, 예시 행성 1 ~ 5(Shared/World/WorldCatalog.h).
+		uint32_t CurrentWorld() const;
 
 		void UpdatePlayer(float);
 		void UpdateFire(float);
@@ -120,8 +123,8 @@ namespace swc {
 		std::wstring           terrainStatus;
 
 		// ── 정적 오브젝트 충돌체 (2026-10-29, Shared/Physics/CollisionWorld.h) ──
-		//  게임 맵 몫. 예시 행성 몫은 PlanetDebugScene::Collision(). 지금은 C 키 와이어프레임만 쓴다
-		//  (이동 막기 · 서버 판정은 노션 「충돌 처리 ②」 단계 C2 · C4).
+		//  게임 맵 몫. 예시 행성 몫은 PlanetDebugScene::Collision(). 이동 예측(PlayerController)과 C 키 와이어프레임이 쓴다.
+		//  서버도 같은 파일로 판정한다(게임 맵 2026-10-29 B안, 예시 행성 2026-11-01 맵 번호).
 		Shared::CollisionWorld gameMapCollision;
 		ColliderDebugView      colliderView;
 		bool                   showColliders = false;   // C 키
