@@ -101,9 +101,29 @@
   <Target Name="CopyPlanetSurfaceAsset" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
     <ItemGroup>
       <PlanetSurfaceAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb" />
+      <!-- 정적 오브젝트 충돌체 묶음 (2026-10-29, Shared::kPlanetCollisionAsset) — 클라와 같은 파일. 없으면 서버는 지형만 막는다. -->
+      <PlanetSurfaceAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.glb;$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.json" />
+      <!-- 예시 행성 맵 1 ~ 5 (2026-11-01 맵 번호, Shared/World/WorldCatalog.h) — 맵 glb(접지면 · 스폰 노드) · 배치 JSON · 충돌체 묶음.
+           클라와 같은 파일(Client.vcxproj CopyModelAssets). 실행 중 못 읽으면 그 맵에 들어오려는 사람에게 «맵 없음» 으로 답한다. 파일명을 바꿀 때 세 곳. -->
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet.glb;$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Placement.json;$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.json">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet.glb;$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Placement.json;$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.json">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet.glb;$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Placement.json;$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.json">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet.glb;$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Placement.json;$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.json">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.json">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </WorldAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb')" Text="assets/model/map에 future_ruins_planet_separated.glb 맵 파일이 필요합니다." />
     <Copy SourceFiles="@(PlanetSurfaceAsset)" DestinationFolder="$(OutDir)assets\model\map\" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(WorldAsset)" DestinationFiles="@(WorldAsset->'$(OutDir)assets\model\%(TargetFolder)\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

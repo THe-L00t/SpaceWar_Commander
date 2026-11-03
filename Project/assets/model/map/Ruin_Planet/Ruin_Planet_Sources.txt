@@ -1,0 +1,29 @@
+Ruin_Planet — 원본 텍스처 출처 (모두 CC0 1.0, 저작자 표시 의무 없음)
+
+형상(지형 · 도로 · 다리 · 폐허 건물 · 철근 · 소품 · 불 드럼통 · 죽은 나무 · 잡초 · 철조망)은 블렌더 스크립트로 직접 만들었고,
+표면 사진만 아래 CC0 스캔을 썼다. 각 PNG 는 체크리스트 형식(BaseColor sRGB · ORM · Normal OpenGL · Emissive sRGB)으로
+다시 묶거나 베이크한 것이다. 그을음 · 빗물 얼룩 · 총탄 자국 · 바랜 간판 · 판자로 막은 창 · 포트홀은 절차적으로 그렸다.
+지형 레이어의 <Layer>_Height.png 는 같은 원본의 변위(displacement) 맵을 0~1 로 편 것이다.
+
+Poly Haven (https://polyhaven.com, CC0)
+  dirt                         -> Ash_Dirt_* (지형 레이어), 도로 포트홀 · 배수 홈 흙
+  concrete_debris              -> Rubble_Ground_* (지형 레이어)
+  concrete_floor_damaged_01    -> Pavement_Broken_* (지형 레이어 · 착륙장 · 교차로 판)
+  road_damaged                 -> Ruin_Road_* (차로), 소품 아스팔트 조각(베이크)
+  cracked_concrete             -> Ruin_Road_* (보도 · 연석), Ruin_Building_Concrete_* (금)
+  concrete_wall_003            -> Ruin_Building_Concrete_*
+  damaged_concrete_floor       -> Ruin_Building_Concrete_* (섞음)
+  red_brick_plaster_patch_02   -> Ruin_Building_Brick_*, 소품 벽돌(베이크)
+  rust_coarse_01               -> Ruin_Building_Rust_* (철근 · 철골), Ruin_Building_Trim_* (철판 · 경고 줄무늬 닳은 곳)
+  rusted_shutter               -> Ruin_Building_Trim_* (셔터)
+  rusty_painted_metal          -> Ruin_Building_Trim_* (철문 · 간판)
+  rusty_metal_04               -> 소품 녹 · 그을린 금속(베이크), Fence_Broken_Post_*, Fence_Broken_Mesh_* (녹)
+  concrete_layers_02           -> 소품 콘크리트(베이크)
+  tree_bark_03                 -> Tree_Dead_Bark_*
+
+ambientCG (https://ambientcg.com, CC0)
+  Fence008A                    -> Fence_Broken_Mesh_* (철조망, 알파 잘라내기)
+  Foliage001                   -> Weed_* (시든 잡초)
+  Grass004                     -> Overgrown_* (지형 레이어, 시든 풀빛으로)
+
+죽은 나무 잔가지(Tree_Dead_Twig)는 원본 사진 없이 형상으로 만들어 렌더했다.

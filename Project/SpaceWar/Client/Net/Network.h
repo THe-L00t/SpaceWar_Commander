@@ -8,6 +8,8 @@
 #include <vector>
 #include <unordered_map>
 #include <cstdint>
+#include "Shared/Protocol.h"   // PlayerStatePacket 을 값으로 들고 있는다(2026-10-29) — 이 헤더는 <cstdint> 만 쓴다
+#include "Shared/World/WorldCatalog.h"   // 맵 번호(2026-11-01) — 상수만 있는 헤더
 
 namespace Shared {
 	struct WelcomePacket;
@@ -17,6 +19,8 @@ namespace Shared {
 	struct PlayerHealthPacket;
 	struct PlayerNeutralizedPacket;
 	struct NpcDespawnPacket;
+	struct WorldJoinedPacket;
+	struct MoveCommand;
 }
 
 // ============================================================
@@ -33,6 +37,11 @@ namespace Shared {
 //  ★ 원격 플레이어 · NPC 보간은 Network 몫이 아니다 (멀티스레딩 5장 «OtherPlayer 보간 — 메인», 명세 6.13).
 //    옮길 자리(OtherPlayer · NPC 객체)가 아직 없어 여기 남겨 두었다.
 //
+//  ★ 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘», Shared/World/WorldCatalog.h)
+//    서버는 세션마다 맵 번호를 들고 같은 맵 사람끼리만 판정 · 송신한다. 접속하면 게임 맵(0)에 있다.
+//    행성을 바꿀 때 SendJoinWorld 로 알리면, 서버의 WorldJoined 가 올 때까지(들어가는 중) 옛 맵 패킷
+//    (PlayerMove · NpcState · NpcDespawn · PlayerState · PlayerNeutralized)을 버린다 — TCP 순서상 WorldJoined 뒤의 것만 새 맵 것이다.
+//    입력 · 사격은 JoinedWorld() 가 지금 맵일 때만 보낸다(Engine::UpdateNetwork · UpdateFire).
 //  ★ 클라는 IOCP 를 쓰지 않는다
 //    서버는 접속자 수백 명을 스레드 몇 개로 감당해야 하니 IOCP 가 필요하지만,
 //    클라는 소켓이 하나뿐이라 얻을 게 없다.
@@ -70,9 +79,36 @@ namespace swc {
 		void Disconnect();
 		bool Connected() const { return connected; }
 
-		// ★ 렌더 루프에서 1/30초마다 호출한다.
+		// ★ 2026-10-29 B안 이후 쓰지 않는다 — 서버가 좌표를 받지 않는다(무시하고 로그만 남긴다).
 		//   좌표를 Shared::PlayerMovePacket 규격으로 담아 보낸다.
 		void SendToServer(float x, float y, float z);
+
+		// ★ B안(입력 기반, 2026-10-29) — 고정 틱 입력 하나를 보낸다(Shared::PlayerInputPacket).
+		//   PlayerController 가 틱마다 만든 것을 Engine 이 그대로 넘긴다. 판정은 서버가 같은 이동 코드로 한다.
+		void SendInput(const Shared::MoveCommand&);
+
+		// 서버가 판정한 내 이동 상태 중 가장 최근 것(마지막 입력 번호가 가장 큰 것). 한 번 가져가면 지워진다.
+		bool TakePlayerState(Shared::PlayerStatePacket& out);
+		unsigned StateCount() const { return nStates; }
+
+		// ── 맵 번호 (2026-11-01) ────────────────────────────────
+		//  서버의 답 — ok 면 서버가 정한 스폰 자리 · 몸 방향.
+		struct WorldJoin
+		{
+			uint32_t world = Shared::kNoWorld;
+			bool     ok = false;
+			float    pos[3] = {};
+			float    facing[3] = { 0.0f, 0.0f, 1.0f };
+		};
+
+		// 이 맵으로 옮긴다고 서버에 알린다. 답이 올 때까지 «들어가는 중» — 옛 맵 패킷을 버리고 원격 목록을 비운다.
+		void SendJoinWorld(uint32_t worldId);
+		// 서버가 넣어 준 맵. 들어가는 중이거나 서버가 준비하지 못했으면 Shared::kNoWorld.
+		uint32_t JoinedWorld() const { return joinState == JoinState::Joined ? requestedWorld : Shared::kNoWorld; }
+		bool     Joining() const { return joinState == JoinState::Joining; }
+		bool     JoinFailed() const { return joinState == JoinState::Failed; }
+		// world 에 대한 서버의 답이 왔으면 꺼낸다(한 번 가져가면 지워진다). 다른 맵의 답이면 남겨 둔다.
+		bool TakeWorldJoined(uint32_t world, WorldJoin& out);
 
 		// ★ 좌클릭 한 발. 판정은 서버가 한다 (명세 18절 원칙 4).
 		//   «어디서 어디로» 만 보낸다. 누가 맞았는지는 말하지 않는다.
@@ -139,6 +175,10 @@ namespace swc {
 		void OnPlayerHealth(const Shared::PlayerHealthPacket*);
 		void OnPlayerNeutralized(const Shared::PlayerNeutralizedPacket*);
 		void OnNpcDespawn(const Shared::NpcDespawnPacket*);
+		void OnPlayerState(const Shared::PlayerStatePacket*);
+		void OnWorldJoined(const Shared::WorldJoinedPacket*);
+		void TrySendJoinWorld();       // 못 보낸 JoinWorld 를 다시 보낸다(송신 버퍼가 찼을 때)
+		void ClearWorldState();        // 원격 · NPC 목록 · 받아 둔 판정 · 리스폰을 비운다(맵을 바꿀 때)
 
 		SOCKET sock = INVALID_SOCKET;
 		bool   connected = false;
@@ -158,6 +198,19 @@ namespace swc {
 		unsigned nHits = 0;             // 내가 맞은 횟수 (표시용)
 		bool     hasRespawn = false;    // 되살아날 자리를 받았는가
 		float    respawnPos[3] = { 0.0f, 0.0f, 0.0f };
+
+		// ── 이동 (B안) ──
+		Shared::PlayerStatePacket latestState{};   // 가장 최근에 받은 내 이동 상태
+		bool     hasState = false;
+		unsigned nStates = 0;
+
+		// ── 맵 번호 (2026-11-01) ──
+		enum class JoinState : uint8_t { Joined, Joining, Failed };
+		uint32_t  requestedWorld = Shared::kWorldGameMap;   // 마지막으로 요청한 맵(접속 직후 = 게임 맵)
+		JoinState joinState = JoinState::Joined;
+		bool      joinUnsent = false;                       // JoinWorld 를 아직 못 보냈다
+		bool      hasJoinResult = false;
+		WorldJoin joinResult;
 
 		std::unordered_map<uint32_t, Remote> remotes;
 

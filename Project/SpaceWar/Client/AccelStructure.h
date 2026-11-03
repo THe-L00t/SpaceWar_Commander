@@ -51,7 +51,12 @@ namespace swc {
 
 		// frameSlot = 이번 프레임이 쓸 슬롯(보통 스왑체인 백버퍼 번호).
 		void ResetInstances(uint32_t frameSlot);
-		void AddInstance(uint32_t blasIndex, const DirectX::XMFLOAT4X4& world);
+		// ★ 2026-10-27 렌더 2단계 — 인스턴스마다 두 값을 더 받는다
+		//   instanceId     : 셰이더의 InstanceID() / CandidateInstanceID() 로 읽히는 24비트 값. 지금은 재질 번호.
+		//   forceNonOpaque : true 면 FORCE_NON_OPAQUE — RayQuery 가 이 물체의 삼각형을 «통과 후보» 로 셰이더에 넘긴다
+		//                    (투과 재질의 그림자). false 면 BLAS 의 OPAQUE 그대로 바로 막는다.
+		void AddInstance(uint32_t blasIndex, const DirectX::XMFLOAT4X4& world,
+			uint32_t instanceId, bool forceNonOpaque);
 		void BuildTlas(ID3D12GraphicsCommandList4*);
 
 		D3D12_GPU_VIRTUAL_ADDRESS TlasAddress() const;

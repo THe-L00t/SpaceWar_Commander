@@ -33,11 +33,22 @@ namespace Shared {
 		L"model\\map\\future_ruins_planet_separated.glb";
 	inline constexpr const char* kPlanetSurfaceNode = "COL_Expedition_Planet_Terrain";
 
+	// 정적 오브젝트 충돌체 묶음 (2026-10-29, Shared/Physics/CollisionWorld.h) — 맵 glb 옆.
+	//  Resource_Work/_tools/collision/col_build.py 가 만든다. ★ Client.vcxproj CopyModelAssets 에도 적혀 있다 — 바꿀 때 두 곳.
+	inline constexpr const wchar_t* kPlanetCollisionAsset =
+		L"model\\map\\future_ruins_planet_separated_Collision.glb";
+	inline constexpr const wchar_t* kPlanetCollisionManifestAsset =
+		L"model\\map\\future_ruins_planet_separated_Collision.json";
+
 	inline constexpr double kPlanetCenterX = 0.0;
 	inline constexpr double kPlanetCenterY = kUsePlanarMap ? 0.0 : -kPlanetRadius;
 	inline constexpr double kPlanetCenterZ = 0.0;
 
 	// 몸통 중심에서 발까지의 높이. 클라이언트·서버 접지가 공유한다.
 	inline constexpr double kGroundOffset = 1.0;
+
+	// 플레이어 중력 (m/s²) — 물리값 0.18 은 소행성 수준이라 게임이 안 됨.
+	//  2026-10-29 Client/Planet.h 에서 옮겼다 — 이동을 서버도 같이 계산한다(Shared/GameLogic/PlayerMovement.h).
+	inline constexpr double kPlanetGravity = 18.0;
 
 } // namespace Shared

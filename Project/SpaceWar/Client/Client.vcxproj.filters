@@ -90,8 +90,14 @@
     <Filter Include="클래스 목록\TextureLoader">
       <UniqueIdentifier>{e28f6b09-1d54-4a73-b6c8-95a03e7d1842}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\TextureBake">
+      <UniqueIdentifier>{7d2c9e41-3b58-4f6a-9c17-a8e05b2d6f93}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\LoadingScene">
       <UniqueIdentifier>{b4e71c2a-6d39-4f80-a5c2-1e9d7f3b8a64}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\PlanetDebugScene">
+      <UniqueIdentifier>{6c3f9a2e-41d7-4b58-9e0a-7d2c5b8f1e43}</UniqueIdentifier>
     </Filter>
     <Filter Include="클래스 목록\LoadQueue">
       <UniqueIdentifier>{5a2d9e47-c81b-4b36-9f0e-7c3a64d1e2b9}</UniqueIdentifier>
@@ -101,6 +107,9 @@
     </Filter>
     <Filter Include="클래스 목록\Log">
       <UniqueIdentifier>{9d3e7a52-1c84-4f06-b2e9-6a07c45d18f3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ColliderDebugView">
+      <UniqueIdentifier>{c7e2a5d9-3b61-4f84-9a0e-5d18b7f2c6a3}</UniqueIdentifier>
     </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
@@ -185,8 +194,14 @@
     <ClCompile Include="Resource\TextureLoader.cpp">
       <Filter>클래스 목록\TextureLoader</Filter>
     </ClCompile>
+    <ClCompile Include="Resource\TextureBake.cpp">
+      <Filter>클래스 목록\TextureBake</Filter>
+    </ClCompile>
     <ClCompile Include="Scene\LoadingScene.cpp">
       <Filter>클래스 목록\LoadingScene</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\PlanetDebugScene.cpp">
+      <Filter>클래스 목록\PlanetDebugScene</Filter>
     </ClCompile>
     <ClCompile Include="Resource\LoadQueue.cpp">
       <Filter>클래스 목록\LoadQueue</Filter>
@@ -196,6 +211,9 @@
     </ClCompile>
     <ClCompile Include="Log.cpp">
       <Filter>클래스 목록\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="DebugView\ColliderDebugView.cpp">
+      <Filter>클래스 목록\ColliderDebugView</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -280,6 +298,9 @@
     <ClInclude Include="Resource\TextureLoader.h">
       <Filter>클래스 목록\TextureLoader</Filter>
     </ClInclude>
+    <ClInclude Include="Resource\TextureBake.h">
+      <Filter>클래스 목록\TextureBake</Filter>
+    </ClInclude>
     <ClInclude Include="MeshData.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
@@ -319,6 +340,9 @@
     <ClInclude Include="Scene\LoadingScene.h">
       <Filter>클래스 목록\LoadingScene</Filter>
     </ClInclude>
+    <ClInclude Include="Scene\PlanetDebugScene.h">
+      <Filter>클래스 목록\PlanetDebugScene</Filter>
+    </ClInclude>
     <ClInclude Include="Resource\LoadQueue.h">
       <Filter>클래스 목록\LoadQueue</Filter>
     </ClInclude>
@@ -327,6 +351,12 @@
     </ClInclude>
     <ClInclude Include="UISprite.h">
       <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="DebugLine.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
+    <ClInclude Include="DebugView\ColliderDebugView.h">
+      <Filter>클래스 목록\ColliderDebugView</Filter>
     </ClInclude>
     <ClInclude Include="Log.h">
       <Filter>클래스 목록\Log</Filter>
@@ -370,6 +400,69 @@
       <Filter>설정 및 리소스</Filter>
     </None>
     <None Include="Shaders\UI.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Lighting.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Tonemap.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtShadow.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Shading.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\GBuffer.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtCommon.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtReflection.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtReflectionDenoise.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Sky.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Sky.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\RtSurface.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Probes.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ProbeGI.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\AO.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ColorPyramid.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Transparent.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\PostProcess.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ReflectionTiles.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ReflectionClassify.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\TerrainLayers.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\DebugLines.hlsl">
       <Filter>셰이더</Filter>
     </None>
   </ItemGroup>

@@ -35,7 +35,7 @@ namespace swc {
 	struct Planet
 	{
 		double radius = kPlanetRadius;   // 기준구 반지름 (m)
-		double gravity = 18.0;           // m/s^2 — 물리값 0.18 은 소행성 수준이라 게임이 안 됨
+		double gravity = Shared::kPlanetGravity;   // m/s^2 — 값은 Shared/PlanetConst.h(서버 이동과 같은 값)
 		Vec3d  center{ Shared::kPlanetCenterX, Shared::kPlanetCenterY, Shared::kPlanetCenterZ };
 
 		const Shared::TerrainSampler* terrain = nullptr;   // 없으면 높이 0인 지면

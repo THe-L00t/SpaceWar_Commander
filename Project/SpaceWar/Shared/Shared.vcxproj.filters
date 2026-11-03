@@ -85,6 +85,9 @@
     <Filter Include="클래스 목록\PhysicsCalculator">
       <UniqueIdentifier>{b6031f4d-7a92-40c8-95e1-3f28c07b5de6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\CollisionWorld">
+      <UniqueIdentifier>{4d2c9e71-8b35-4f06-a1d7-6e93b05c2f18}</UniqueIdentifier>
+    </Filter>
     <Filter Include="클래스 목록\ModelReader">
       <UniqueIdentifier>{7f41d85c-3e96-4a02-bd57-28c1f6a90b34}</UniqueIdentifier>
     </Filter>
@@ -102,6 +105,9 @@
     </Filter>
     <Filter Include="클래스 목록\JsonValue">
       <UniqueIdentifier>{a7f351d8-0c92-4e64-b83a-52d9f1c70b48}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\World">
+      <UniqueIdentifier>{5e8b2c47-91d3-4a6f-b05e-7c3d19a84f62}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -144,6 +150,9 @@
     <ClInclude Include="Vec3.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
+    <ClInclude Include="Vec3d.h">
+      <Filter>헤더파일</Filter>
+    </ClInclude>
     <ClInclude Include="PlanetConst.h">
       <Filter>헤더파일</Filter>
     </ClInclude>
@@ -159,8 +168,23 @@
     <ClInclude Include="GameLogic\GameLogic.h">
       <Filter>클래스 목록\GameLogic</Filter>
     </ClInclude>
+    <ClInclude Include="GameLogic\PlayerMovement.h">
+      <Filter>클래스 목록\GameLogic</Filter>
+    </ClInclude>
     <ClInclude Include="Physics\PhysicsCalculator.h">
       <Filter>클래스 목록\PhysicsCalculator</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\CollisionWorld.h">
+      <Filter>클래스 목록\CollisionWorld</Filter>
+    </ClInclude>
+    <ClInclude Include="World\WorldCatalog.h">
+      <Filter>클래스 목록\World</Filter>
+    </ClInclude>
+    <ClInclude Include="World\Placement.h">
+      <Filter>클래스 목록\World</Filter>
+    </ClInclude>
+    <ClInclude Include="World\WorldMap.h">
+      <Filter>클래스 목록\World</Filter>
     </ClInclude>
     <ClInclude Include="GameObject\Object.h">
       <Filter>클래스 목록\Object</Filter>
@@ -251,8 +275,20 @@
     <ClCompile Include="GameLogic\GameLogic.cpp">
       <Filter>클래스 목록\GameLogic</Filter>
     </ClCompile>
+    <ClCompile Include="GameLogic\PlayerMovement.cpp">
+      <Filter>클래스 목록\GameLogic</Filter>
+    </ClCompile>
     <ClCompile Include="Physics\PhysicsCalculator.cpp">
       <Filter>클래스 목록\PhysicsCalculator</Filter>
+    </ClCompile>
+    <ClCompile Include="Physics\CollisionWorld.cpp">
+      <Filter>클래스 목록\CollisionWorld</Filter>
+    </ClCompile>
+    <ClCompile Include="World\Placement.cpp">
+      <Filter>클래스 목록\World</Filter>
+    </ClCompile>
+    <ClCompile Include="World\WorldMap.cpp">
+      <Filter>클래스 목록\World</Filter>
     </ClCompile>
     <ClCompile Include="GameObject\Object.cpp">
       <Filter>클래스 목록\Object</Filter>

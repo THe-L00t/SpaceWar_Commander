@@ -1,9 +1,12 @@
 #pragma once
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 #include "Client/Scene/LoadingScene.h"
+#include "Client/Scene/PlanetDebugScene.h"
 #include "Client/Resource/LoadBatch.h"
 #include "Client/UISprite.h"
 
@@ -24,7 +27,10 @@
 //    같은 씬 안에서 큰 리소스를 더 읽을 때도 ChangeScene(Active(), 묶음) 으로 로딩 씬을 쓴다.
 //    묶음이 실패하면 다음 씬으로 넘어가지 않고 LoadFailed 를 세운다(호출 쪽이 처리).
 //  ★ 게임 씬은 아직 Engine 이 직접 돈다 (Engine.h «아직 자리로 옮기지 않은 것»)
-//    그래서 지금 이 클래스가 실제로 소유하는 씬은 LoadingScene 뿐이고, 게임은 SceneId 로만 가리킨다.
+//    그래서 지금 이 클래스가 실제로 소유하는 씬은 LoadingScene 과 예시 행성 디버그 씬 5개뿐이고,
+//    게임은 SceneId 로만 가리킨다.
+//  ★ 예시 행성 디버그 씬 1~5 (2026-10-28) — 숫자키 1~5 (PlanetDebugScene.h)
+//    처음 고를 때는 맵을 읽는 묶음과 함께 ChangeScene 하고, 이미 읽은 행성은 묶음 없이 바로 넘어간다.
 // ============================================================
 
 namespace swc {
@@ -37,7 +43,27 @@ namespace swc {
 		None,
 		Loading,
 		Game,
+		// 예시 행성 디버그 씬 (2026-10-28) — 숫자키 1~5. 순서는 PlanetDebugScene::Name 과 같다.
+		DebugPlanet1,
+		DebugPlanet2,
+		DebugPlanet3,
+		DebugPlanet4,
+		DebugPlanet5,
 	};
+	static_assert(size_t(SceneId::DebugPlanet5) - size_t(SceneId::DebugPlanet1) + 1 == PlanetDebugScene::kCount,
+		"디버그 행성 씬 ID 수와 PlanetDebugScene::kCount 가 같아야 한다");
+
+	// 디버그 행성 번호(0 ~ 4) ↔ 씬 ID
+	inline SceneId DebugPlanetSceneId(size_t index)
+	{
+		return SceneId(uint8_t(size_t(SceneId::DebugPlanet1) + index));
+	}
+	inline bool IsDebugPlanetScene(SceneId id, size_t& index)
+	{
+		if (id < SceneId::DebugPlanet1 || id > SceneId::DebugPlanet5) return false;
+		index = size_t(id) - size_t(SceneId::DebugPlanet1);
+		return true;
+	}
 
 	class SceneManager
 	{
@@ -72,10 +98,15 @@ namespace swc {
 		// 렌더 추출 ④ 의 UI 몫 — 지금 씬의 UI 를 out 에 복사한다.
 		void ExtractUI(std::vector<UISprite>& out) const;
 
+		// 예시 행성 디버그 씬 (index 0 ~ PlanetDebugScene::kCount - 1)
+		PlanetDebugScene& DebugPlanet(size_t index) { return debugPlanets[index]; }
+		const PlanetDebugScene& DebugPlanet(size_t index) const { return debugPlanets[index]; }
+
 	private:
 		void Enter(SceneId id);
 
 		LoadingScene                loading;
+		std::array<PlanetDebugScene, PlanetDebugScene::kCount> debugPlanets;
 		SceneId                     active = SceneId::None;
 		SceneId                     pending = SceneId::None;
 		SceneId                     entered = SceneId::None;

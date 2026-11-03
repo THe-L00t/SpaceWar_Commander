@@ -1,0 +1,30 @@
+Glacier_Planet — 원본 텍스처 출처 (모두 CC0 1.0, 저작자 표시 의무 없음)
+
+형상(지형 · 뿔 봉우리 · 빙하 얼음 · 얼음 절벽 · 빙퇴석 둑 · 크레바스 · 얼어붙은 호수 · 오솔길 · 세락 · 얼음 덩어리 · 얼음 벽 ·
+압력 능선 · 얼음 아치 · 펜듀텐테 · 투명 얼음 결정 · 표석 · 화강암 노두 · 쓰러진 판 · 눈 둔덕 · 사스트루기 · 얼어 죽은 나무 · 서리 풀)은
+블렌더 · 파이썬 스크립트로 직접 만들었고, 표면 사진만 아래 CC0 스캔을 썼다.
+각 PNG 는 체크리스트 형식(BaseColor sRGB · ORM · Normal OpenGL)으로 다시 묶거나 베이크한 것이다.
+얼음의 기포 띠 · 속 금 · 먼지 띠 · 서리 · 지의류 얼룩 · 상고대는 절차적으로 그렸다.
+투명 얼음 결정 형상은 실제 얼음 결정(Ice Ih) 형태를 참고했다 — 육각 기둥 · 판, 끝이 움푹 팬 기둥(hollow column),
+끝에 판이 붙은 기둥(capped column), 동심 계단이 진 판, 속이 빈 육각 컵(cup crystal).
+지형 레이어의 <Layer>_Height.png 는 같은 원본의 변위(displacement) 맵을 0~1 로 편 것이다.
+
+Poly Haven (https://polyhaven.com, CC0)
+  gray_rocks                  -> Moraine_Gravel_* (지형 레이어 — 모난 회색 돌)
+  rocks_ground_06             -> Moraine_Gravel_* (섞음 — 흙에 박힌 돌)
+  gravel_stones               -> Moraine_Gravel_* (섞음 — 잔자갈)
+  rock_face_03                -> Granite_Rock_* (지형 레이어 — 큰 판 결), 화강암 엄폐물(베이크, 섞음)
+  marble_rock_03              -> Granite_Rock_* (섞음 — 갈라진 판)
+  tree_bark_03                -> Tree_Frozen_Bark_* (바랜 잿빛 나무 + 상고대로 다시 칠함)
+
+ambientCG (https://ambientcg.com, CC0)
+  Ice004 · Ice001             -> Glacier_Ice_* (지형 레이어 — 밝기만 써서 푸른 빙하 얼음으로)
+  Snow006                     -> Glacier_Ice_* (섞음 — 바람 · 햇빛에 거칠어진 흰 껍질)
+  Ice003 · Ice002             -> Lake_Ice_* (얼어붙은 호수 면)
+  Snow010A · Snow007A         -> Snow_* (지형 레이어 — 고운 눈)
+  Snow008A · Snow009A         -> Snow_* (섞음 — 바람 결 · 사스트루기)
+  Foliage002                  -> Grass_Frost_* (서리에 바랜 툰드라 풀)
+
+받았으나 지금은 쓰지 않음: snow_02 · snow_03 · rock_face · cliff_side · rock_06 · rock_boulder_cracked · rocks_ground_02 · rocky_gravel ·
+  lichen_rock · dark_rock_02 · Snow005 · Snow014
+  (snow_01(발자국) · snow_04(바퀴 자국) · ambientCG 의 발자국 눈(Snow007B~C 등)은 인간의 흔적이라 받지 않았거나 지웠다)

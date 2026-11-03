@@ -31,6 +31,8 @@ namespace swc {
 
 		void SetLocalTransform(NodeHandle, const DirectX::XMMATRIX&);
 		void SetMesh(NodeHandle, MeshHandle);
+		// 2026-10-28 지형 레이어 — 이미 올린 노드의 재질을 바꾼다(그리기 묶음이 바뀌므로 구성 버전을 올린다).
+		void SetMaterial(NodeHandle, MaterialHandle);
 		void SetVisible(NodeHandle, bool);
 
 		void UpdateWorldTransforms();

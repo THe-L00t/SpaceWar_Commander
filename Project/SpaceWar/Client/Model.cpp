@@ -190,7 +190,8 @@ namespace swc {
 		return true;
 	}
 
-	NodeHandle Model::Instantiate(LegacyScene& scene, NodeHandle parent) const
+	NodeHandle Model::Instantiate(LegacyScene& scene, NodeHandle parent,
+		std::vector<std::pair<uint32_t, NodeHandle>>* meshNodes) const
 	{
 		if (!initialized) return kInvalidNode;
 
@@ -211,7 +212,10 @@ namespace swc {
 
 			// 한 모델 노드가 여러 재질 부분을 가지면 같은 부모 아래 별도 draw 노드를 둔다.
 			for (uint32_t mesh : node.meshes)
-				scene.AddNode(handle, meshes[mesh], meshMaterials[mesh]);
+			{
+				const NodeHandle draw = scene.AddNode(handle, meshes[mesh], meshMaterials[mesh]);
+				if (meshNodes) meshNodes->emplace_back(mesh, draw);
+			}
 		}
 		return root;
 	}

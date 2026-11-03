@@ -1,0 +1,28 @@
+Volcanic_Planet — 원본 텍스처 출처 (모두 CC0 1.0, 저작자 표시 의무 없음)
+
+형상(지형 · 화산 · 용암 바다 · 분화구 호수 · 용암 강 · 용암 둔덕 · 용암 혀 앞자락 · 무너진 동굴 도랑 · 오솔길 · 현무암 기둥 ·
+분석 굴뚝 · 아아 자갈 더미 · 굳은 용암 앞자락 · 화산탄 · 흑요석 · 용암 동굴 아치 · 분기공 · 떠다니는 껍질 판 · 타다 남은 통나무 ·
+가스 불구멍 · 탄 나무 · 재 덮인 풀)은 블렌더 · 파이썬 스크립트로 직접 만들었고, 표면 사진만 아래 CC0 스캔을 썼다.
+각 PNG 는 체크리스트 형식(BaseColor sRGB · ORM · Normal OpenGL · Emissive sRGB)으로 다시 묶거나 베이크한 것이다.
+용암 껍질 판 사이 빛나는 틈 · 현무암 기공 · 거북등 갈라짐 · 유황 · 불씨 · 재 먼지는 절차적으로 그렸다.
+지형 레이어의 <Layer>_Height.png 는 같은 원본의 변위(displacement) 맵을 0~1 로 편 것이다.
+
+Poly Haven (https://polyhaven.com, CC0)
+  rock_ground                 -> Volcanic_Ash_* (지형 레이어 — 검은 화산 흙 · 자갈)
+  gray_rocks                  -> Aa_Clinker_* (지형 레이어 — 아아 용암의 날카로운 자갈), Aa_Clinker_Pile_A(베이크)
+  dark_rock_02                -> 현무암 엄폐물(베이크, 섞음)
+  tiger_rock                  -> Hornito_A (산화된 분석, 베이크)
+  red_laterite_soil_stones    -> Scoria_Rubble_A (베이크)
+  tree_bark_03                -> Tree_Charred_Bark_* (숯으로 다시 칠함)
+
+ambientCG (https://ambientcg.com, CC0)
+  Rock035                     -> Basalt_Rock_* (지형 레이어 — 검푸른 현무암), 현무암 기둥 · 쓰러진 기둥(베이크)
+  Rock031                     -> 용암 바위 · 화산탄 · 앞자락 · 아치 · 분석 굴뚝 · 껍질 판(베이크)
+  Lava001                     -> Lava_Crust_* (지형 레이어 — 빛을 끈 파호이호이 껍질), Lava_Flow_* (떠다니는 껍질 판), 용암 바위(베이크, 섞음)
+  Lava002                     -> Lava_Lake_* (굳어 가는 껍질 · 틈의 불빛)
+  Lava005                     -> Lava_Flow_* · Lava_Lake_* (녹은 용암 · 발광)
+  Foliage002                  -> Grass_Ash_* (재 덮인 마른 풀)
+
+받았으나 지금은 쓰지 않음: gravelly_sand · terrain_red_01 · burned_ground_01 · rusty_metal_04 · metal_plate_02 · volcanic_rock_tiles ·
+  volcanic_herringbone_01 · rock_05 · seaside_rock · dark_rock · Lava003 · Lava004 · PaintedMetal016
+  (v1 의 포장 길 · 착륙장 표시 재질은 10-27 사용자 «티 나는 도로 · 인공 건축물 말고» 로 뺐다)

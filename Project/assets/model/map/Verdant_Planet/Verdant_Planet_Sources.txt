@@ -1,0 +1,27 @@
+Verdant_Planet — 원본 텍스처 출처 (모두 CC0 1.0, 저작자 표시 의무 없음)
+
+형상(지형 · 나무 · 덤불 · 고사리 · 풀 · 꽃 · 바위 · 통나무)은 블렌더 스크립트로 직접 만들었고,
+표면 사진만 아래 CC0 스캔을 썼다. 각 PNG 는 체크리스트 형식(BaseColor sRGB · ORM · Normal OpenGL)으로 다시 묶거나 베이크한 것이다.
+지형 레이어의 <Layer>_Height.png 는 같은 원본의 변위(displacement) 맵을 0~1 로 편 것이다.
+
+Poly Haven (https://polyhaven.com, CC0)
+  forest_leaves_04      -> Forest_Floor_* (지형 레이어)
+  lichen_rock           -> Rock_Cliff_* (지형 레이어), Rock_Outcrop_A_*, Rock_Slab_A_* (베이크)
+  forest_ground_04      -> Dirt_Trail_* (지형 레이어 · 오솔길)
+  jolcham_oak_bark_01   -> Tree_Oak_Bark_*, Log_Fallen_A_* (베이크)
+  tree_bark_03          -> Tree_Beech_Bark_*
+  pine_bark             -> Tree_Pine_Bark_*
+  mossy_rock            -> Rock_Boulder_A/B_*, Rock_Stones_A_* (베이크)
+
+ambientCG (https://ambientcg.com, CC0)
+  Grass004              -> Grass_Meadow_* (지형 레이어)
+  LeafSet016            -> Tree_Oak_Leaf_* (잎 덩어리 렌더)
+  LeafSet024            -> Tree_Beech_Leaf_* (잎 덩어리 렌더)
+  LeafSet022            -> Bush_Broadleaf_* (잎 덩어리 렌더)
+  LeafSet026            -> Fern_* (고사리 잎 렌더)
+  Foliage001            -> Grass_Clump_*, Flower_Daisy_* (줄기 · 잎)
+  Foliage008            -> Grass_Tall_*
+  Foliage007            -> Grass_Wild_*
+  FlowerSet001          -> Flower_Daisy_* (꽃)
+
+솔잎(Tree_Pine_Leaf)은 원본 사진 없이 형상으로 만들어 렌더했다.
