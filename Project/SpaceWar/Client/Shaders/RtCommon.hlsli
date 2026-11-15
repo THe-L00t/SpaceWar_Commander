@@ -28,7 +28,9 @@ struct RtMaterial
 	float  transmission;      float ior;              float thickness;     float attenuationDistance;
 	float3 attenuationColor;  float alphaCutoff;      // 2026-10-28 — 알파 마스크 기준(glTF alphaCutoff). 0 = 마스크 아님
 	// 2026-10-29 — 물가 페이드 폭(m, 0 = 안 함). Transparent.hlsl PSIce ⑥ (GRenderer::SetMaterialEdgeFade)
-	float  edgeFade;          float3 _pad2;
+	float  edgeFade;
+	// 2026-11-15 — 재질 AO(glTF strength, 0 = 없음, 예전 _pad2.x). AO = textures.z(Roughness · ORM)의 R (RtSurface.hlsli)
+	float  occlusionStrength; float2 _pad2;
 };
 
 // TLAS 인스턴스 표 — 인스턴스 순번(InstanceIndex / CandidateInstanceIndex)으로 찾는다. 프레임마다 다시 채운다.

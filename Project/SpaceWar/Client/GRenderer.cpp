@@ -351,7 +351,11 @@ namespace swc {
 		float    transmission;  float ior;  float thickness;  float attenuationDistance;
 		XMFLOAT3 attenuationColor; float alphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님), 예전 pad2 자리
 		// 2026-10-29 — 물가 페이드 폭(m, 0 = 안 함). [7] 반투명 패스가 둘레의 땅(면 위로 올라온 표면) 비율로 옅게 한다(SetMaterialEdgeFade)
-		float    edgeFade;      float pad2[3];
+		float    edgeFade;
+		// 2026-11-15 — 재질 AO(glTF occlusionTexture.strength, 0 = 없음, 예전 pad2[0] 자리). AO = textures[2](Roughness)의 R.
+		//  RT 히트(반사 · GI · 반투명)가 맞은 점의 주변광에만 곱한다(RtSurface.hlsli FetchHitSurface — 래스터 GB0.a 와 같은 규칙)
+		float    occlusionStrength;
+		float    pad2[2];
 	};
 	static_assert(sizeof(RtMaterialGpu) == 144, "RtMaterial 은 144바이트 (9단계 128 → 10-29 물가 페이드 144)");
 	//  인스턴스 표: TLAS 인스턴스 순번(InstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
@@ -527,7 +531,8 @@ namespace swc {
 	{
 		XMFLOAT4 baseColor;
 		XMFLOAT3 emissive; float roughness;
-		float metallic; uint32_t hasNormalMap; float alphaCutoff; float pad;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
+		float metallic; uint32_t hasNormalMap; float alphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
+		float occlusionStrength;   // 2026-11-15 — 재질 AO(glTF strength, 0 = 없음, 예전 pad 자리). AO = Roughness 슬롯(ORM)의 R
 	};
 	static_assert(sizeof(MaterialConstants) == 12 * sizeof(uint32_t));
 
@@ -859,7 +864,7 @@ namespace swc {
 		//  (5단계 후속 — GB4 모션 벡터도 이 배열에 넣었다. 처음엔 셰이더 레지스터 번호를 안 밀려고 따로 들었는데,
 		//   그러면 생성 · RTV · SRV · PSO 형식 · 배리어마다 GB4 만 따로 챙겨야 하고 이 «hlsli 표와 같다» 규칙도 깨졌다)
 		static constexpr DXGI_FORMAT kGBufferFormats[GbCount] = {
-			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 (a 안 씀)
+			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 · a 재질 AO (2026-11-03)
 			DXGI_FORMAT_R16G16_SNORM,          // GB1 월드 법선 — 팔면체 인코딩
 			DXGI_FORMAT_R8G8B8A8_UNORM,        // GB2 r 거칠기 · g 금속성
 			DXGI_FORMAT_R11G11B10_FLOAT,       // GB3 자체발광
@@ -4433,6 +4438,10 @@ namespace swc {
 		// ── 알파 마스크 (2026-10-28) — glTF MASK: 알파 < alphaCutoff 면 없는 것. 기준이 0 이하면 다 남으므로 마스크로 다루지 않는다 ──
 		material.alphaMask = data.alphaMask && std::isfinite(data.alphaCutoff) && data.alphaCutoff > 0.0f;
 		material.constants.alphaCutoff = material.alphaMask ? data.alphaCutoff : 0.0f;
+		// ── 재질 AO (2026-11-15) — AO 는 Roughness 슬롯(ORM)의 R. 그 슬롯이 폴백(흰색)이면 끈다 ──
+		material.constants.occlusionStrength =
+			(textures[static_cast<size_t>(TextureSlot::Roughness)] != kInvalidTexture && std::isfinite(data.occlusionStrength))
+			? std::clamp(data.occlusionStrength, 0.0f, 1.0f) : 0.0f;
 		material.textures = impl->WriteMaterialTextures(impl->materials.size(), resolved);
 
 		// ── 투과 → 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2026-10-27 렌더 2단계) ──
@@ -4482,6 +4491,7 @@ namespace swc {
 			row.attenuationDistance = std::isfinite(data.attenuationDistance) ? data.attenuationDistance : 0.0f;
 			row.attenuationColor = data.attenuationColor;
 			row.alphaCutoff = material.constants.alphaCutoff;   // 2026-10-28 — 레이 후보의 알파 판정(RtCommon.hlsli AlphaMaskedOut)
+			row.occlusionStrength = material.constants.occlusionStrength;   // 2026-11-15 — 재질 AO(래스터와 같은 값)
 			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
