@@ -100,6 +100,80 @@ namespace swc {
 	void Network::OnPlayerLeave(const Shared::PlayerLeavePacket* p)
 	{
 		remotes.erase(p->playerId);
+		equips.erase(p->playerId);   // 2026-11-15 — 나간 사람의 총도 지운다(그 총은 떨어지지 않는다 — 버리기 키만)
+	}
+
+	// ── 총 줍기 · 떨구기 (2026-11-15, Shared/GameLogic/WeaponPickup.h) ──
+	//  ★ 서버가 정한 것만 들고 있는다. 내가 든 총도 서버가 WeaponEquip 으로 알려 줘야 바뀐다(줍기 요청만으로는 안 바뀐다).
+	void Network::OnWeaponEquip(const Shared::WeaponEquipPacket* p)
+	{
+		const Shared::WeaponType type = Shared::IsWeaponType(Shared::WeaponType(p->weaponType))
+			? Shared::WeaponType(p->weaponType) : Shared::WeaponType::None;
+		if (p->playerId == myId)
+		{
+			myWeapon = type;
+			return;
+		}
+		if (type == Shared::WeaponType::None) equips.erase(p->playerId);
+		else equips[p->playerId] = type;
+	}
+
+	void Network::OnGroundWeaponSpawn(const Shared::GroundWeaponSpawnPacket* p)
+	{
+		if (!Shared::IsWeaponType(Shared::WeaponType(p->weaponType))) return;
+		GroundWeaponEvent e;
+		e.kind = GroundWeaponEvent::Kind::Spawn;
+		e.groundId = p->groundId;
+		e.type = Shared::WeaponType(p->weaponType);
+		std::memcpy(e.startPos, p->startPos, sizeof(e.startPos));
+		std::memcpy(e.startAxisY, p->startAxisY, sizeof(e.startAxisY));
+		std::memcpy(e.startAxisZ, p->startAxisZ, sizeof(e.startAxisZ));
+		std::memcpy(e.restPos, p->restPos, sizeof(e.restPos));
+		std::memcpy(e.restAxisY, p->restAxisY, sizeof(e.restAxisY));
+		std::memcpy(e.restAxisZ, p->restAxisZ, sizeof(e.restAxisZ));
+		e.fallSeconds = p->fallSeconds;
+		groundEvents.push_back(e);
+	}
+
+	void Network::OnGroundWeaponRemove(const Shared::GroundWeaponRemovePacket* p)
+	{
+		GroundWeaponEvent e;
+		e.kind = GroundWeaponEvent::Kind::Remove;
+		e.groundId = p->groundId;
+		groundEvents.push_back(e);
+	}
+
+	Shared::WeaponType Network::WeaponOf(uint32_t playerId) const
+	{
+		if (playerId == myId) return myWeapon;
+		const auto found = equips.find(playerId);
+		return found == equips.end() ? Shared::WeaponType::None : found->second;
+	}
+
+	void Network::TakeGroundEvents(std::vector<GroundWeaponEvent>& out)
+	{
+		out.clear();
+		out.swap(groundEvents);
+	}
+
+	void Network::SendPickup(uint8_t source, uint32_t id)
+	{
+		if (!connected) return;
+		Shared::WeaponPickupPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::WeaponPickup;
+		pkt.source = source;
+		pkt.id = id;
+		SendRaw(&pkt, (int)sizeof(pkt));
+	}
+
+	void Network::SendDrop()
+	{
+		if (!connected) return;
+		Shared::WeaponDropPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::WeaponDrop;
+		SendRaw(&pkt, (int)sizeof(pkt));
 	}
 
 	// 서버가 판정한 체력. 클라는 규칙을 모르고 받은 값만 들고 있는다.
@@ -217,6 +291,12 @@ namespace swc {
 		npcs.clear();
 		hasState = false;
 		hasRespawn = false;
+		// 2026-11-15 — 옛 맵의 남이 든 총 · 바닥 총을 지운다. 내 총은 맵을 바꿔도 들고 간다(서버가 새 맵에서 다시 알려 준다).
+		equips.clear();
+		GroundWeaponEvent clear;
+		clear.kind = GroundWeaponEvent::Kind::Clear;
+		groundEvents.clear();
+		groundEvents.push_back(clear);
 	}
 
 	bool Network::TakeRespawn(float outPos[3])
@@ -267,7 +347,9 @@ namespace swc {
 			const bool worldScoped =
 				pHead->type == Shared::PacketType::PlayerMove || pHead->type == Shared::PacketType::NpcState ||
 				pHead->type == Shared::PacketType::NpcDespawn || pHead->type == Shared::PacketType::PlayerState ||
-				pHead->type == Shared::PacketType::PlayerNeutralized;
+				pHead->type == Shared::PacketType::PlayerNeutralized ||
+				pHead->type == Shared::PacketType::WeaponEquip || pHead->type == Shared::PacketType::GroundWeaponSpawn ||
+				pHead->type == Shared::PacketType::GroundWeaponRemove;   // 2026-11-15 총 — 옛 맵 것은 버린다
 			if (worldScoped && joinState == JoinState::Joining)
 			{
 				nOffset += nSize;
@@ -319,6 +401,21 @@ namespace swc {
 			case Shared::PacketType::WorldJoined:
 				if (nSize == (int)sizeof(Shared::WorldJoinedPacket))
 					OnWorldJoined((const Shared::WorldJoinedPacket*)pHead);
+				break;
+
+			case Shared::PacketType::WeaponEquip:
+				if (nSize == (int)sizeof(Shared::WeaponEquipPacket))
+					OnWeaponEquip((const Shared::WeaponEquipPacket*)pHead);
+				break;
+
+			case Shared::PacketType::GroundWeaponSpawn:
+				if (nSize == (int)sizeof(Shared::GroundWeaponSpawnPacket))
+					OnGroundWeaponSpawn((const Shared::GroundWeaponSpawnPacket*)pHead);
+				break;
+
+			case Shared::PacketType::GroundWeaponRemove:
+				if (nSize == (int)sizeof(Shared::GroundWeaponRemovePacket))
+					OnGroundWeaponRemove((const Shared::GroundWeaponRemovePacket*)pHead);
 				break;
 
 			default:

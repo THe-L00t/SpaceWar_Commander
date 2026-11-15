@@ -109,6 +109,9 @@
     <Filter Include="클래스 목록\World">
       <UniqueIdentifier>{5e8b2c47-91d3-4a6f-b05e-7c3d19a84f62}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Weapon">
+      <UniqueIdentifier>{c7e4a91b-3d58-4f20-8b6e-15a9d07f3c42}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Protocol.h">
@@ -171,6 +174,12 @@
     <ClInclude Include="GameLogic\PlayerMovement.h">
       <Filter>클래스 목록\GameLogic</Filter>
     </ClInclude>
+    <ClInclude Include="GameLogic\WeaponShowcase.h">
+      <Filter>클래스 목록\Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="GameLogic\WeaponPickup.h">
+      <Filter>클래스 목록\Weapon</Filter>
+    </ClInclude>
     <ClInclude Include="Physics\PhysicsCalculator.h">
       <Filter>클래스 목록\PhysicsCalculator</Filter>
     </ClInclude>
@@ -203,6 +212,9 @@
     </ClInclude>
     <ClInclude Include="GameObject\NPC.h">
       <Filter>클래스 목록\NPC</Filter>
+    </ClInclude>
+    <ClInclude Include="GameObject\Weapon.h">
+      <Filter>클래스 목록\Weapon</Filter>
     </ClInclude>
     <ClInclude Include="AI\BehaviorTree.h">
       <Filter>클래스 목록\BehaviorTree</Filter>
@@ -278,6 +290,12 @@
     <ClCompile Include="GameLogic\PlayerMovement.cpp">
       <Filter>클래스 목록\GameLogic</Filter>
     </ClCompile>
+    <ClCompile Include="GameLogic\WeaponShowcase.cpp">
+      <Filter>클래스 목록\Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="GameLogic\WeaponPickup.cpp">
+      <Filter>클래스 목록\Weapon</Filter>
+    </ClCompile>
     <ClCompile Include="Physics\PhysicsCalculator.cpp">
       <Filter>클래스 목록\PhysicsCalculator</Filter>
     </ClCompile>
@@ -307,6 +325,9 @@
     </ClCompile>
     <ClCompile Include="GameObject\NPC.cpp">
       <Filter>클래스 목록\NPC</Filter>
+    </ClCompile>
+    <ClCompile Include="GameObject\Weapon.cpp">
+      <Filter>클래스 목록\Weapon</Filter>
     </ClCompile>
     <ClCompile Include="AI\BehaviorTree.cpp">
       <Filter>클래스 목록\BehaviorTree</Filter>

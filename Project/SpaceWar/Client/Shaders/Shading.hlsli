@@ -12,9 +12,16 @@
 //    · 확산은 람베르트 알베도/π × 조도. 예전 식(알베도 × NdotL × 0.85)은 1/π 를 빼고 태양을 0.85 로 둔 것이었다.
 //      대기 위 태양 조도를 π 로 두면 확산 밝기는 거의 같고, 정반사 하이라이트만 π 배 — 예전 비율이 틀렸던 것을 바로잡는다.
 //    · 주변광은 «조도 / π» (= 알베도만 곱하면 확산 휘도)로 받는다. 하늘 조도 텍스처([6]) · GI 프로브([4c])가 이 단위다.
+//
+//  ★ 2026-11-14 환경 반사 세기 F_env 를 거칠기에 따라 바꾼다 (총 텍스처 얼룩 고침 — 노션 «총 텍스처 얼룩» 6절)
+//    예전: F_env = Schlick(F0, N·V) — 완전 거울 값이라 거칠기와 무관했다.
+//    지금: F_env = F0 · A + B — 분할 합 환경 BRDF 표(EnvBrdfLut.hlsli)를 거칠기 · N·V 로 읽는다.
+//          거칠수록 · 비스듬할수록 세기가 실제처럼 줄어든다(예: 비금속 78° — 거칠기 0 → 0.35, 0.3 → 0.20, 0.4 → 0.14).
 // ============================================================
 #ifndef SHADING_HLSLI
 #define SHADING_HLSLI
+
+#include "EnvBrdfLut.hlsli"
 
 // 하늘 · GI 가 없을 때(바인드리스 미지원 장치 · 배경 패스)의 주변광 — 조도 / π. 예전 앰비언트 0.15 와 같은 값이다.
 static const float  kAmbient  = 0.15;
@@ -27,6 +34,22 @@ static const float kPi = 3.14159265;
 float3 FresnelSchlick(float3 F0, float cosTheta)
 {
 	return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// 2026-11-14 — 분할 합 환경 BRDF (A, B). 반사 세기 = F0 · A + B.
+//  표(EnvBrdfLut.hlsli)를 쌍선형으로 읽는다: 열 = √(N·V), 행 = 거칠기. 상수 배열 4번 읽기.
+float2 EnvBrdf(float rough, float NdotV)
+{
+	const float x  = sqrt(saturate(NdotV)) * float(kEnvBrdfCols - 1);
+	const float y  = saturate(rough) * float(kEnvBrdfRows - 1);
+	const uint  x0 = min(uint(x), kEnvBrdfCols - 2);
+	const uint  y0 = min(uint(y), kEnvBrdfRows - 2);
+	const float fx = x - float(x0);
+	const float fy = y - float(y0);
+	const uint  i  = y0 * kEnvBrdfCols + x0;
+	const float2 top    = lerp(kEnvBrdfLut[i],                kEnvBrdfLut[i + 1],                fx);
+	const float2 bottom = lerp(kEnvBrdfLut[i + kEnvBrdfCols], kEnvBrdfLut[i + kEnvBrdfCols + 1], fx);
+	return lerp(top, bottom, fy);
 }
 
 // GGX 정반사 BRDF — 직접광(델타 광원)용.
@@ -57,7 +80,7 @@ struct DirectLighting
 	float3 diffuse;    // 태양 확산
 	float3 specular;   // 태양 정반사 (GGX)
 	float3 ambient;    // 주변광 확산 — 하늘 조도([6]) 또는 GI 프로브([4c])
-	float3 F_env;      // 환경 프레넬 (N·V 기준) — 반사 레이 결과에 곱할 값
+	float3 F_env;      // 환경 반사 세기 (재질 · 거칠기 · N·V — 분할 합 환경 BRDF) — 반사 그림(RT · 흐린 환경)에 곱할 값
 };
 
 //  sunIlluminance  = 땅에 닿는 태양 조도(RGB). 해가 지평선 아래면 0.
@@ -81,8 +104,9 @@ DirectLighting EvaluateSunAndAmbient(float3 albedo, float3 N, float3 V, float ro
 	o.specular = SpecularGGX(NdotL, NdotV, NdotH, rough, F_dir) * NdotL * sunIlluminance;
 	o.diffuse  = (1.0 - F_dir) * (1.0 - metallic) * albedo / kPi * NdotL * sunIlluminance;   // 6단계 — 람베르트 1/π
 
-	// ② 환경 프레넬 — 완전 거울이므로 반각 H = N, 즉 N·V 기준
-	o.F_env = FresnelSchlick(F0, NdotV);
+	// ② 환경 반사 세기 — 2026-11-14 분할 합 환경 BRDF (예전: 완전 거울 가정의 Schlick(F0, N·V) — 거칠기 무관)
+	const float2 envAB = EnvBrdf(rough, NdotV);
+	o.F_env = F0 * envAB.x + envAB.y;
 
 	// 앰비언트는 반구 전체에서 오는 빛이라 각도 의존 F 로 나누면 안 된다.
 	// (1-F) 로 나누면 grazing 에서 확산이 0이 되어 먼 지형이 색을 잃는다.

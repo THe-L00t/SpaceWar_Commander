@@ -43,6 +43,7 @@ namespace swc {
 
 		float distance = 6.0f;
 		float shoulder = 1.5f;
+		float focusHeight = 1.8f;   // 주시점 높이(몸통 중심 위) — 조준하면 낮아진다(2026-11-14, Camera.cpp kAimFocusHeight)
 		float fov = 1.05f;
 
 		Vec3d forward{ 0.0, 0.0, 1.0 };   // 접평면 단위벡터

@@ -22,6 +22,8 @@ namespace Shared {
 	// ── 전투 규칙 ───────────────────────────────────────────
 	//  교수님 지시(2026-08-26 회의록): 좌클릭 사격 / 피격 시 HP 감소 /
 	//  HP 0 이면 시작 위치로 텔레포트(HP 만땅) / NPC 는 10초 뒤 리스폰.
+	//  ★ 2026-11-15 — 사격 판정은 든 총의 표(Shared/GameObject/Weapon.cpp kSpecs: 발 간격 · 피해 · 사거리)를 쓴다.
+	//    아래 kShotDamage · kFireRange · kFireInterval 은 더 이상 판정에 쓰지 않는다(권총 줄과 같은 값 — 기록으로 남김).
 	inline constexpr float kMaxHealth = 100.0f;    // 시작·회복 체력
 	inline constexpr float kShotDamage = 25.0f;    // 한 발 (4발이면 쓰러진다)
 	inline constexpr float kFireRange = 300.0f;    // 사거리 (m). 지평선 125m 보다 넉넉히

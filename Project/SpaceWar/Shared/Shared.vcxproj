@@ -75,6 +75,8 @@
     <ClInclude Include="Terrain\PlanetSurface.h" />
     <ClInclude Include="GameLogic\GameLogic.h" />
     <ClInclude Include="GameLogic\PlayerMovement.h" />
+    <ClInclude Include="GameLogic\WeaponShowcase.h" />
+    <ClInclude Include="GameLogic\WeaponPickup.h" />
     <ClInclude Include="Physics\PhysicsCalculator.h" />
     <ClInclude Include="Physics\CollisionWorld.h" />
     <ClInclude Include="GameObject\Object.h" />
@@ -83,6 +85,7 @@
     <ClInclude Include="GameObject\Player.h" />
     <ClInclude Include="GameObject\OtherPlayer.h" />
     <ClInclude Include="GameObject\NPC.h" />
+    <ClInclude Include="GameObject\Weapon.h" />
     <ClInclude Include="AI\BehaviorTree.h" />
     <ClInclude Include="AI\BehaviorStatus.h" />
     <ClInclude Include="AI\BehaviorContext.h" />
@@ -121,6 +124,8 @@
     <ClCompile Include="Terrain\PlanetSurface.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />
     <ClCompile Include="GameLogic\PlayerMovement.cpp" />
+    <ClCompile Include="GameLogic\WeaponShowcase.cpp" />
+    <ClCompile Include="GameLogic\WeaponPickup.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />
     <ClCompile Include="Physics\CollisionWorld.cpp" />
     <ClCompile Include="World\Placement.cpp" />
@@ -131,6 +136,7 @@
     <ClCompile Include="GameObject\Player.cpp" />
     <ClCompile Include="GameObject\OtherPlayer.cpp" />
     <ClCompile Include="GameObject\NPC.cpp" />
+    <ClCompile Include="GameObject\Weapon.cpp" />
     <ClCompile Include="AI\BehaviorTree.cpp" />
     <ClCompile Include="AI\Node\BehaviorNode.cpp" />
     <ClCompile Include="AI\Node\CompositeNode.cpp" />

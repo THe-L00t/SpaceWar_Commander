@@ -8,7 +8,7 @@
 //  합성 식 — 구조도의 각 단계가 들어올 자리를 이름으로 남긴다.
 //    color = (태양 확산 + 태양 정반사) × shadow   ← [4a] RT 그림자 (2단계에서 연결 — RtShadow.hlsl 의 RGB 가시도)
 //          + 앰비언트 확산 × ao                    ← [4c] GI 프로브 · [2] AO (아직 없음 → 상수 앰비언트, 1)
-//          + F_env × reflection                    ← [4b] 반사 (아직 없음 → 0)
+//          + F_env × reflection                    ← [4b] 반사 (아직 없음 → 0) — 2026-11-14 부터 RT · 흐린 환경 섞기(아래)
 //          + 자체발광
 //
 //  ★ 2026-10-27 렌더 2단계 — shadow 를 그림자 마스크(지금 t6)에서 읽는다.
@@ -32,6 +32,15 @@
 //
 //  ★ 2026-10-27 렌더 8단계 — [2] AO (t13). 간접 확산(주변광)에만 곱한다 — 직접광 · 반사에는 곱하지 않는다.
 //    곱하기 전에 GTAO 다중 반사 보정(Jimenez 외 2016 식 10)을 건다: 밝은 표면은 가려진 곳에서도 서로 튕긴 빛이 남는다.
+//
+//  ★ 2026-11-14 반사 = F_env × [ w × RT 반사 + (1 − w) × 흐린 환경 반사 ]   (총 텍스처 얼룩 고침 — 노션 «총 텍스처 얼룩» 6절)
+//    예전: 거칠기 0.4(kReflectionMaxRoughness) 이상은 반사 0 · 아래는 RT 반사 — 문턱을 사이에 둔 Meshy 거칠기(≈ 0.43)가 얼룩졌다.
+//    · F_env  = 분할 합 환경 BRDF(Shading.hlsli EnvBrdf) — 재질 · 거칠기 · 보는 각도로 정해지는 세기
+//    · w      = 거칠기 gReflectionFadeStart(0.3) 에서 1 → gReflectionMaxRoughness(0.4) 에서 0, 선형. RT 가 안 돈 프레임은 0
+//    · 흐린 환경 반사 = GI 프로브(못 쓰면 하늘 조도)를 반사 방향으로 읽은 «조도/π» × AO
+//      (작은 틈의 가림은 프로브가 모르므로 AO 를 곱한다. RT 반사는 레이가 가림을 이미 본다.)
+//      w = 1 인 픽셀(거칠기 0.3 이하 · RT 켜짐)은 프로브를 읽지 않는다.
+//    AO 가 «반사에는 곱하지 않는다» 는 8단계 줄은 RT 반사 몫에만 그대로다.
 // ============================================================
 
 #include "Shading.hlsli"
@@ -50,7 +59,8 @@ cbuffer LightingCB : register(b0)
 	uint     gShadowEnabled;       // 1 = 이번 프레임에 [4a] RT 그림자가 돌았다
 	uint     gReflectionEnabled;   // 1 = 이번 프레임에 [4b] RT 반사가 돌았다 (4단계)
 	uint     gAoEnabled;           // 8단계 — 1 = 이번 프레임에 [2] AO 가 돌았다 (t13 을 읽는다)
-	uint2    _pad2;
+	float    gReflectionMaxRoughness;   // 2026-11-14 — RT 반사 레이 문턱(이 거칠기부터 RT 몫 0). 예전 빈 자리 _pad2
+	float    gReflectionFadeStart;      // 2026-11-14 — 이 거칠기부터 RT 몫을 줄이기 시작(여기까지 RT 몫 1)
 	float3   gSunIlluminance;      // 6단계 — 땅에 닿는 태양 조도(RGB)
 	uint     gSkyEnabled;          // 6단계 — 1 = 하늘 조도 텍스처가 이번 프레임 값이다
 	ProbeVolume gProbeVolume;      // 7단계 — [4c] GI 프로브 가까운 겹 (enabled = 0 이면 못 씀)
@@ -117,12 +127,35 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	// [4a] RT 그림자 — 돌지 않은 프레임이면 1 (그림자 없음)
 	const float3 shadow = (gShadowEnabled != 0) ? gShadow[pixel].rgb : float3(1.0, 1.0, 1.0);
 
-	// [4b] RT 반사 — 돌지 않은 프레임이면 0 (반사 없음 = 3단계까지와 같은 화면)
-	const float3 reflection = (gReflectionEnabled != 0) ? gReflection[pixel].rgb : float3(0.0, 0.0, 0.0);
-
-	// [2] AO — 8단계. 돌지 않은 프레임이면 1 (가림 없음)
+	// [2] AO — 8단계. 돌지 않은 프레임이면 1 (가림 없음). 2026-11-14 흐린 환경 반사가 같이 쓰므로 반사보다 먼저 읽는다
 	const float  ao = (gAoEnabled != 0) ? gAo[pixel] : 1.0;
 	const float3 aoMultiBounce = GtaoMultiBounce(ao, albedo);
+
+	// [4b] RT 반사 — 돌지 않은 프레임이면 0 (디버그 뷰 5 는 이 값 그대로)
+	const float3 reflectionRt = (gReflectionEnabled != 0) ? gReflection[pixel].rgb : float3(0.0, 0.0, 0.0);
+
+	// 2026-11-14 — RT 몫 w: 거칠기 fadeStart(0.3) 에서 1 → maxRoughness(0.4) 에서 0, 선형. RT 가 안 돈 프레임은 0
+	const float reflectionWeight = (gReflectionEnabled != 0)
+		? saturate((gReflectionMaxRoughness - rough) / max(gReflectionMaxRoughness - gReflectionFadeStart, 1.0e-4))
+		: 0.0;
+
+	// 2026-11-14 — 흐린 환경 반사: 프로브(가까운 겹 → 먼 겹) → 하늘 조도 → 상수 순서, 반사 방향으로 읽는다. × AO
+	float3 reflectionEnv = float3(0.0, 0.0, 0.0);
+	if (reflectionWeight < 1.0)
+	{
+		const float3 R = reflect(-V, N);
+		float envProbeWeight = 0.0;
+		uint  envProbeLayer = 2;
+		reflectionEnv = SampleProbeLayersInDirection(gProbeIrradiance, gProbeDistance, gProbeStates, gClampSampler,
+			gProbeVolume, gProbeVolumeFar, P, N, V, R, envProbeWeight, envProbeLayer);
+		if (envProbeWeight <= 0.0)
+			reflectionEnv = (gSkyEnabled != 0) ? SampleSkyIrradiance(gSkyIrradiance, gSkySampler, R)
+			                                   : float3(kAmbient, kAmbient, kAmbient);
+		reflectionEnv *= ao;
+	}
+
+	// 반사 그림 = w × RT + (1 − w) × 흐린 환경 — 세기는 F_env 가 정한다
+	const float3 reflection = lerp(reflectionEnv, reflectionRt, reflectionWeight);
 
 	float3 color = (lit.diffuse + lit.specular) * shadow
 	             + lit.ambient * aoMultiBounce
@@ -135,8 +168,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	case 1:  color = albedo;                         break;
 	case 2:  color = N * 0.5 + 0.5;                  break;
 	case 3:  color = shadow;                         break;   // [4a] 태양 가시도 (흰 = 빛 받음, 검정 = 그림자)
-	case 4:  color = lit.F_env;                      break;
-	case 5:  color = reflection;                     break;   // [4d] 노이즈 제거 후 반사 색 (F 곱하기 전)
+	case 4:  color = lit.F_env;                      break;   // 2026-11-14 — 환경 반사 세기(분할 합 환경 BRDF, 거칠기 반영)
+	case 5:  color = reflectionRt;                   break;   // [4d] 노이즈 제거 후 RT 반사 색 (F 곱하기 전 · 흐린 환경 섞기 전)
 	case 6:                                                   // 5단계 — 모션 벡터: 픽셀 단위 |x| → R, |y| → G, 8 픽셀 = 1
 		color = float3(abs(gMotion[pixel] * float2(gSize)) / 8.0, 0.0);
 		break;
@@ -144,7 +177,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 		color = (gReflectionEnabled != 0) ? gReflectionRaw[pixel].rgb : float3(0.0, 0.0, 0.0);
 		break;
 	case 8:  color = lit.specular;                   break;
-	case 9:  color = lit.F_env * reflection;         break;   // 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값)
+	case 9:  color = lit.F_env * reflection;         break;   // 반사 몫 (F 곱한 뒤 — 실제로 더해지는 값. 2026-11-14 부터 RT · 흐린 환경 섞은 것)
 	case 10: color = float3(rough, metallic, 0.0);   break;
 	case 11: color = ambientEOverPi;                 break;   // 6단계 — 주변 조도 / π (7단계부터 GI 프로브, 못 쓰면 하늘)
 	case 12:                                                  // 7단계 — 프로브를 썼나. 10-28: 초록 가까운 겹 · 파랑 먼 겹 · 빨강 하늘로 대신

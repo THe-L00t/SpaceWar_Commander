@@ -96,8 +96,10 @@ float2 ProbeAtlasUv(uint index, float3 dir, uint texels, uint probesPerRow, floa
 // P(법선 N, 눈 쪽 V) 주변 프로브 8개를 섞어 «조도 / π» 를 돌려준다. RTXGI DDGIGetVolumeIrradiance 와 같은 가중치:
 //   삼선형 × 감싸기 음영((cos+1)/2)² + 0.2 × 체비쇼프 가시성³(최소 0.05) × 작은 가중치 눌러 줄이기(0.2 아래)
 //  쓸 수 있는 프로브가 하나도 없으면(격자 밖 · 아직 안 채워짐 · 다 벽 속) weightSum = 0 → 부른 쪽이 하늘 조도로 대신한다.
-float3 SampleProbes(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
-	SamplerState clampSampler, ProbeVolume v, float3 P, float3 N, float3 V, out float weightSum)
+//  ★ 2026-11-14 lookupDir — 아틀라스를 읽는 방향만 따로 받는다(위치 띄우기 · 가중치는 표면 법선 N 그대로).
+//    라이팅의 «흐린 환경 반사» 가 반사 방향 R 로 읽는다. 조도 프로브라 코사인 로브만큼 흐린 값이다.
+float3 SampleProbesInDirection(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
+	SamplerState clampSampler, ProbeVolume v, float3 P, float3 N, float3 V, float3 lookupDir, out float weightSum)
 {
 	const float3 biasedP = P + (N * v.normalBias + V * v.viewBias) * v.spacing;
 	const float3 cellF   = ProbeGridCoord(biasedP, v);   // 2026-10-28 — 지면에 맞춘 격자 좌표
@@ -146,16 +148,24 @@ float3 SampleProbes(Texture2D<float4> irradiance, Texture2D<float2> distance, St
 		weight *= trilinear.x * trilinear.y * trilinear.z;
 
 		sum += weight * irradiance.SampleLevel(clampSampler,
-			ProbeAtlasUv(index, N, kProbeIrradianceTexels, v.probesPerRow, v.irradianceAtlasSize), 0).rgb;
+			ProbeAtlasUv(index, lookupDir, kProbeIrradianceTexels, v.probesPerRow, v.irradianceAtlasSize), 0).rgb;
 		weightSum += weight;
 	}
 	return weightSum > 0.0 ? sum / weightSum : float3(0.0, 0.0, 0.0);
 }
 
+// 법선 방향으로 읽는 보통의 조도 (2026-11-14 전과 같은 동작)
+float3 SampleProbes(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
+	SamplerState clampSampler, ProbeVolume v, float3 P, float3 N, float3 V, out float weightSum)
+{
+	return SampleProbesInDirection(irradiance, distance, states, clampSampler, v, P, N, V, N, weightSum);
+}
+
 // 2026-10-28 두 겹 — 가까운 겹을 먼저, 거기서 쓸 프로브가 없으면 먼 겹. 둘 다 없으면 weightSum = 0(부른 쪽이 하늘 조도).
 //  layer = 0 가까운 겹 · 1 먼 겹 · 2 둘 다 못 씀 (디버그 뷰 12 색).
-float3 SampleProbeLayers(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
-	SamplerState clampSampler, ProbeVolume nearV, ProbeVolume farV, float3 P, float3 N, float3 V,
+//  2026-11-14 — lookupDir 은 SampleProbesInDirection 과 같다.
+float3 SampleProbeLayersInDirection(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
+	SamplerState clampSampler, ProbeVolume nearV, ProbeVolume farV, float3 P, float3 N, float3 V, float3 lookupDir,
 	out float weightSum, out uint layer)
 {
 	weightSum = 0.0;
@@ -163,15 +173,23 @@ float3 SampleProbeLayers(Texture2D<float4> irradiance, Texture2D<float2> distanc
 	float3 e = float3(0.0, 0.0, 0.0);
 	if (nearV.enabled != 0)
 	{
-		e = SampleProbes(irradiance, distance, states, clampSampler, nearV, P, N, V, weightSum);
+		e = SampleProbesInDirection(irradiance, distance, states, clampSampler, nearV, P, N, V, lookupDir, weightSum);
 		if (weightSum > 0.0) { layer = 0; return e; }
 	}
 	if (farV.enabled != 0)
 	{
-		e = SampleProbes(irradiance, distance, states, clampSampler, farV, P, N, V, weightSum);
+		e = SampleProbesInDirection(irradiance, distance, states, clampSampler, farV, P, N, V, lookupDir, weightSum);
 		if (weightSum > 0.0) { layer = 1; return e; }
 	}
 	return float3(0.0, 0.0, 0.0);
+}
+
+// 법선 방향으로 읽는 보통의 두 겹 조도 (2026-11-14 전과 같은 동작)
+float3 SampleProbeLayers(Texture2D<float4> irradiance, Texture2D<float2> distance, StructuredBuffer<int4> states,
+	SamplerState clampSampler, ProbeVolume nearV, ProbeVolume farV, float3 P, float3 N, float3 V,
+	out float weightSum, out uint layer)
+{
+	return SampleProbeLayersInDirection(irradiance, distance, states, clampSampler, nearV, farV, P, N, V, N, weightSum, layer);
 }
 
 #endif
