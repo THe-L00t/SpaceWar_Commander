@@ -174,6 +174,9 @@
     <ClInclude Include="GameLogic\PlayerMovement.h">
       <Filter>클래스 목록\GameLogic</Filter>
     </ClInclude>
+    <ClInclude Include="GameLogic\ShotTrace.h">
+      <Filter>클래스 목록\GameLogic</Filter>
+    </ClInclude>
     <ClInclude Include="GameLogic\WeaponShowcase.h">
       <Filter>클래스 목록\Weapon</Filter>
     </ClInclude>
@@ -285,6 +288,9 @@
       <Filter>소스코드</Filter>
     </ClCompile>
     <ClCompile Include="GameLogic\GameLogic.cpp">
+      <Filter>클래스 목록\GameLogic</Filter>
+    </ClCompile>
+    <ClCompile Include="GameLogic\ShotTrace.cpp">
       <Filter>클래스 목록\GameLogic</Filter>
     </ClCompile>
     <ClCompile Include="GameLogic\PlayerMovement.cpp">

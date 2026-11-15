@@ -99,6 +99,9 @@ namespace swc {
 		void UpdateWeapons(float);     // 2026-11-15 — 바닥 총 소식 · 든 총 그리기 · 줍기 대상 · E 줍기 · G 떨구기
 		void UpdateFire(float);
 		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim);
+		// 2026-11-15 크로스헤어 맞추기 — 카메라 눈에서 화면 가운데(조준선)로 그은 선이 처음 닿는 곳(겨눈 점)을 찾아
+		//  총구에서 그 점으로 가는 방향을 돌려준다. 겨눌 것이 없으면 사거리 끝 점. range = 든 총의 사거리(m).
+		Vec3d AimDirection(const Vec3d& muzzle, double range) const;
 		void UpdateNetwork(float);
 		void RenderFrame();
 		void UpdateTitle(float);

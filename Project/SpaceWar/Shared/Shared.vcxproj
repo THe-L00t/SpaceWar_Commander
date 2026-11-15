@@ -77,6 +77,7 @@
     <ClInclude Include="GameLogic\PlayerMovement.h" />
     <ClInclude Include="GameLogic\WeaponShowcase.h" />
     <ClInclude Include="GameLogic\WeaponPickup.h" />
+    <ClInclude Include="GameLogic\ShotTrace.h" />
     <ClInclude Include="Physics\PhysicsCalculator.h" />
     <ClInclude Include="Physics\CollisionWorld.h" />
     <ClInclude Include="GameObject\Object.h" />
@@ -126,6 +127,7 @@
     <ClCompile Include="GameLogic\PlayerMovement.cpp" />
     <ClCompile Include="GameLogic\WeaponShowcase.cpp" />
     <ClCompile Include="GameLogic\WeaponPickup.cpp" />
+    <ClCompile Include="GameLogic\ShotTrace.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />
     <ClCompile Include="Physics\CollisionWorld.cpp" />
     <ClCompile Include="World\Placement.cpp" />

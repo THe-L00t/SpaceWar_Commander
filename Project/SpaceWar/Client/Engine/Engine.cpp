@@ -14,6 +14,7 @@
 #include "Client/Log.h"
 #include "Shared/Model/ModelSource.h"   // 행성 접지면을 파싱 결과(collected)로 만든다
 #include "Shared/GameLogic/WeaponShowcase.h"   // 총 진열 6개의 자리 · 충돌체 — 서버와 같은 식(2026-11-15)
+#include "Shared/GameLogic/ShotTrace.h"        // 한 발의 레이 — 크로스헤어 겨눈 점(서버 판정과 같은 함수, 2026-11-15)
 
 using namespace DirectX;
 
@@ -60,6 +61,11 @@ namespace
 	// 게이트가 «열렸다» 고 보는 여유(s) — 간격(0.2 s)을 프레임 dt 로 깎다 보면 부동소수 오차로 아주 조금 남아 한 프레임 늦게 열린다
 	//  (60 fps 에서 0.2 s 마다 누른 클릭이 버려져 초당 2.5발이 된다 — 시뮬레이션). 0.1 ms 는 사람 손으로는 차이가 없다(2026-11-15).
 	constexpr float kFireGateTolerance = 1.0e-4f;
+
+	// ── 크로스헤어 맞추기 (2026-11-15 사용자 «이제 크로스헤어에 맞도록 하는거 조절하자») ──
+	//  노션 「사격 시스템 설명」 4.1 의 ① — 눈 → 겨눈 점, 총구 → 겨눈 점(3인칭 슈터의 흔한 방식). Engine::AimDirection.
+	//  겨눈 점 찾기는 Shared::TraceShot(서버 판정과 같은 함수) — 지형 간격 · 좁히기 횟수도 거기(kShotTerrainStep · kShotTerrainRefine).
+	constexpr double kAimMinDistance   = 0.5;   // m — 겨눈 점이 총구에서 이보다 가까우면 조준선 방향 그대로
 
 	// ── 총 모델 진열 (2026-11-14 사용자 «씬 처음 허공에 1인칭 모델과 3인칭 모델 총 6개 띄우는거까지만») ──
 	//  게임 맵 스폰 앞에 총 종류를 오른쪽으로 늘어놓고, 윗줄 1인칭 · 아랫줄 3인칭. 총은 옆면이 스폰 쪽을 보고 총구가 오른쪽.
@@ -1458,11 +1464,12 @@ namespace swc {
 			return;
 		}
 
-		// 총구 = 손에 든 총의 Muzzle 자리(그려지는 총과 같은 자세 — Shared::HeldWeaponPose). 방향은 조준선 그대로.
-		//  ★ 발사선 고치기(눈 → 겨눈 점, 총구 → 겨눈 점)는 아직 — 크로스헤어와 조금 비껴 간다(노션 「사격 시스템 설명」 4.1).
+		// 총구 = 손에 든 총의 Muzzle 자리(그려지는 총과 같은 자세 — Shared::HeldWeaponPose).
+		//  ★ 2026-11-15 방향 = 총구 → 겨눈 점(AimDirection). 예전에는 조준선과 «평행» 이라 총구가 눈에서 떨어진 만큼
+		//    (오른쪽 · 위로 1 ~ 2 m) 크로스헤어에서 비껴 갔다(노션 「사격 시스템 설명」 4.1). 서버는 받은 원점 · 방향으로 판정하므로 그대로다.
 		const Vec3d muzzle = Shared::MuzzlePosition(
 			Shared::HeldWeaponPose(controller.Position(), controller.Up(), controller.Facing()), held);
-		const Vec3d aim = camera.LookDirection();
+		const Vec3d aim = AimDirection(muzzle, double(spec.range));
 		const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
 		const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
 
@@ -1488,6 +1495,55 @@ namespace swc {
 		fireCooldown = (std::max)(0.0f, fireCooldown);   // 상한에 걸려 남은 발은 버린다(다음 프레임에 몰아 쏘지 않게)
 	}
 
+	// ── 크로스헤어 맞추기 — 겨눈 점 (2026-11-15) ──
+	//  ① 카메라 눈에서 조준선(화면 가운데)으로 선을 긋는다. 카메라와 캐릭터 사이(어깨 뒤)는 보지 않는다 —
+	//     조준선이 총구 옆을 지나는 거리(tStart)부터 «tStart + 사거리» 까지.
+	//  ② 그 선이 처음 닿는 것 — Shared::TraceShot(서버 ResolveFire 와 같은 함수, 2026-11-15 사용자 «벽에 막히는건 당연히 막혀야지»):
+	//     몸(다른 플레이어 · NPC — 서버와 같은 구, 화면에 그린 자리) · 충돌체(건물 · 바위 · 소품 · 나무 · 총 진열) · 지형.
+	//     몸이면 그 몸통 중심에 가장 가까워지는 점을, 충돌체 · 지형이면 닿은 점을 겨눈다.
+	//  ③ 아무것도 없으면 사거리 끝 점. 총구 → 겨눈 점이 너무 가깝거나 총구 뒤쪽이면 조준선 방향 그대로.
+	//  ★ 전부 CPU(메인 스레드, 쏘는 발마다 한 번). 서버도 총구에서 같은 함수로 판정하므로 벽을 겨누면 벽에 막힌다.
+	Vec3d Engine::AimDirection(const Vec3d& muzzle, double range) const
+	{
+		const XMFLOAT3& e = camera.EyePosition();
+		const Vec3d eye{ double(e.x), double(e.y), double(e.z) };
+		const Vec3d look = camera.LookDirection();
+
+		// 카메라와 캐릭터 사이(어깨 뒤)는 보지 않는다 — 조준선이 총구 옆을 지나는 거리부터 «+ 사거리» 까지.
+		const double tStart = (std::max)(0.0, Dot(muzzle - eye, look));
+
+		// 몸 — 다른 플레이어 · NPC 의 그려진 자리(UpdateNetwork 가 채운 지난 프레임 값).
+		//  연결이 끊기면 목록을 더 안 채워 옛 값이 남으므로 연결돼 있을 때만 넣는다.
+		std::vector<Shared::ShotTarget> targets;
+		if (network.Connected())
+		{
+			targets.reserve(remoteViews.size() + npcViews.size());
+			for (const RemoteView& v : remoteViews)
+				targets.push_back({ Vec3d{ double(v.pos[0]), double(v.pos[1]), double(v.pos[2]) }, v.playerId });
+			for (const NpcView& v : npcViews)
+				targets.push_back({ Vec3d{ double(v.pos[0]), double(v.pos[1]), double(v.pos[2]) }, v.npcId });
+		}
+
+		// 충돌체 · 지형은 이동이 보는 세계와 같다(지금 맵 — 게임 맵 · 예시 행성)
+		Shared::MoveWorld world = WeaponMoveWorld();
+		const Shared::CollisionWorld* collision = ActiveCollision();
+		world.collision = (collision && collision->Loaded()) ? collision : nullptr;
+
+		Shared::ShotOptions options;
+		options.minDistance = tStart;
+		options.terrainTolerance = 0.0;   // 땅을 겨누면 실제 지면을 겨눈다(서버 판정만 0.5 m 봐준다)
+		const Shared::ShotHit hit = Shared::TraceShot(world, eye, look, tStart + (std::max)(range, 1.0),
+			targets.data(), targets.size(), options);
+		const double aimT = hit.kind == Shared::ShotHitKind::Body ? hit.closest : hit.distance;
+
+		// 총구 → 겨눈 점
+		const Vec3d toAim = (eye + look * aimT) - muzzle;
+		const double length = Length(toAim);
+		if (length < kAimMinDistance) return look;
+		const Vec3d dir = toAim * (1.0 / length);
+		return Dot(dir, look) > 0.0 ? dir : look;
+	}
+
 	// 발사선 위에 상자를 놓는다. +Z 를 조준 방향에 맞추고 Z 만 길이만큼 늘린다.
 	void Engine::SpawnTracer(const Vec3d& muzzle, const Vec3d& aim)
 	{
@@ -1511,9 +1567,13 @@ namespace swc {
 			return;
 		}
 
-		// 조준 방향을 Z 축으로 하는 기저. up 과 나란해질 일은 없다(pitch 가 66도로 묶여 있다).
+		// 조준 방향을 Z 축으로 하는 기저.
+		//  ★ 2026-11-15 — 방향이 «총구 → 겨눈 점» 이 되어 발밑을 겨누면 거의 수직이 될 수 있다 → up 과 나란하면 앞쪽 축으로 대신한다.
 		const Vec3d zAxis = aim;
-		const Vec3d xAxis = Normalize(Cross(controller.Up(), zAxis));
+		Vec3d xRaw = Cross(controller.Up(), zAxis);
+		if (Length(xRaw) < 1.0e-4)
+			xRaw = Cross(controller.Facing(), zAxis);
+		const Vec3d xAxis = Normalize(xRaw);
 		const Vec3d yAxis = Cross(zAxis, xAxis);
 
 		const Vec3d center = muzzle + aim * (double(kTracerStart) + double(kTracerLength) * 0.5);

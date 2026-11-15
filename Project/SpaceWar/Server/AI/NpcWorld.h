@@ -99,6 +99,7 @@ namespace srv {
 		// ── 사격 판정 ───────────────────────────────────────
 		//  레이에 가장 먼저 맞는 살아 있는 NPC 를 찾는다. 지형 가림은 보지 않는다
 		//  (부르는 쪽이 대상을 정한 뒤 한 번만 검사한다).
+		//  ★ 2026-11-15 부터 ResolveFire 는 Shared::TraceShot(몸 · 충돌체 · 지형을 한 번에)에 Snapshot 의 NPC 를 넘긴다 — 지금 부르는 곳 없음.
 		bool Raycast(const Shared::Vec3& origin, const Shared::Vec3& direction,
 			float maxDistance, uint32_t& outNpcId, float& outDistance) const;
 

@@ -28,7 +28,7 @@
 //  ★ 하는 일 — 읽기 · 인스턴스 만들기 · 주변 찾기(QuerySphere) · 디버그 선(edges) ·
 //    캡슐 겹침(DeepestCapsuleContact, 2026-10-29 — 플레이어 이동 Shared::PlayerMovement 가 쓴다).
 //    두 단계 구조: 인스턴스는 격자, 종류 메시는 삼각형 BVH(노션 「충돌 처리 ③」 8절 «구조»).
-//    레이(사격 가림)는 아직 없다. 지형은 여기 없다(PlanetSurface 몫).
+//    레이(Raycast, 2026-11-15 — 크로스헤어 겨눈 점. 서버 사격 가림에는 아직 안 쓴다). 지형은 여기 없다(PlanetSurface 몫).
 //  ★ 스레드 — LoadPack · AddPlacement · Finalize 는 로딩 스레드에서 한 번(멤버만 쓴다). 그 뒤는 읽기만 한다.
 //    2026-11-15 예외: 총 진열 충돌체(AddBoxCollider · AddInstance · Finalize)는 클라는 씬 구성(메인, 이동 예측 시작 전) · 서버는 시작할 때(틱 스레드 전) 넣는다.
 //  ★ DirectXMath 를 쓰지 않는다 — 서버도 같은 코드를 쓴다(ModelSource.h 머리 주석).
@@ -148,6 +148,10 @@ namespace Shared {
 		//  법선은 충돌체에서 캡슐 쪽 — 캡슐을 normal × depth 만큼 밀면 그 삼각형에서 빠진다(가장 깊은 것부터 여러 번 부른다).
 		//  상태를 바꾸지 않는다(여러 스레드에서 불러도 된다 — 서버는 틱 스레드 하나).
 		bool DeepestCapsuleContact(const Vec3& a, const Vec3& b, float radius, CapsuleContact& out) const;
+
+		// 맵 공간 레이(origin · direction — 길이는 상관없음)가 maxDistance 안에서 처음 맞는 충돌체 삼각형까지의 거리(m).
+		//  안 맞으면 false. 양면. 상태를 바꾸지 않는다. (2026-11-15 — 크로스헤어 겨눈 점 · Client Engine::AimDirection)
+		bool Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, float& outDistance) const;
 
 	private:
 		bool loaded = false;
