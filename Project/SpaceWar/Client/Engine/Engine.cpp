@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <memory>
 
@@ -12,6 +13,7 @@
 #include "Client/RayTracingParams.h"
 #include "Client/Log.h"
 #include "Shared/Model/ModelSource.h"   // 행성 접지면을 파싱 결과(collected)로 만든다
+#include "Shared/GameLogic/WeaponShowcase.h"   // 총 진열 6개의 자리 · 충돌체 — 서버와 같은 식(2026-11-15)
 
 using namespace DirectX;
 
@@ -49,9 +51,35 @@ namespace
 	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
 	//  맞은 표시·총구 화염·소리는 없다.
 	constexpr float  kTracerLife = 0.06f;     // 보이는 시간 (s)
-	constexpr float  kTracerStart = 1.5f;     // 몸통 밖에서 시작 (m)
+	constexpr float  kTracerStart = 0.05f;    // 총구 앞에서 시작 (m) — 2026-11-15 원점이 몸통 중심 → 든 총의 총구로 바뀌어 1.5 → 0.05
 	constexpr float  kTracerLength = 120.0f;  // 길이 (m) — 지평선이 125m 다
 	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
+	// 한 프레임에 쏠 수 있는 최대 발 수 — 프레임이 발 간격보다 길 때(기관총 1/11 s 면 11 fps 밑) 밀린 발을 이만큼까지 같이 쏜다.
+	//  서버가 한꺼번에 받아 주는 발 수(Server main.cpp kFireBurstShots)와 같게 둔다(2026-11-15).
+	constexpr uint32_t kMaxShotsPerFrame = 3;
+	// 게이트가 «열렸다» 고 보는 여유(s) — 간격(0.2 s)을 프레임 dt 로 깎다 보면 부동소수 오차로 아주 조금 남아 한 프레임 늦게 열린다
+	//  (60 fps 에서 0.2 s 마다 누른 클릭이 버려져 초당 2.5발이 된다 — 시뮬레이션). 0.1 ms 는 사람 손으로는 차이가 없다(2026-11-15).
+	constexpr float kFireGateTolerance = 1.0e-4f;
+
+	// ── 총 모델 진열 (2026-11-14 사용자 «씬 처음 허공에 1인칭 모델과 3인칭 모델 총 6개 띄우는거까지만») ──
+	//  게임 맵 스폰 앞에 총 종류를 오른쪽으로 늘어놓고, 윗줄 1인칭 · 아랫줄 3인칭. 총은 옆면이 스폰 쪽을 보고 총구가 오른쪽.
+	//  높이는 그 자리 지면(접지면 — 착륙장 · 길 포함) 위로 잰다.
+	//  ★ 2026-11-15 사용자 «충돌체도 같이 적용은 해줘봐» — 6개 모두 그 총의 상자 묶음(WeaponSpec::colliderBoxes)으로 막힌다(서버도 같은 자리 · 같은 충돌체).
+	//    처음엔 3인칭 glb COL_(삼각형 5만)이었으나 부딪히면 프레임이 10 까지 떨어져(사용자) 1인칭 메시를 덮는 상자 3 ~ 6개로 바꿨다.
+	//    자리 상수 · 계산은 Shared/GameLogic/WeaponShowcase.h(kWeaponShowcase*, LayoutWeaponShowcase)로 옮겼다 — 서버가 같은 식을 쓴다.
+
+	// ── 임시 크로스헤어 (2026-11-14 사용자 «임시 크로스헤어 배치하되, 어떤 방식으로 배치할지 설명할것») ──
+	//  화면 한가운데에 고정한다 — 명세 20절 «화면 한가운데가 향하는 방향(조준선)을 사격에 준다» 의 그 점(Camera::LookDirection).
+	//  ★ 지금 총알은 몸통 중심에서 조준선과 평행하게 나가서 이 점에서 1 ~ 2 m 비껴 지나간다(노션 「사격 시스템 설명」 4.1).
+	//    «눈 → 겨눈 점, 총구 → 겨눈 점» 으로 발사선을 고치면 크로스헤어에 맞게 된다(사격 계획 1단계).
+	//  그림은 코드로 만든다(이미지 파일이 없다) — 흰 팔 4개 + 가운데 점, 1 px 검은 테두리(밝은 하늘 · 눈밭에서도 보이게).
+	//  UI 텍스처는 premultiplied 알파다(UISprite.h). 텍스처 1 텍셀 = 화면 1 px.
+	constexpr uint32_t kCrosshairTexels = 32;        // 텍스처 한 변 = 화면에 그리는 크기 (px)
+	constexpr float    kCrosshairGap = 4.0f;         // 가운데에서 팔이 시작하는 거리 (px)
+	constexpr float    kCrosshairArm = 8.0f;         // 팔 길이 (px)
+	constexpr float    kCrosshairHalfThick = 1.0f;   // 팔 · 점 반두께 (px) — 두께 2 px
+	constexpr uint8_t  kCrosshairFill = 235;         // 흰색 불투명도
+	constexpr uint8_t  kCrosshairOutline = 150;      // 검은 테두리 불투명도
 
 	// ── 서버 전송 주기 ──────────────────────────────────────
 	//  2026-10-29 B안 — 좌표(1/30초) 대신 고정 틱 입력을 보낸다. 주기는 이동 틱(Shared::PlayerMovement::kTickSeconds = 1/60초)이고
@@ -194,6 +222,68 @@ namespace
 		const swc::Vec3d front = swc::ProjectOntoPlane(facing, up);
 		const swc::Vec3d toSun = swc::Normalize(front * std::cos(kRadians) + up * std::sin(kRadians));
 		return XMFLOAT3(float(-toSun.x), float(-toSun.y), float(-toSun.z));
+	}
+
+	// 게임 맵의 창 제목 몫 — 처음 로드 · 0 키로 돌아올 때(2026-11-14) 같은 글을 쓴다.
+	std::wstring GameMapTerrainStatus(const Shared::PlanetSurface& surface)
+	{
+		return (Shared::kUsePlanarMap ? L"GLB 평면 지형 " : L"GLB 구면 지형 ") +
+			std::to_wstring(surface.TriangleCount()) + L" 삼각형";
+	}
+
+	// 진열한 총 하나의 변환 (2026-11-14) — 행 벡터 규약(PlayerController::WorldMatrix 와 같다): 행 = 총의 X · Y · Z 축 · 위치.
+	//  2026-11-15 — 축 · 위치는 Shared::LayoutWeaponShowcase 가 구한다(옆면 +X → 스폰 쪽, 총구 +Z → 오른쪽). 충돌체 변환과 같은 값이다.
+	XMMATRIX ShowcaseTransform(const Shared::WeaponShowcaseSlot& slot)
+	{
+		XMMATRIX m;
+		m.r[0] = XMVectorSet(float(slot.axisX.x), float(slot.axisX.y), float(slot.axisX.z), 0.0f);
+		m.r[1] = XMVectorSet(float(slot.axisY.x), float(slot.axisY.y), float(slot.axisY.z), 0.0f);
+		m.r[2] = XMVectorSet(float(slot.axisZ.x), float(slot.axisZ.y), float(slot.axisZ.z), 0.0f);
+		m.r[3] = XMVectorSet(float(slot.position.x), float(slot.position.y), float(slot.position.z), 1.0f);
+		return m;
+	}
+
+	// 임시 크로스헤어 그림 (2026-11-14) — 위 상수 참고. premultiplied RGBA8.
+	swc::TextureData MakeCrosshairTexture()
+	{
+		swc::TextureData image;
+		image.path = L"(crosshair)";
+		image.width = kCrosshairTexels;
+		image.height = kCrosshairTexels;
+		image.srgb = false;
+		image.pixels.assign(size_t(kCrosshairTexels) * kCrosshairTexels * 4, 0);
+
+		const float center = float(kCrosshairTexels) * 0.5f;
+		auto filled = [center](int x, int y)
+		{
+			if (x < 0 || y < 0 || x >= int(kCrosshairTexels) || y >= int(kCrosshairTexels)) return false;
+			const float dx = std::fabs(float(x) + 0.5f - center);
+			const float dy = std::fabs(float(y) + 0.5f - center);
+			const bool dot = dx < kCrosshairHalfThick && dy < kCrosshairHalfThick;
+			const bool horizontal = dy < kCrosshairHalfThick && dx >= kCrosshairGap && dx < kCrosshairGap + kCrosshairArm;
+			const bool vertical = dx < kCrosshairHalfThick && dy >= kCrosshairGap && dy < kCrosshairGap + kCrosshairArm;
+			return dot || horizontal || vertical;
+		};
+
+		for (int y = 0; y < int(kCrosshairTexels); ++y)
+		{
+			for (int x = 0; x < int(kCrosshairTexels); ++x)
+			{
+				uint8_t* p = &image.pixels[(size_t(y) * kCrosshairTexels + size_t(x)) * 4];
+				if (filled(x, y))
+				{
+					p[0] = p[1] = p[2] = p[3] = kCrosshairFill;   // 흰색 (premultiplied — 색 = 알파)
+					continue;
+				}
+				bool edge = false;
+				for (int oy = -1; oy <= 1 && !edge; ++oy)
+					for (int ox = -1; ox <= 1 && !edge; ++ox)
+						edge = filled(x + ox, y + oy);
+				if (edge)
+					p[3] = kCrosshairOutline;   // 검은 테두리 (색 0)
+			}
+		}
+		return image;
 	}
 
 	// 예시 행성 디버그 씬의 창 제목 몫 (2026-10-28)
@@ -398,8 +488,7 @@ namespace swc {
 				}
 				terrain.Configure(&planetSurface, planet.radius);
 				planet.terrain = &terrain;
-				terrainStatus = (Shared::kUsePlanarMap ? L"GLB 평면 지형 " : L"GLB 구면 지형 ") +
-					std::to_wstring(planetSurface.TriangleCount()) + L" 삼각형";
+				terrainStatus = GameMapTerrainStatus(planetSurface);
 				// 캐시 여부는 게임에 들어갈 때 콘솔에 찍는다 — 두 번째 실행부터 «캐시» 가 보여야 정상이다.
 				planetFromCache = loaded.fromCache;
 
@@ -526,6 +615,35 @@ namespace swc {
 				return true;
 			});
 
+		// ── 총 모델 (2026-11-14, Shared/GameObject/Weapon.h · Client/Weapon/WeaponModels.h) ──
+		//  총 종류마다 1인칭 · 3인칭 glb 를 하나씩 요청한다(파싱은 로딩 스레드, GPU 업로드는 메인에서 한 프레임에 하나).
+		//  올린 뒤 바로 CPU 사본을 버린다. 한 파일을 못 읽어도 게임은 띄운다 — 그 모델만 빼고 로그를 남긴다.
+		//  1인칭 파일은 Meshy 원본 메시 그대로라 크다(권총 133만 삼각형 · 69 MB). 첫 실행은 파싱이 길고, 다음부터는 모델 디스크 캐시를 읽는다.
+		for (size_t t = 0; t < Shared::kWeaponTypeCount; ++t)
+		{
+			for (size_t v = 0; v < kWeaponViewCount; ++v)
+			{
+				const Shared::WeaponType type = Shared::WeaponType(t);
+				const WeaponView view = WeaponView(v);
+				const std::wstring asset = WeaponModels::Asset(type, view);
+				resources.RequestModelFile(batch, AssetPath(asset.c_str()),
+					[this, type, view, asset](const ModelFileResources& loaded)
+					{
+						const ModelData* data = resources.Get(loaded.model);
+						if (!data)
+						{
+							Log(L"[총] 모델 건너뜀 — %s: %s", asset.c_str(), resources.LastError().c_str());
+							return true;
+						}
+						if (!weaponModels.Initialize(type, view, *data, renderer))
+							Log(L"[총] 모델 건너뜀 — %s: %s", asset.c_str(), weaponModels.LastError().c_str());
+						// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다(실패해도 버린다).
+						resources.ReleaseModel(loaded.model);
+						return true;
+					});
+			}
+		}
+
 		// ── 단계 1: 씬 구성 · 스폰 · 서버 접속 (메인) ──
 		batch.NextStage();
 		batch.Add(L"씬 구성", nullptr,
@@ -555,16 +673,20 @@ namespace swc {
 				controller.SetPlanet(&planet);
 				// 게임 맵 충돌체(단계 0 «충돌체» 에서 읽었다 — 못 읽었으면 비어 있어 지형만 막는다, 2026-10-29 B안)
 				controller.SetCollision(gameMapCollision.Loaded() ? &gameMapCollision : nullptr);
-				const Vec3d spawn = Shared::kUsePlanarMap
-					? Vec3d{ Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ }
-					: planet.PositionAt(Normalize({ Shared::kPlanetSpawnUpX,
-						Shared::kPlanetSpawnUpY, Shared::kPlanetSpawnUpZ }), Shared::kGroundOffset);
-				controller.Spawn(spawn, { 0.0, 0.0, 1.0 });
+				controller.Spawn(GameMapSpawnPoint(), { 0.0, 0.0, 1.0 });
 				spawnPosition = controller.Position();
 				camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
 
 				// 해를 처음 바라보는 쪽 45° 상공에 둔다 (2026-10-29 사용자 «태양 위치 플레이어 정면의 45도 상공에 위치하게») — 스폰 자리 기준.
 				renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
+
+				// 총 모델 6개를 스폰 앞 허공에 띄운다(2026-11-14) — 단계 0 에서 올린 것만.
+				BuildWeaponShowcase();
+
+				// 임시 크로스헤어 텍스처(2026-11-14) — 그리기는 RenderFrame(화면 한가운데).
+				crosshairTexture = renderer.CreateTexture(MakeCrosshairTexture());
+				if (crosshairTexture == kInvalidTexture)
+					Log(L"[UI] 크로스헤어 텍스처를 만들지 못했다 — %s", renderer.StatusText().c_str());
 				return true;
 			});
 
@@ -625,7 +747,13 @@ namespace swc {
 			const SceneId entered = sceneManager.TakeEntered();
 			size_t debugPlanet = 0;
 			if (entered == SceneId::Game)
-				EnterGame();
+			{
+				// 예시 행성에서 0 키로 돌아왔으면(2026-11-14) 처음 입장이 아니다 — 보이는 맵 · 접지면 · 스폰만 되돌린다.
+				if (InDebugPlanet())
+					ReturnToGameMap();
+				else
+					EnterGame();
+			}
 			else if (IsDebugPlanetScene(entered, debugPlanet))
 				EnterDebugPlanet(debugPlanet);
 
@@ -642,6 +770,7 @@ namespace swc {
 			HandleSystemKeys();
 			UpdatePlayer(dt);
 			UpdateDebugPlanetObjects();
+			UpdateWeapons(dt);   // 2026-11-15 — 든 총 · 바닥 총 · E 줍기 · G 떨구기. 이번 프레임 든 총으로 UpdateFire 가 쏜다
 			UpdateFire(dt);
 			UpdateNetwork(dt);
 
@@ -731,11 +860,27 @@ namespace swc {
 	// ── 예시 행성 디버그 씬 (2026-10-28) ─────────────────────────
 	//  숫자키 1~5 = Verdant · Neon · Ruin · Volcanic · Glacier (PlanetDebugScene.h).
 	//  처음 고르면 로딩 씬을 띄우고 맵을 읽는다. 한 번 읽은 행성은 묶음 없이 바로 넘어간다.
-	//  게임 맵으로 돌아가는 키는 없다(지시 범위 밖).
+	//  0 = 처음 씬(게임 맵)으로 돌아간다 (2026-11-14 사용자 «처음 씬을 0번 키에 할당해주고»).
 	//  ★ 맵 번호 (2026-11-01) — 고르는 순간 서버에 JoinWorld 를 보낸다. 서버는 옛 맵에서 이 플레이어를 빼고
 	//    (다른 사람에게 PlayerLeave) 새 맵을 준비해 WorldJoined 로 답한다. 그 전까지 입력 · 사격은 보내지 않는다.
+	//    게임 맵(0)도 같은 길이다 — 서버 HandleWorldJoin 은 맵 번호를 가리지 않는다.
 	void Engine::HandleDebugPlanetKeys()
 	{
+		if (input.WasPressed('0'))
+		{
+			if (!InDebugPlanet()) return;   // 이미 게임 맵이다
+
+			if (network.Connected())
+			{
+				network.SendJoinWorld(Shared::kWorldGameMap);
+				Log(L"[맵] 서버에 맵 %u(게임 맵)로 옮긴다고 알렸다", Shared::kWorldGameMap);
+			}
+			loadStart = std::chrono::steady_clock::now();
+			// 게임 맵은 처음에 읽었다 — 묶음 없이 바로 넘어가고, 들어간 프레임에 Run 이 ReturnToGameMap 을 부른다.
+			sceneManager.ChangeScene(SceneId::Game, nullptr, resources);
+			return;
+		}
+
 		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
 		{
 			if (!input.WasPressed('1' + int(i))) continue;
@@ -943,6 +1088,9 @@ namespace swc {
 		// 보이는 맵을 바꿔 끼운다 — 모든 맵이 같은 자리(행성 중심)에 겹쳐 있으므로 하나만 켠다.
 		if (gameMapNode != kInvalidNode)
 			scene.SetVisible(gameMapNode, false);
+		// 총 진열은 게임 맵 스폰 앞에 있다(2026-11-14) — 다른 행성의 지형 속에 떠 보이지 않게 숨긴다.
+		if (weaponShowcase != kInvalidNode)
+			scene.SetVisible(weaponShowcase, false);
 		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
 		{
 			const PlanetDebugScene& other = sceneManager.DebugPlanet(i);
@@ -982,6 +1130,236 @@ namespace swc {
 			seconds, terrainStatus.c_str());
 	}
 
+	// 0 키(2026-11-14) — 예시 행성에서 처음 씬(게임 맵)으로 돌아온다. EnterDebugPlanet 을 거꾸로 한다.
+	//  서버에는 HandleDebugPlanetKeys 가 JoinWorld(0) 를 보냈다. 답(WorldJoined)이 오면 UpdateNetwork 가 서버 스폰 자리에 다시 세운다.
+	void Engine::ReturnToGameMap()
+	{
+		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
+		{
+			const PlanetDebugScene& other = sceneManager.DebugPlanet(i);
+			if (other.Loaded())
+				scene.SetVisible(other.Root(), false);
+		}
+		if (gameMapNode != kInvalidNode)
+			scene.SetVisible(gameMapNode, true);
+		if (weaponShowcase != kInvalidNode)
+			scene.SetVisible(weaponShowcase, true);
+
+		// 접지면 · 충돌체를 게임 맵 것으로(처음 로드 때 만든 것 그대로 남아 있다).
+		terrain.Configure(&planetSurface, planet.radius);
+		planet.terrain = &terrain;
+		controller.SetCollision(gameMapCollision.Loaded() ? &gameMapCollision : nullptr);
+		colliderView.Clear();
+
+		// 옛 맵의 원격 플레이어 · NPC 를 치운다. 게임 맵 사람들 · NPC 는 서버가 넣어 준 뒤 다시 받는다.
+		ParkNetworkNodes();
+
+		controller.Spawn(GameMapSpawnPoint(), { 0.0, 0.0, 1.0 });
+		spawnPosition = controller.Position();
+		camera.SnapTo(controller.Position(), controller.Up(), controller.Facing());
+		scene.SetLocalTransform(player, controller.WorldMatrix());
+		renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
+
+		terrainStatus = GameMapTerrainStatus(planetSurface);
+		activeDebugPlanet = kNoDebugPlanet;
+		titleTimer = 0.0f;
+
+		const double seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - loadStart).count();
+		Log(L"[맵] 게임 맵(0)으로 돌아왔다 — %.2fs · %s", seconds, terrainStatus.c_str());
+	}
+
+	// 게임 맵 스폰 — 공통 시작 방향(Landing L1)의 지면 위 kGroundOffset (client2 2f15728). 처음 로드 · 0 키가 같이 쓴다.
+	Vec3d Engine::GameMapSpawnPoint() const
+	{
+		return Shared::kUsePlanarMap
+			? Vec3d{ Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ }
+			: planet.PositionAt(Normalize({ Shared::kPlanetSpawnUpX,
+				Shared::kPlanetSpawnUpY, Shared::kPlanetSpawnUpZ }), Shared::kGroundOffset);
+	}
+
+	// 총 모델 진열 (2026-11-14) — 씬 구성(로드 단계 1)에서 스폰한 직후 한 번. 단계 0 에서 올린 모델만 띄운다.
+	//  루트 노드 하나 아래에 6개를 둔다 — 예시 행성에 들어가면 루트만 숨긴다.
+	//  ★ 2026-11-15 충돌체 — 자리는 Shared::LayoutWeaponShowcase(서버 SetupWeaponShowcase 와 같은 식 · 같은 스폰 인자).
+	//    게임 맵 충돌체(gameMapCollision)에 총마다 상자 묶음 메시 + 6개 인스턴스를 넣고 격자를 다시 만든다.
+	//    모델을 못 올린 총도 충돌체는 넣는다(서버와 같게 — 상자는 코드 표라 파일을 읽지 않는다).
+	void Engine::BuildWeaponShowcase()
+	{
+		if (weaponShowcase == kInvalidNode)
+			weaponShowcase = scene.AddNode(kInvalidNode, kInvalidMesh, kInvalidMaterial);
+
+		// 이동이 보는 세계와 같은 값(PlayerController::World 와 같은 planet · 지형). 충돌체는 자리 계산에 쓰지 않는다.
+		const Shared::MoveWorld world = WeaponMoveWorld();
+
+		// 2026-11-15 — 자리를 멤버에 남긴다: 줍는 출처(UpdateWeapons · FindPickupTarget). 주워도 진열은 그대로다.
+		Shared::WeaponShowcaseSlot (&slots)[Shared::kWeaponShowcaseSlotCount] = showcaseSlots;
+		Shared::LayoutWeaponShowcase(world, GameMapSpawnPoint(), { 0.0, 0.0, 1.0 }, slots);   // 씬 구성의 controller.Spawn 과 같은 인자
+		hasShowcaseSlots = true;
+		weaponScene.Bind(&weaponModels, &scene);
+
+		size_t placed = 0;
+		for (const Shared::WeaponShowcaseSlot& slot : slots)
+		{
+			const WeaponView view = slot.firstPerson ? WeaponView::FirstPerson : WeaponView::ThirdPerson;
+			const NodeHandle node = weaponModels.Instantiate(slot.type, view, scene, weaponShowcase);
+			if (node == kInvalidNode) continue;
+			scene.SetLocalTransform(node, ShowcaseTransform(slot));
+			++placed;
+		}
+
+		size_t colliders = 0;
+		if (gameMapCollision.Loaded())
+		{
+			colliders = Shared::AddWeaponShowcaseColliders(gameMapCollision, world, slots);
+			if (colliders > 0)
+			{
+				gameMapCollision.Finalize();
+				colliderView.Clear();
+			}
+		}
+
+		Log(L"[총] 1인칭 · 3인칭 모델 %zu / %zu 개를 스폰 앞 %.0f m 허공에 띄웠다(윗줄 1인칭 · 아랫줄 3인칭, 왼쪽부터 %S · %S · %S) · 충돌체 %zu 개(상자 묶음)",
+			placed, Shared::kWeaponShowcaseSlotCount, Shared::kWeaponShowcaseDistance,
+			Shared::SpecOf(Shared::WeaponType::Pistol).name,
+			Shared::SpecOf(Shared::WeaponType::LaserRifle).name,
+			Shared::SpecOf(Shared::WeaponType::MachineGun).name,
+			colliders);
+	}
+
+	// ── 총 줍기 · 떨구기 (2026-11-15, Shared/GameLogic/WeaponPickup.h · Client/Weapon/WeaponScene.h) ──
+	//  사용자: «주우면 애니메이션 시에 적절한 위치에 총을 고정시키고, 쏠 수 있도록 해줘. 줍기, 떨구기 둘 다 구현하면 되는거야.
+	//          이때 공중에 있는것을 줍고, 떨구면 땅바닥에 떨어지도록. 공중에 있는 총은 사라지지 않게»
+	//  ★ 접속 중이면 서버가 정한다 — E · G 는 요청만 보내고, 든 총 · 바닥 총은 서버가 알려 준 것으로 그린다(Network).
+	//    오프라인이면 같은 Shared 계산으로 혼자 처리한다(offlineHeld · 바닥 총 번호를 클라가 센다).
+
+	Shared::MoveWorld Engine::WeaponMoveWorld() const
+	{
+		Shared::MoveWorld world;
+		world.center = planet.center;
+		world.radius = planet.radius;
+		world.gravity = planet.gravity;
+		world.terrain = planet.terrain;
+		return world;
+	}
+
+	Shared::WeaponType Engine::HeldWeapon() const
+	{
+		return network.Connected() ? network.MyWeapon() : offlineHeld;
+	}
+
+	// 가장 가까운 총 — 공중 진열(게임 맵에 있을 때) · 바닥 총. 몸통 중심에서 총 원점까지 kWeaponPickupRange 안.
+	void Engine::FindPickupTarget()
+	{
+		pickupTarget = PickupTarget{};
+		const Vec3d body = controller.Position();
+		double best = Shared::kWeaponPickupRange;
+
+		if (hasShowcaseSlots && !InDebugPlanet())
+		{
+			for (uint32_t i = 0; i < uint32_t(Shared::kWeaponShowcaseSlotCount); ++i)
+			{
+				const double d = Length(showcaseSlots[i].position - body);
+				if (d > best) continue;
+				best = d;
+				pickupTarget = { true, Shared::kPickupFromShowcase, i, showcaseSlots[i].type, d };
+			}
+		}
+		for (const WeaponScene::Ground& g : weaponScene.GroundWeapons())
+		{
+			const double d = Length(WeaponScene::CurrentPose(g).position - body);
+			if (d > best) continue;
+			best = d;
+			pickupTarget = { true, Shared::kPickupFromGround, g.id, g.type, d };
+		}
+	}
+
+	// 오프라인 떨구기 — 손 자리에서 떨어져 바로 아래 지면에 눕는다(서버 DropHeldWeapon 과 같은 계산).
+	void Engine::OfflineDrop()
+	{
+		if (!Shared::IsWeaponType(offlineHeld)) return;
+		const Shared::WeaponDrop drop = Shared::SettleDroppedWeapon(WeaponMoveWorld(), offlineHeld,
+			controller.Position(), controller.Up(), controller.Facing());
+		weaponScene.SpawnGround(offlineNextGroundId++, offlineHeld, drop.start, drop.rest, drop.fallSeconds);
+		while (weaponScene.GroundWeapons().size() > Shared::kMaxGroundWeapons)
+			weaponScene.RemoveGround(weaponScene.GroundWeapons().front().id);
+		Log(L"[총] %S 떨굼(오프라인) — %.2fs 떨어져 눕는다", Shared::SpecOf(offlineHeld).name, drop.fallSeconds);
+		offlineHeld = Shared::WeaponType::None;
+	}
+
+	// 오프라인 줍기 — 들고 있으면 먼저 떨군다(한 번에 한 자루). 진열은 그대로, 바닥 총은 없어진다.
+	void Engine::OfflinePickup(const PickupTarget& target)
+	{
+		if (!target.valid || !Shared::IsWeaponType(target.type)) return;
+		OfflineDrop();
+		if (target.source == Shared::kPickupFromGround)
+			weaponScene.RemoveGround(target.id);
+		offlineHeld = target.type;
+		Log(L"[총] %S 주움(오프라인, %s)", Shared::SpecOf(target.type).name,
+			target.source == Shared::kPickupFromShowcase ? L"공중 진열" : L"바닥");
+	}
+
+	// 매 프레임 — UpdatePlayer 뒤 · UpdateFire 앞(이번 프레임 든 총으로 쏜다).
+	void Engine::UpdateWeapons(float dt)
+	{
+		const bool online = network.Connected();
+
+		// 1) 서버가 보낸 바닥 총 소식(받은 순서대로). 맵을 바꾸면 Clear 가 먼저 온다.
+		if (online)
+		{
+			network.TakeGroundEvents(groundEventScratch);
+			for (const GroundWeaponEvent& e : groundEventScratch)
+			{
+				switch (e.kind)
+				{
+				case GroundWeaponEvent::Kind::Clear:
+					weaponScene.ClearGround();
+					break;
+				case GroundWeaponEvent::Kind::Remove:
+					weaponScene.RemoveGround(e.groundId);
+					break;
+				case GroundWeaponEvent::Kind::Spawn:
+				{
+					auto pose = [](const float p[3], const float y[3], const float z[3])
+					{
+						Shared::WeaponPose out;
+						out.position = Vec3d(p[0], p[1], p[2]);
+						out.axisY = Vec3d(y[0], y[1], y[2]);
+						out.axisZ = Vec3d(z[0], z[1], z[2]);
+						out.axisX = Cross(out.axisY, out.axisZ);   // X = Y × Z (Z = X × Y 의 순환)
+						return out;
+					};
+					weaponScene.SpawnGround(e.groundId, e.type, pose(e.startPos, e.startAxisY, e.startAxisZ),
+						pose(e.restPos, e.restAxisY, e.restAxisZ), e.fallSeconds);
+					break;
+				}
+				}
+			}
+		}
+
+		// 2) 내 손 — 든 총의 1인칭 모델을 내 캐릭터에 붙인다(오른손 자리, Shared::kHeldWeapon*).
+		weaponScene.SetLocalHeld(HeldWeapon(), player);
+
+		// 3) 바닥 총 — 떨어지는 것 옮기기, 가까우면 1인칭 · 멀면 3인칭
+		weaponScene.Update(dt, controller.Position());
+
+		// 4) 줍기 대상 · 키 — E 줍기, G 떨구기(마우스를 잡은 게임 중에만)
+		FindPickupTarget();
+		if (!input.Captured()) return;
+
+		// 접속 중이면 서버가 지금 맵에 넣어 준 뒤에만 보낸다(사격 · 입력과 같은 규칙) — 들어가는 중이면 판정할 곳이 없다.
+		const bool judged = online && network.JoinedWorld() == CurrentWorld();
+		if (input.WasPressed('G') && Shared::IsWeaponType(HeldWeapon()))
+		{
+			if (judged) network.SendDrop();
+			else if (!online) OfflineDrop();
+		}
+		if (input.WasPressed('E') && pickupTarget.valid)
+		{
+			if (judged) network.SendPickup(pickupTarget.source, pickupTarget.id);
+			else if (!online) OfflinePickup(pickupTarget);
+		}
+	}
+
 	// 플레이어 주변 배치 오브젝트를 다시 고른다 — 15 m 움직일 때마다(PlanetDebugScene::StreamObjects).
 	void Engine::UpdateDebugPlanetObjects()
 	{
@@ -1007,6 +1385,11 @@ namespace swc {
 			freeNpcNodes.push_back(entry.second);
 		}
 		npcNodes.clear();
+
+		// 2026-11-15 — 남이 든 총 · 바닥 총도 옛 맵 것이다. 접속 중이면 서버가 새 맵 것을 다시 보낸다(WeaponEquip · GroundWeaponSpawn).
+		//  오프라인 바닥 총은 맵마다 따로 두지 않는다 — 맵을 바꾸면 사라진다.
+		weaponScene.ClearRemotes();
+		weaponScene.ClearGround();
 	}
 
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
@@ -1030,10 +1413,11 @@ namespace swc {
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
 	//   입력은 Class Bridge 를 거쳐야 하고(6.6.3), 이펙트는 표시 계층으로 가야 한다.
 	//
-	//  ★ 누른 «순간» 에만 한 발 나간다. 누르고 있어도 연사되지 않는다.
+	//  ★ 2026-11-15 든 총으로만 쏜다 — 단발(권총 · 레이저 라이플) = 누른 순간, 연발(기관총) = 누르고 있는 동안 발 간격마다.
+	//    빈손이면 쏘지 않는다. (그 전: 총 없이 누른 순간 한 발, 몸통 중심에서)
 	//  ★ 클라는 «어디서 어디로» 만 보낸다. 맞았는지는 서버가 정한다 (명세 18절 원칙 4).
 	//    그래서 예광탄은 «맞은 곳» 이 아니라 고정 길이로 그린다. 서버 판정과 무관하다.
-	//    총구는 지금 몸통 중심이다. 1인칭으로 바꾸면 이 원점만 눈 위치로 옮기면 된다.
+	//    총구 = 손에 든 총의 Muzzle 자리. 1인칭으로 바꾸면 이 원점만 눈 위치로 옮기면 된다.
 	void Engine::UpdateFire(float dt)
 	{
 		// 1) 보이는 예광탄의 수명을 줄이고, 끝난 것은 치운다.
@@ -1050,22 +1434,58 @@ namespace swc {
 		}
 
 		// 2) 이번 프레임에 쐈는가.
-		if (!input.Captured() || suppressFire || !input.MouseWasPressed(0))
+		//  ★ 2026-11-15 든 총으로만 쏜다(사용자 «주우면 … 쏠 수 있도록») — 빈손이면 쏘지 않는다.
+		//    발사 모드 · 발 간격은 그 총의 표(Shared::SpecOf): 단발 = 누른 순간, 연발 = 누르고 있는 동안 간격마다.
+		//    ★ 같은 날 사용자 «눌려있다면 해당 속도에 맞게 자동 발사되게 하자» — 세 총 모두 연발(표의 fireMode = Auto).
+		//    ★ 남은 시간을 이어 쓴다(같은 날) — 쏜 뒤 간격을 «더한다». 예전에는 간격으로 «되돌려» 프레임 끝에 남은 시간이 버려졌고,
+		//      발 간격이 프레임 수로 올림돼 느려졌다(기관총 0.08 s → 60 fps 0.083 · 30 fps 0.1 s, 라이플 0.25 → 30 fps 0.267 s).
+		//      이제 프레임마다 간격은 들쭉날쭉해도 평균은 표의 간격과 같다. 프레임이 간격보다 길면 한 프레임에 여러 발(kMaxShotsPerFrame 까지).
+		//      손을 떼면 시간을 모아 두지 않는다(0 에서 멈춘다) — 쉬었다가 몰아 쏘기는 안 된다.
+		//    서버도 같은 평균으로 걸러 낸다(Server OnPlayerFire 연사 예산). 탄창 · 장전은 아직 없다(탄 무한).
+		//    ★ 같은 날 사용자 «권총은 자동 발사 없애주고, 클릭 시에만 발사. 그리고 연속 클릭이 들어오면 0.2초마다 게이트를 열어서
+		//      딜레이를 줄 수 있게해줘» — 권총만 단발(Single)로 되돌림. 단발은 «게이트»:
+		//      · 게이트가 열려 있으면(대기 0) 클릭한 프레임에 바로 한 발, 그리고 게이트를 발 간격(권총 0.2 s) 동안 닫는다.
+		//      · 닫혀 있는 동안 들어온 클릭은 버린다 — 다시 눌러야 한다(같은 날 사용자 «0.2 게이트 닫힌 사이에 들어온 클릭 신호는 버려줘».
+		//        잠깐 «한 발 맡아 두었다가 열리면 쏘기» 였다가 바꿈). 그래서 연타해도 초당 5발을 넘지 못한다.
+		fireCooldown -= dt;
+		const Shared::WeaponType held = HeldWeapon();
+		const Shared::WeaponSpec& spec = Shared::SpecOf(held);   // 빈손이면 모든 값이 0 인 빈 줄
+		const bool trigger = spec.fireMode == Shared::FireMode::Auto ? input.MouseDown(0) : input.MouseWasPressed(0);
+		if (!Shared::IsWeaponType(held) || spec.fireInterval <= 0.0f ||
+			!input.Captured() || suppressFire || !trigger || fireCooldown > kFireGateTolerance)   // 게이트가 닫혀 있으면 이번 클릭은 버려진다
+		{
+			fireCooldown = (std::max)(0.0f, fireCooldown);
 			return;
+		}
 
-		const Vec3d muzzle = controller.Position();
+		// 총구 = 손에 든 총의 Muzzle 자리(그려지는 총과 같은 자세 — Shared::HeldWeaponPose). 방향은 조준선 그대로.
+		//  ★ 발사선 고치기(눈 → 겨눈 점, 총구 → 겨눈 점)는 아직 — 크로스헤어와 조금 비껴 간다(노션 「사격 시스템 설명」 4.1).
+		const Vec3d muzzle = Shared::MuzzlePosition(
+			Shared::HeldWeaponPose(controller.Position(), controller.Up(), controller.Facing()), held);
 		const Vec3d aim = camera.LookDirection();
+		const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
+		const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
 
 		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
 		// 서버가 지금 맵에 넣어 준 뒤에만 보낸다(2026-11-01 맵 번호) — 들어가는 중 · 서버에 맵이 없으면 판정할 곳이 없다.
-		if (network.Connected() && network.JoinedWorld() == CurrentWorld())
+		const bool send = network.Connected() && network.JoinedWorld() == CurrentWorld();
+		// 예광탄 — 그 총의 tracerEvery 발마다 하나(2026-11-15 부터 세 총 모두 매 발)
+		const uint32_t every = spec.tracerEvery > 0 ? spec.tracerEvery : 1;
+		const uint32_t maxShots = spec.fireMode == Shared::FireMode::Auto ? kMaxShotsPerFrame : 1u;
+		for (uint32_t shot = 0; shot < maxShots && fireCooldown <= kFireGateTolerance; ++shot)
 		{
-			const float origin[3] = { float(muzzle.x), float(muzzle.y), float(muzzle.z) };
-			const float dir[3] = { float(aim.x), float(aim.y), float(aim.z) };
-			network.SendFire(origin, dir);
+			// 연발은 남은 시간을 이어 쓴다(평균 = 표의 간격). 단발은 쏜 순간부터 꼭 간격만큼 닫는다 —
+			//  클릭은 «게이트가 열린 뒤» 언제 와도 되므로 이어 쓸 시간이 없고, 이어 쓰면 프레임 하나만큼 일찍 열린다(0.2 → 0.194 s).
+			if (spec.fireMode == Shared::FireMode::Auto)
+				fireCooldown += spec.fireInterval;
+			else
+				fireCooldown = spec.fireInterval;
+			if (send)
+				network.SendFire(origin, dir);
+			if (shotsFired++ % every == 0)
+				SpawnTracer(muzzle, aim);
 		}
-
-		SpawnTracer(muzzle, aim);
+		fireCooldown = (std::max)(0.0f, fireCooldown);   // 상한에 걸려 남은 발은 버린다(다음 프레임에 몰아 쏘지 않게)
 	}
 
 	// 발사선 위에 상자를 놓는다. +Z 를 조준 방향에 맞추고 Z 만 길이만큼 늘린다.
@@ -1211,6 +1631,8 @@ namespace swc {
 		}
 
 		// 보이는 플레이어를 그 자리에 놓는다. 처음 보는 번호면 노드를 하나 붙인다.
+		//  2026-11-15 — 그 사람이 든 총(서버 WeaponEquip)을 3인칭 모델로 같은 손 자리에 놓는다. 이번에 안 보인 사람의 총은 치운다.
+		weaponScene.BeginRemoteFrame();
 		for (size_t i = 0; i < remoteViews.size(); ++i)
 		{
 			const RemoteView& v = remoteViews[i];
@@ -1233,9 +1655,11 @@ namespace swc {
 				found = remoteNodes.emplace(v.playerId, handle).first;
 			}
 
-			scene.SetLocalTransform(found->second,
-				CharacterTransform(planet, v.pos));
+			const XMMATRIX character = CharacterTransform(planet, v.pos);
+			scene.SetLocalTransform(found->second, character);
+			weaponScene.PlaceRemote(v.playerId, network.WeaponOf(v.playerId), character);
 		}
+		weaponScene.EndRemoteFrame();
 
 		// ── NPC 노드 갱신 ───────────────────────────────
 		//  행동 계산은 전부 서버가 한다. 클라는 좌표를 받아 그리기만 하므로
@@ -1302,6 +1726,16 @@ namespace swc {
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);
+
+		// 임시 크로스헤어 (2026-11-14) — 화면 한가운데 = 조준선(명세 20절). 텍스처 1 텍셀 = 화면 1 px.
+		if (crosshairTexture != kInvalidTexture)
+		{
+			UISprite crosshair;
+			crosshair.texture = crosshairTexture;
+			crosshair.center = XMFLOAT2(float(renderer.Width()) * 0.5f, float(renderer.Height()) * 0.5f);
+			crosshair.halfSize = XMFLOAT2(float(kCrosshairTexels) * 0.5f, float(kCrosshairTexels) * 0.5f);
+			uiSprites.push_back(crosshair);
+		}
 
 		renderer.BeginFrame();
 		skyPlanet.Render(renderer, camera, kHeight);
@@ -1451,14 +1885,30 @@ namespace swc {
 				swprintf_s(colliderText, L"  |  충돌체(C) 없음 · 캡슐 %zu", colliderView.CapsuleCount());
 		}
 
+		// 총 (2026-11-15) — 든 총 · 줍기 안내(E) · 떨구기 안내(G) · 바닥 총 수
+		wchar_t weaponText[200];
+		{
+			const Shared::WeaponType held = HeldWeapon();
+			wchar_t heldText[64];
+			if (Shared::IsWeaponType(held))
+				swprintf_s(heldText, L"총 %S(G 떨구기)", Shared::SpecOf(held).name);
+			else
+				swprintf_s(heldText, L"빈손");
+			wchar_t pickText[96] = L"";
+			if (pickupTarget.valid)
+				swprintf_s(pickText, L"  E 줍기: %S(%.1fm)", Shared::SpecOf(pickupTarget.type).name, pickupTarget.distance);
+			swprintf_s(weaponText, L"%s%s  바닥 총 %zu", heldText, pickText, weaponScene.GroundWeapons().size());
+		}
+
 		wchar_t title[1280];
 		swprintf_s(title,
 			L"SpaceWar   FPS %.0f  dt %.1fms  |  고도 %.2fm  %s  스폰거리 %.0fm  속도 %.1f  "
-			L"|  %s  |  %s  |  RT %s view %u  |  %s  "
+			L"|  %s  |  %s  |  %s  |  RT %s view %u  |  %s  "
 			L"|  행성 LOD%u %.0fpx  |  Draw %zu Inst %zu/%zu Cull %zu Tri %.2fM%s%s",
 			timer.Fps(), dt * 1000.0f,
 			controller.Altitude(), controller.IsGrounded() ? L"접지" : L"공중",
 			distFromSpawn, controller.Speed(),
+			weaponText,
 			netText,
 			terrainStatus.c_str(),
 			rtState, renderer.DebugMode(),

@@ -312,7 +312,8 @@ namespace swc {
 		uint32_t   shadowEnabled;       // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
 		uint32_t   reflectionEnabled;   // 2026-10-27 4단계 — 1 이면 반사 텍스처를 읽는다(이번 프레임에 [4b] 가 돌았다)
 		uint32_t   aoEnabled;           // 2026-10-27 8단계 — 1 이면 AO 텍스처(t13)를 읽는다(이번 프레임에 [2] 가 돌았다)
-		uint32_t   pad3[2];
+		float      reflectionMaxRoughness;   // 2026-11-14 — RT 반사 문턱(Impl::kReflectionMaxRoughness). 예전 빈 자리 pad3[0]
+		float      reflectionFadeStart;      // 2026-11-14 — RT 몫을 줄이기 시작하는 거칠기(Impl::kReflectionFadeStart). 예전 pad3[1]
 		XMFLOAT3   sunIlluminance;      // 2026-10-27 6단계 — 땅에 닿는 태양 조도(RGB)
 		uint32_t   skyEnabled;          // 2026-10-27 6단계 — 1 이면 하늘 조도 텍스처(t9)를 주변광으로 읽는다
 		struct ProbeVolumeGpu
@@ -727,6 +728,10 @@ namespace swc {
 		//  반사 텍스처: RtReflection.hlsl 이 바인드리스 UAV 로 쓰고, Lighting.hlsl 이 타깃 힙 SRV 로 읽는다.
 		static constexpr DXGI_FORMAT kReflectionFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;   // 반사 색은 1 을 넘을 수 있다
 		static constexpr float kReflectionMaxRoughness = 0.4f;   // 이 거칠기 이상은 반사 레이를 안 쏜다 — UE Lumen 기본값(«첫 판 범위» 와 같이 다시 정한다)
+		// 2026-11-14 — 라이팅에서 RT 반사 몫을 이 거칠기부터 줄여 kReflectionMaxRoughness 에서 0 으로(그 사이는 흐린 환경 반사와 섞는다).
+		//  문턱에서 반사가 켜짐 · 꺼짐으로 갈려 Meshy 총(거칠기 ≈ 0.43)이 얼룩지던 것을 고친다 — 노션 «총 텍스처 얼룩» 6절
+		static constexpr float kReflectionFadeStart = 0.3f;
+		static_assert(kReflectionFadeStart < kReflectionMaxRoughness, "RT 반사 줄이기 시작은 문턱보다 낮아야 한다");
 		ComPtr<ID3D12RootSignature> rtReflectionRootSig;   // 전역 루트 시그니처 (CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED)
 		ComPtr<ID3D12StateObject>   rtReflectionPso;       // RT 파이프라인 상태 객체 (RayGen · Miss · HitGroup)
 		ComPtr<ID3D12Resource>      rtShaderTable;         // UPLOAD — raygen 0 · miss 64 · hit group 128 바이트 자리
@@ -5249,6 +5254,8 @@ namespace swc {
 		lc.shadowEnabled = shadowPass ? 1u : 0u;
 		lc.reflectionEnabled = reflectionPass ? 1u : 0u;
 		lc.aoEnabled = aoPass ? 1u : 0u;            // 8단계
+		lc.reflectionMaxRoughness = Impl::kReflectionMaxRoughness;   // 2026-11-14 — RT 반사 몫 줄이기(0.3 → 0.4)
+		lc.reflectionFadeStart = Impl::kReflectionFadeStart;
 		lc.sunIlluminance = impl->sunIlluminance;   // 6단계
 		lc.skyEnabled = impl->skyValid ? 1u : 0u;   // 6단계 — 하늘 조도 텍스처가 만들어져 있으면 주변광으로 읽는다
 		lc.probeVolume = impl->probeVolume;         // 7단계 — [4c] GI 프로브 (enabled 0 이면 하늘 조도)

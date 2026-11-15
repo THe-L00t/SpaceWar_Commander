@@ -643,6 +643,56 @@ namespace Shared {
 		return added;
 	}
 
+	// 2026-11-15 — 상자 묶음 → 메시 하나. 꼭짓점 번호 c: bit0 = x(0 최소 · 1 최대), bit1 = y, bit2 = z.
+	//  삼각형 감기 방향은 판정에 쓰지 않는다(DeepestCapsuleContact 는 가장 가까운 점 · 먼 쪽으로 법선을 정한다) — 그래도 바깥을 보게 둔다.
+	uint32_t CollisionWorld::AddBoxCollider(const std::string& name, const CollisionBox* boxes, size_t count, CollisionClass cls)
+	{
+		if (!boxes || count == 0) return kNoMesh;
+		static constexpr uint32_t kFaces[12][3] = {
+			{ 0, 4, 6 }, { 0, 6, 2 },   // −X
+			{ 1, 3, 7 }, { 1, 7, 5 },   // +X
+			{ 0, 1, 5 }, { 0, 5, 4 },   // −Y
+			{ 2, 6, 7 }, { 2, 7, 3 },   // +Y
+			{ 0, 2, 3 }, { 0, 3, 1 },   // −Z
+			{ 4, 5, 7 }, { 4, 7, 6 },   // +Z
+		};
+
+		CollisionMesh mesh;
+		mesh.name = name;
+		mesh.cls = cls;
+		mesh.vertices.reserve(count * 8);
+		mesh.indices.reserve(count * 36);
+		for (size_t i = 0; i < count; ++i)
+		{
+			const CollisionBox& box = boxes[i];
+			const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+			for (uint32_t c = 0; c < 8; ++c)
+				mesh.vertices.push_back({ (c & 1) ? box.max.x : box.min.x,
+				                          (c & 2) ? box.max.y : box.min.y,
+				                          (c & 4) ? box.max.z : box.min.z });
+			for (const auto& face : kFaces)
+				for (const uint32_t corner : face)
+					mesh.indices.push_back(base + corner);
+		}
+		FinishMesh(mesh);   // 용접 · 퇴화 삼각형 제거(두께 0 상자) · 경계 · 디버그 선(상자 모서리) · BVH
+		if (mesh.indices.empty()) return kNoMesh;
+		meshes.push_back(std::move(mesh));
+		return static_cast<uint32_t>(meshes.size() - 1);
+	}
+
+	bool CollisionWorld::AddInstance(uint32_t mesh, const float xf[12])
+	{
+		if (mesh >= meshes.size() || !xf) return false;
+		CollisionInstance instance;
+		instance.mesh = mesh;
+		instance.cls = meshes[mesh].cls;
+		std::copy(xf, xf + 12, instance.xf);
+		ComputeInverse(instance);
+		InstanceBounds(meshes[mesh], instance);
+		instances.push_back(instance);
+		return true;
+	}
+
 	void CollisionWorld::Finalize()
 	{
 		grid.clear();
