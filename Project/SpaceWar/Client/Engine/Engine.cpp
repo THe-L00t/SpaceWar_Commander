@@ -53,7 +53,8 @@ namespace
 	//  맞은 표시·총구 화염·소리는 없다.
 	constexpr float  kTracerLife = 0.06f;     // 보이는 시간 (s)
 	constexpr float  kTracerStart = 0.05f;    // 총구 앞에서 시작 (m) — 2026-11-15 원점이 몸통 중심 → 든 총의 총구로 바뀌어 1.5 → 0.05
-	constexpr float  kTracerLength = 120.0f;  // 길이 (m) — 지평선이 125m 다
+	constexpr float  kTracerLength = 120.0f;  // 가장 긴 길이 (m) — 지평선이 125m 다. 2026-11-16 부터 그 전에 닿으면 거기까지만
+	constexpr float  kTracerMinLength = 0.05f; // 이보다 짧으면 그리지 않는다(총구가 벽 · 땅에 붙어 있을 때)
 	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
 	// 한 프레임에 쏠 수 있는 최대 발 수 — 프레임이 발 간격보다 길 때(기관총 1/11 s 면 11 fps 밑) 밀린 발을 이만큼까지 같이 쏜다.
 	//  서버가 한꺼번에 받아 주는 발 수(Server main.cpp kFireBurstShots)와 같게 둔다(2026-11-15).
@@ -1477,7 +1478,14 @@ namespace swc {
 		// 서버가 지금 맵에 넣어 준 뒤에만 보낸다(2026-11-01 맵 번호) — 들어가는 중 · 서버에 맵이 없으면 판정할 곳이 없다.
 		const bool send = network.Connected() && network.JoinedWorld() == CurrentWorld();
 		// 예광탄 — 그 총의 tracerEvery 발마다 하나(2026-11-15 부터 세 총 모두 매 발)
+		//  ★ 2026-11-16 사용자 «예광탄은 여전히 언덕을 뚫고 생기는데 이것도 수정해줘» — 예전에는 늘 120 m 막대라
+		//    겨눈 점이 언덕 · 벽이어도 그 너머까지 그려졌다. 이제 총구에서 이 발의 선(총구 → 겨눈 점)이 처음 닿는 곳까지만 —
+		//    서버 판정과 같은 함수(TraceShot)로 같은 원점 · 방향을 본다. 몸이면 몸통 중심 가까이까지. 한 프레임의 발은 원점 · 방향이 같아 한 번만 잰다.
 		const uint32_t every = spec.tracerEvery > 0 ? spec.tracerEvery : 1;
+		const Shared::ShotHit along = TraceVisibleShot(muzzle, aim,
+			(std::min)(double(spec.range), double(kTracerStart) + double(kTracerLength)), 0.0);
+		const double tracerEnd = along.kind == Shared::ShotHitKind::Body ? along.closest : along.distance;
+		const float tracerLength = float((std::min)(double(kTracerLength), tracerEnd - double(kTracerStart)));
 		const uint32_t maxShots = spec.fireMode == Shared::FireMode::Auto ? kMaxShotsPerFrame : 1u;
 		for (uint32_t shot = 0; shot < maxShots && fireCooldown <= kFireGateTolerance; ++shot)
 		{
@@ -1490,7 +1498,7 @@ namespace swc {
 			if (send)
 				network.SendFire(origin, dir);
 			if (shotsFired++ % every == 0)
-				SpawnTracer(muzzle, aim);
+				SpawnTracer(muzzle, aim, tracerLength);
 		}
 		fireCooldown = (std::max)(0.0f, fireCooldown);   // 상한에 걸려 남은 발은 버린다(다음 프레임에 몰아 쏘지 않게)
 	}
@@ -1512,6 +1520,21 @@ namespace swc {
 		// 카메라와 캐릭터 사이(어깨 뒤)는 보지 않는다 — 조준선이 총구 옆을 지나는 거리부터 «+ 사거리» 까지.
 		const double tStart = (std::max)(0.0, Dot(muzzle - eye, look));
 
+		// 땅을 겨누면 실제 지면을 겨눈다(지형 허용 0 — 서버 판정만 0.5 m 봐준다)
+		const Shared::ShotHit hit = TraceVisibleShot(eye, look, tStart + (std::max)(range, 1.0), tStart);
+		const double aimT = hit.kind == Shared::ShotHitKind::Body ? hit.closest : hit.distance;
+
+		// 총구 → 겨눈 점
+		const Vec3d toAim = (eye + look * aimT) - muzzle;
+		const double length = Length(toAim);
+		if (length < kAimMinDistance) return look;
+		const Vec3d dir = toAim * (1.0 / length);
+		return Dot(dir, look) > 0.0 ? dir : look;
+	}
+
+	Shared::ShotHit Engine::TraceVisibleShot(const Vec3d& origin, const Vec3d& direction,
+		double maxDistance, double minDistance) const
+	{
 		// 몸 — 다른 플레이어 · NPC 의 그려진 자리(UpdateNetwork 가 채운 지난 프레임 값).
 		//  연결이 끊기면 목록을 더 안 채워 옛 값이 남으므로 연결돼 있을 때만 넣는다.
 		std::vector<Shared::ShotTarget> targets;
@@ -1530,24 +1553,16 @@ namespace swc {
 		world.collision = (collision && collision->Loaded()) ? collision : nullptr;
 
 		Shared::ShotOptions options;
-		options.minDistance = tStart;
-		options.terrainTolerance = 0.0;   // 땅을 겨누면 실제 지면을 겨눈다(서버 판정만 0.5 m 봐준다)
-		const Shared::ShotHit hit = Shared::TraceShot(world, eye, look, tStart + (std::max)(range, 1.0),
-			targets.data(), targets.size(), options);
-		const double aimT = hit.kind == Shared::ShotHitKind::Body ? hit.closest : hit.distance;
-
-		// 총구 → 겨눈 점
-		const Vec3d toAim = (eye + look * aimT) - muzzle;
-		const double length = Length(toAim);
-		if (length < kAimMinDistance) return look;
-		const Vec3d dir = toAim * (1.0 / length);
-		return Dot(dir, look) > 0.0 ? dir : look;
+		options.minDistance = minDistance;
+		options.terrainTolerance = 0.0;   // 실제 지면 — 화면에 보이는 땅에서 멈춘다
+		return Shared::TraceShot(world, origin, direction, maxDistance, targets.data(), targets.size(), options);
 	}
 
 	// 발사선 위에 상자를 놓는다. +Z 를 조준 방향에 맞추고 Z 만 길이만큼 늘린다.
-	void Engine::SpawnTracer(const Vec3d& muzzle, const Vec3d& aim)
+	//  2026-11-16 — 길이는 부르는 쪽이 정한다(처음 닿는 곳까지, kTracerLength 까지). 너무 짧으면 그리지 않는다.
+	void Engine::SpawnTracer(const Vec3d& muzzle, const Vec3d& aim, float length)
 	{
-		if (tracerMesh == kInvalidMesh) return;
+		if (tracerMesh == kInvalidMesh || !(length >= kTracerMinLength)) return;
 
 		NodeHandle node = kInvalidNode;
 
@@ -1576,14 +1591,14 @@ namespace swc {
 		const Vec3d xAxis = Normalize(xRaw);
 		const Vec3d yAxis = Cross(zAxis, xAxis);
 
-		const Vec3d center = muzzle + aim * (double(kTracerStart) + double(kTracerLength) * 0.5);
+		const Vec3d center = muzzle + aim * (double(kTracerStart) + double(length) * 0.5);
 
 		XMMATRIX m;
 		m.r[0] = XMVectorSet(float(xAxis.x), float(xAxis.y), float(xAxis.z), 0.0f);
 		m.r[1] = XMVectorSet(float(yAxis.x), float(yAxis.y), float(yAxis.z), 0.0f);
-		m.r[2] = XMVectorSet(float(zAxis.x) * kTracerLength,
-			float(zAxis.y) * kTracerLength,
-			float(zAxis.z) * kTracerLength, 0.0f);
+		m.r[2] = XMVectorSet(float(zAxis.x) * length,
+			float(zAxis.y) * length,
+			float(zAxis.z) * length, 0.0f);
 		m.r[3] = XMVectorSet(float(center.x), float(center.y), float(center.z), 1.0f);
 
 		scene.SetLocalTransform(node, m);
