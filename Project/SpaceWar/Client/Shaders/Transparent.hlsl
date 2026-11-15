@@ -115,7 +115,8 @@ float3 ShadeHitDiffuse(uint instanceIndex, uint primitive, float2 bary, float3x4
 		Texture2D<float4> skyIrradiance = ResourceDescriptorHeap[gSkyIrradianceSrv];
 		ambient = SampleSkyIrradiance(skyIrradiance, gSkySampler, N);
 	}
-	return s.albedo * (1.0 - s.metallic) * (sun + ambient) + s.emissive;
+	// 2026-11-03 — 재질 AO 는 주변광에만(메인 라이팅과 같은 규칙)
+	return s.albedo * (1.0 - s.metallic) * (sun + ambient * s.ao) + s.emissive;
 }
 
 float4 PSIce(VOut i, bool frontFace : SV_IsFrontFace) : SV_Target

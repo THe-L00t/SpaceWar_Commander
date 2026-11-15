@@ -207,6 +207,7 @@ struct Surface
 	float  rough;      // kMinRoughness 이상으로 자른 값
 	float  metallic;
 	float3 emissive;
+	float  ao;         // 2026-11-03 — 재질 AO(1 = 안 가려짐). 주변광에만 곱한다(GB0.a · PSMain). 일반 재질은 1
 };
 
 #if TERRAIN_LAYERS
@@ -223,9 +224,10 @@ struct Surface
 //     → 1 · 2단계에서 경계 지대가 4 m 마다 같은 얼룩으로 바뀌던 바둑판이 노이즈를 따라 흐트러진다.
 //  섞는 값 = 색 · 거칠기(ORM.g) · AO(ORM.r) · 높이 · 탄젠트 공간 노멀(세 방향 투영 레이어는 평평 — 시안과 같음).
 //  금속성 0(ORM.b 가 0 인 지형 규격), 발광 0.
-//  ④ 4단계(시안 그대로): 색 × 큰 규모 흔들림(약 83 m) × AO 배율(AO × 0.55 + 0.45) × 바위 흔들림(바위 가중치만큼),
+//  ④ 4단계: 색 × 큰 규모 흔들림(약 83 m) × 바위 흔들림(바위 가중치만큼),
 //     법선 = 노멀맵 → 범프 1(섞은 높이, 바위는 4배) → 범프 2(지면 요철 노이즈). 범프는 블렌더 Bump 노드 식(TerrainBump).
-//     AO 는 G-buffer 에 자리가 없어, 시안처럼 색에 곱하는 것으로만 쓴다(일반 재질은 여전히 안 쓴다).
+//     ★ 2026-11-03 — AO 배율(AO × 0.55 + 0.45)은 색에 곱하지 않고 s.ao → G-buffer GB0.a 로 넘긴다.
+//       [5] 라이팅이 주변광에만 곱한다(시안은 색에 곱했다 — 그러면 햇빛 받는 면까지 어두워진다). 일반 재질은 1.
 
 // 한 픽셀의 레이어 좌표 — 두 크기 UV · 세 방향 투영 좌표와 그 미분, 섞는 비율
 struct TerrainCoords
@@ -369,15 +371,16 @@ Surface SampleSurface(VOut i, bool frontFace)
 			albedo += w[k] * SampleLayer(gLayerBaseColor, k, triplanar, c).rgb;
 			const float4 orm = SampleLayer(gLayerOrm, k, triplanar, c);
 			rough  += w[k] * orm.g;
-			ao     += w[k] * orm.r;   // 4단계 — 색에 곱한다(아래)
+			ao     += w[k] * orm.r;   // 재질 AO(아래 s.ao — 주변광에만)
 			// 세 방향 투영 레이어는 노멀맵 대신 평평한 노멀(시안 «(0.5, 0.5, 1.0) if tri»)
 			nTex   += w[k] * (triplanar ? float3(0.0, 0.0, 1.0) : SampleLayer(gLayerNormal, k, false, c).rgb * 2.0 - 1.0);
 		}
 	}
 
 	Surface s;
-	// ── 4단계 색 흔들림 — 시안 «col × macro × aof × var» ──
-	s.albedo   = albedo * TerrainColorScale(co, footprint, ao, w[kTerrainRockLayer], gMacroAmount, gMacroBias) * i.col;
+	// ── 4단계 색 흔들림 — 시안 «col × macro × aof × var» 중 aof 는 s.ao 로 따로(2026-11-03) ──
+	s.albedo   = albedo * TerrainColorScale(co, footprint, w[kTerrainRockLayer], gMacroAmount, gMacroBias) * i.col;
+	s.ao       = TerrainAoFactor(ao);
 	s.rough    = clamp(rough, kMinRoughness, 1.0);
 	s.metallic = 0.0;
 	s.emissive = float3(0.0, 0.0, 0.0);
@@ -418,6 +421,7 @@ Surface SampleSurface(VOut i, bool frontFace)
 	s.rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).g, kMinRoughness, 1.0);
 	s.metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).b);
 	s.emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
+	s.ao       = 1.0;   // 일반 재질은 ORM.r(차폐)을 읽지 않는다 — 가림 없음
 
 	s.N = normalize(i.nrm);
 	if (!frontFace) s.N = -s.N;
@@ -434,7 +438,7 @@ GBufferOut PSGBuffer(VOut i, bool frontFace : SV_IsFrontFace)
 	const Surface s = SampleSurface(i, frontFace);
 	// 5단계 — GB4 모션 벡터 = 이전 UV − 지금 UV (카메라 · 물체 움직임 둘 다 들어 있다)
 	const float2 motion = ClipToUv(i.prevClip) - ClipToUv(i.curClip);
-	return PackGBuffer(s.albedo, s.N, s.rough, s.metallic, s.emissive, motion);
+	return PackGBuffer(s.albedo, s.ao, s.N, s.rough, s.metallic, s.emissive, motion);
 }
 
 // ── 배경 패스 (forward) ──
@@ -449,7 +453,8 @@ float4 PSMain(VOut i, bool frontFace : SV_IsFrontFace) : SV_TARGET
 	const DirectLighting lit = EvaluateSunAndAmbient(s.albedo, s.N, V, s.rough, s.metallic, gSunDir,
 		gSunIlluminance, float3(kAmbient, kAmbient, kAmbient));
 
-	float3 color = lit.diffuse + lit.specular + lit.ambient + s.emissive;
+	// 2026-11-03 — 재질 AO 는 주변광에만(메인 라이팅 · RT 히트와 같은 규칙)
+	float3 color = lit.diffuse + lit.specular + lit.ambient * s.ao + s.emissive;
 
 	// 디버그 뷰 — 번호는 Lighting.hlsl 과 같다.
 	switch (gDebugMode)

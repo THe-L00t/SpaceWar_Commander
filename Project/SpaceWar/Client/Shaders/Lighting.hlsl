@@ -32,6 +32,10 @@
 //
 //  ★ 2026-10-27 렌더 8단계 — [2] AO (t13). 간접 확산(주변광)에만 곱한다 — 직접광 · 반사에는 곱하지 않는다.
 //    곱하기 전에 GTAO 다중 반사 보정(Jimenez 외 2016 식 10)을 건다: 밝은 표면은 가려진 곳에서도 서로 튕긴 빛이 남는다.
+//
+//  ★ 2026-11-03 — 재질 AO(GB0.a). 지형 레이어 ORM.r 이 색에 곱해져 있던 것을 G-buffer 로 옮겼다.
+//    가림 = [2] 화면 AO × 재질 AO → 다중 반사 보정 → 주변광에만 곱한다(직접광 · 반사에는 안 곱한다 — [2] 와 같은 규칙).
+//    두 AO 가 보는 크기가 다르다: [2] 는 깊이 버퍼의 모양(메시), 재질 AO 는 텍스처 안의 틈(깊이 버퍼에 없는 요철).
 // ============================================================
 
 #include "Shading.hlsli"
@@ -57,7 +61,7 @@ cbuffer LightingCB : register(b0)
 	ProbeVolume gProbeVolumeFar;   // 2026-10-28 — 먼 겹 (같은 아틀라스 t10 ~ t12 의 뒤쪽)
 };
 
-Texture2D<float4>   gAlbedo   : register(t0);   // GB0
+Texture2D<float4>   gAlbedo   : register(t0);   // GB0 (rgb 알베도 · a 재질 AO — 2026-11-03)
 Texture2D<float2>   gNormal   : register(t1);   // GB1 (팔면체)
 Texture2D<float4>   gMaterial : register(t2);   // GB2
 Texture2D<float3>   gEmissive : register(t3);   // GB3
@@ -96,7 +100,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	if (depth >= 1.0) return;   // 메인 패스 물체 없음 — 하늘 · 배경 패스 결과를 건드리지 않는다
 
 	const float3 P        = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj, gEyePos);
-	const float3 albedo   = gAlbedo[pixel].rgb;
+	const float4 gb0      = gAlbedo[pixel];
+	const float3 albedo   = gb0.rgb;
+	const float  materialAo = gb0.a;   // 2026-11-03 — 재질 AO (일반 재질 1)
 	const float3 N        = DecodeNormalOct(gNormal[pixel]);
 	const float4 material = gMaterial[pixel];
 	const float  rough    = max(material.r, kMinRoughness);   // 8비트 양자화로 바닥값 밑으로 내려가지 않게
@@ -122,7 +128,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
 	// [2] AO — 8단계. 돌지 않은 프레임이면 1 (가림 없음)
 	const float  ao = (gAoEnabled != 0) ? gAo[pixel] : 1.0;
-	const float3 aoMultiBounce = GtaoMultiBounce(ao, albedo);
+	// 2026-11-03 — 재질 AO 를 곱한 뒤 다중 반사 보정 (디버그 뷰 13 은 지금처럼 [2] AO 만 보여 준다)
+	const float3 aoMultiBounce = GtaoMultiBounce(ao * materialAo, albedo);
 
 	float3 color = (lit.diffuse + lit.specular) * shadow
 	             + lit.ambient * aoMultiBounce

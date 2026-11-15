@@ -20,6 +20,7 @@ struct HitSurface
 	float  rough;
 	float  metallic;
 	float3 emissive;
+	float  ao;           // 2026-11-03 — 재질 AO(1 = 안 가려짐). 맞은 점의 주변광에만 곱한다(래스터 GB0.a 와 같은 규칙)
 };
 
 // 물체 좌표의 점 → 월드 (2026-10-29). worldToObject = [A | b] (물체 = A·월드 + b) 이므로 월드 = A⁻¹(물체 − b).
@@ -64,7 +65,8 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 	//  · 색 · 거칠기만 섞는다. 노멀맵은 일반 재질처럼 읽지 않는다(히트 법선 = 기하 법선).
 	//  · 밉 0 을 읽는다 — DXR 셰이더에는 2×2 미분이 없다(DXR 명세). Unity HDRP 의 DXR 지형 패스도 미분 0(밉 0) 이다.
 	//  · 마스크는 가장 가까운 텍셀 하나(Load) — 반복 샘플러로 읽으면 팔면체 가장자리에서 반대편과 섞이기 때문이다.
-	//  · 4단계 색 흔들림(큰 규모 · 바위 · AO 배율)은 래스터와 같이 곱한다 — 반사 · GI 가 보는 지면 밝기가 화면과 같아야 해서다.
+	//  · 4단계 색 흔들림(큰 규모 · 바위)은 래스터와 같이 곱한다 — 반사 · GI 가 보는 지면 밝기가 화면과 같아야 해서다.
+	//    AO 배율은 2026-11-03 부터 색이 아니라 t.ao 로 낸다(래스터 GB0.a 와 같다 — 부르는 쪽이 주변광에만 곱한다).
 	//    노이즈는 거르지 않는다(footprint 0 — 레이에는 화면 미분이 없다). 행성 값은 재질 표 emissive.xy 에 있다.
 	if (mat.terrain != 0)
 	{
@@ -101,10 +103,11 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 		const float3 co = float3(pp.x, -pp.z, pp.y);   // 블렌더 물체 좌표(Forward.hlsl 지형 판과 같은 축)
 		HitSurface t;
 		t.N        = normalize(mul(n, (float3x3)worldToObject));
-		t.albedo   = albedo * TerrainColorScale(co, 0.0, ao, lw[kTerrainRockLayer], mat.emissive.x, mat.emissive.y) * c;
+		t.albedo   = albedo * TerrainColorScale(co, 0.0, lw[kTerrainRockLayer], mat.emissive.x, mat.emissive.y) * c;
 		t.rough    = clamp(rough, kMinRoughness, 1.0);
 		t.metallic = 0.0;
 		t.emissive = float3(0.0, 0.0, 0.0);
+		t.ao       = TerrainAoFactor(ao);
 		return t;
 	}
 
@@ -121,6 +124,7 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 	s.rough    = clamp(mat.roughness * roughTex.SampleLevel(textureSampler, uv, 0).g, kMinRoughness, 1.0);
 	s.metallic = saturate(mat.metallic * metalTex.SampleLevel(textureSampler, uv, 0).b);
 	s.emissive = mat.emissive * emissiveTex.SampleLevel(textureSampler, uv, 0).rgb;
+	s.ao       = 1.0;   // 일반 재질은 ORM.r 을 읽지 않는다(Forward.hlsl SampleSurface 와 같다)
 	return s;
 }
 

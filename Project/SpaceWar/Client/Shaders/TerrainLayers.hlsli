@@ -221,7 +221,7 @@ static const float kTerrainRockVarScale   = 0.11;   // 1/m — 바위 면 안의
 static const uint  kTerrainRockVarOctaves = 5;
 static const float kTerrainRockVarAmount  = 0.45;   // 바위: 노이즈 × 0.45 + 0.78
 static const float kTerrainRockVarBias    = 0.78;
-static const float kTerrainAoAmount       = 0.55;   // AO 를 색에 곱한다: AO × 0.55 + 0.45
+static const float kTerrainAoAmount       = 0.55;   // 재질 AO = AO × 0.55 + 0.45 (2026-11-03 — 색이 아니라 주변광에 곱한다)
 static const float kTerrainAoBias         = 0.45;
 static const float kTerrainRockBumpGain   = 3.0;    // 범프 1 높이 = 섞은 높이 × (바위 가중치 × 3 + 1) — 바위는 4배 깊게
 static const float kTerrainReliefScaleA   = 0.33;   // 범프 2 지면 요철 = noise(0.33, Detail 4) + 0.45 × noise(1.4, Detail 3)
@@ -230,10 +230,12 @@ static const float kTerrainReliefScaleB   = 1.4;
 static const uint  kTerrainReliefOctavesB = 4;
 static const float kTerrainReliefWeightB  = 0.45;
 
-// 색에 곱할 배율 = macro × aof × var (시안 «col × macro × aof × var»).
-//  co = 블렌더 물체 좌표(m), footprint = 화면 픽셀 하나가 덮는 길이(m, 0 = 거르지 않음), ao = 섞은 ORM.r,
+// 색에 곱할 배율 = macro × var (시안 «col × macro × aof × var» 에서 aof 를 뺀 것).
+//  co = 블렌더 물체 좌표(m), footprint = 화면 픽셀 하나가 덮는 길이(m, 0 = 거르지 않음),
 //  rockWeight = 바위 레이어 가중치, macroAmount · macroBias = 행성 값(빙하 0.22 · 0.89, 나머지 0.32 · 0.84).
-float TerrainColorScale(float3 co, float footprint, float ao, float rockWeight, float macroAmount, float macroBias)
+//  ★ 2026-11-03 — aof(AO 배율)는 TerrainAoFactor 로 따로 낸다. 색에 곱하면 햇빛(직접광)까지 어두워져서,
+//    G-buffer GB0.a(래스터) · HitSurface.ao(RT 히트)로 넘겨 주변광에만 곱한다.
+float TerrainColorScale(float3 co, float footprint, float rockWeight, float macroAmount, float macroBias)
 {
 	const float macro = TerrainFbm(co * kTerrainMacroScale, kTerrainMacroOctaves, footprint * kTerrainMacroScale) *
 		macroAmount + macroBias;
@@ -244,8 +246,13 @@ float TerrainColorScale(float3 co, float footprint, float ao, float rockWeight, 
 			kTerrainRockVarAmount + kTerrainRockVarBias;
 		variation = rockVar * rockWeight + (1.0 - rockWeight);
 	}
-	const float aoFactor = ao * kTerrainAoAmount + kTerrainAoBias;
-	return macro * aoFactor * variation;
+	return macro * variation;
+}
+
+// 재질 AO = 시안 aof(AO × 0.55 + 0.45). ao = 가중치로 섞은 ORM.r. 주변광에만 곱한다(1 = 안 가려짐).
+float TerrainAoFactor(float ao)
+{
+	return ao * kTerrainAoAmount + kTerrainAoBias;
 }
 
 // 범프 2 의 높이 — 지면 요철(0.5 ~ 3 m 규모, 지형 메시 2 m 간격보다 작은 울퉁불퉁함)

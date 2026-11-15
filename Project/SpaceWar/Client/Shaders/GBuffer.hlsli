@@ -5,7 +5,10 @@
 //  [5] 라이팅 합성(Lighting.hlsl)이 읽는다. 앞으로 붙을 단계(AO · RT 그림자 · 반사)도 여기서 읽는다.
 //
 //  슬롯  형식                    내용
-//  GB0   R8G8B8A8_UNORM_SRGB    rgb = 알베도(쓸 때 sRGB 로 저장, 읽을 때 선형으로 풀림)  a = 안 씀(1)
+//  GB0   R8G8B8A8_UNORM_SRGB    rgb = 알베도(쓸 때 sRGB 로 저장, 읽을 때 선형으로 풀림)
+//                               a = 재질 AO(1 = 안 가려짐). sRGB 형식이어도 알파는 선형 그대로 저장된다.
+//                               2026-11-03 — 지형 레이어 ORM.r 을 색에 곱하던 것을 여기로 옮겼다.
+//                               [5] 라이팅이 주변광(간접 확산)에만 곱한다. 일반 재질은 1.
 //  GB1   R16G16_SNORM           월드 법선 — 팔면체 인코딩(3성분을 2성분으로)
 //  GB2   R8G8B8A8_UNORM         r = 거칠기  g = 금속성  ba = 안 씀(0)
 //  GB3   R11G11B10_FLOAT        자체발광 (1 을 넘을 수 있다)
@@ -74,10 +77,10 @@ float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 size, float4x4 i
 	return w.xyz / w.w + eye;
 }
 
-GBufferOut PackGBuffer(float3 albedo, float3 N, float rough, float metallic, float3 emissive, float2 motion)
+GBufferOut PackGBuffer(float3 albedo, float ao, float3 N, float rough, float metallic, float3 emissive, float2 motion)
 {
 	GBufferOut o;
-	o.albedo   = float4(albedo, 1.0);
+	o.albedo   = float4(albedo, ao);
 	o.normal   = EncodeNormalOct(N);
 	o.material = float4(rough, metallic, 0.0, 0.0);
 	o.emissive = emissive;

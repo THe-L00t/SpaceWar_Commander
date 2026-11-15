@@ -854,7 +854,7 @@ namespace swc {
 		//  (5단계 후속 — GB4 모션 벡터도 이 배열에 넣었다. 처음엔 셰이더 레지스터 번호를 안 밀려고 따로 들었는데,
 		//   그러면 생성 · RTV · SRV · PSO 형식 · 배리어마다 GB4 만 따로 챙겨야 하고 이 «hlsli 표와 같다» 규칙도 깨졌다)
 		static constexpr DXGI_FORMAT kGBufferFormats[GbCount] = {
-			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 (a 안 씀)
+			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 · a 재질 AO (2026-11-03)
 			DXGI_FORMAT_R16G16_SNORM,          // GB1 월드 법선 — 팔면체 인코딩
 			DXGI_FORMAT_R8G8B8A8_UNORM,        // GB2 r 거칠기 · g 금속성
 			DXGI_FORMAT_R11G11B10_FLOAT,       // GB3 자체발광

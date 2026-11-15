@@ -196,6 +196,7 @@ void ClosestHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionA
 	const float3 sun = (dot(N, L) > 0.0) ? TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gSampler, P + N * 0.02, L, gMaxDistance)
 	                                     : float3(0.0, 0.0, 0.0);
 
-	payload.color = (lit.diffuse + lit.specular) * sun + lit.ambient + emissive;
+	// 2026-11-03 — 재질 AO 는 주변광에만(메인 라이팅과 같은 규칙)
+	payload.color = (lit.diffuse + lit.specular) * sun + lit.ambient * surface.ao + emissive;
 	payload.hitT  = RayTCurrent();
 }
