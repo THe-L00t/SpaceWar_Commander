@@ -20,7 +20,7 @@ struct HitSurface
 	float  rough;
 	float  metallic;
 	float3 emissive;
-	float  ao;           // 2026-11-03 — 재질 AO(1 = 안 가려짐). 맞은 점의 주변광에만 곱한다(래스터 GB0.a 와 같은 규칙)
+	float  ao;           // 2026-11-03 — 재질 AO(1 = 안 가려짐). 맞은 점의 주변광에만 곱한다(래스터 GB0.a 와 같은 규칙). 11-15 부터 일반 재질도
 };
 
 // 물체 좌표의 점 → 월드 (2026-10-29). worldToObject = [A | b] (물체 = A·월드 + b) 이므로 월드 = A⁻¹(물체 − b).
@@ -121,10 +121,12 @@ HitSurface FetchHitSurface(RtInstance inst, RtMaterial mat, uint primitive, floa
 	s.N        = normalize(mul(n, (float3x3)worldToObject));
 	s.albedo   = baseTex.SampleLevel(textureSampler, uv, 0).rgb * mat.baseColor.rgb * c;
 	// glTF metallicRoughness: 거칠기 = G, 금속성 = B (2026-10-28 — Forward.hlsl SampleSurface 와 같은 규약)
-	s.rough    = clamp(mat.roughness * roughTex.SampleLevel(textureSampler, uv, 0).g, kMinRoughness, 1.0);
+	const float4 orm = roughTex.SampleLevel(textureSampler, uv, 0);   // 2026-11-15 — 한 번 읽어 G(거칠기) · R(AO)
+	s.rough    = clamp(mat.roughness * orm.g, kMinRoughness, 1.0);
 	s.metallic = saturate(mat.metallic * metalTex.SampleLevel(textureSampler, uv, 0).b);
 	s.emissive = mat.emissive * emissiveTex.SampleLevel(textureSampler, uv, 0).rgb;
-	s.ao       = 1.0;   // 일반 재질은 ORM.r 을 읽지 않는다(Forward.hlsl SampleSurface 와 같다)
+	// 2026-11-15 — 재질 AO: Forward.hlsl SampleSurface 와 같은 식(lerp(1, ORM.r, strength), ORM 묶음일 때만 strength > 0)
+	s.ao       = lerp(1.0, orm.r, mat.occlusionStrength);
 	return s;
 }
 

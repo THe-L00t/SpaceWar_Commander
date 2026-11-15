@@ -103,7 +103,8 @@ cbuffer MaterialCB : register(b2)
 {
 	float4 gBaseColor;
 	float3 gEmissive;      float gRoughness;
-	float  gMetallic;      uint  gHasNormalMap;   float gAlphaCutoff;   float _pad3;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
+	float  gMetallic;      uint  gHasNormalMap;   float gAlphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
+	float  gOcclusionStrength;   // 2026-11-15 — 재질 AO(glTF strength, 0 = 없음, 예전 _pad3). AO = gRoughnessMap 의 R(ORM 묶음)
 };
 
 // 슬롯 순서는 ModelData.h 의 TextureSlot 과 같다.
@@ -207,7 +208,7 @@ struct Surface
 	float  rough;      // kMinRoughness 이상으로 자른 값
 	float  metallic;
 	float3 emissive;
-	float  ao;         // 2026-11-03 — 재질 AO(1 = 안 가려짐). 주변광에만 곱한다(GB0.a · PSMain). 일반 재질은 1
+	float  ao;         // 2026-11-03 — 재질 AO(1 = 안 가려짐). 주변광에만 곱한다(GB0.a · PSMain). 2026-11-15 부터 일반 재질도 ORM.r
 };
 
 #if TERRAIN_LAYERS
@@ -418,10 +419,14 @@ Surface SampleSurface(VOut i, bool frontFace)
 	// ★ 2026-10-28 — glTF metallicRoughness 텍스처는 거칠기 = G, 금속성 = B 다(R 은 차폐 — ORM 묶음).
 	//   로더는 같은 이미지를 거칠기 · 금속성 두 슬롯에 건다. 전에는 둘 다 R(차폐)을 읽어 비금속 땅이 금속으로 그려졌다.
 	//   따로 된 흑백 맵(OBJ map_Pr · map_Pm)은 세 채널이 같아 그대로 맞다. RtSurface.hlsli · Transparent.hlsl 도 같다.
-	s.rough    = clamp(gRoughness * gRoughnessMap.Sample(gSampler, i.uv).g, kMinRoughness, 1.0);
+	const float4 orm = gRoughnessMap.Sample(gSampler, i.uv);   // 2026-11-15 — 한 번 읽어 G(거칠기) · R(AO) 둘 다 쓴다
+	s.rough    = clamp(gRoughness * orm.g, kMinRoughness, 1.0);
 	s.metallic = saturate(gMetallic * gMetallicMap.Sample(gSampler, i.uv).b);
 	s.emissive = gEmissive * gEmissiveMap.Sample(gSampler, i.uv).rgb;
-	s.ao       = 1.0;   // 일반 재질은 ORM.r(차폐)을 읽지 않는다 — 가림 없음
+	// ★ 2026-11-15 — 재질 AO(사용자 «일반 재질도 그렇게 하도록 해줘»). glTF 식 그대로: lerp(1, AO, strength).
+	//   AO 이미지가 metallicRoughness 와 같은 이미지(ORM)일 때만 strength > 0 이다(로더 · GRenderer CreateMaterial). 아니면 1(가림 없음).
+	//   지형 판(TerrainAoFactor)과 달리 시안 배율(× 0.55 + 0.45)을 걸지 않는다 — 구워 둔 AO 를 그대로 쓴다.
+	s.ao       = lerp(1.0, orm.r, gOcclusionStrength);
 
 	s.N = normalize(i.nrm);
 	if (!frontFace) s.N = -s.N;

@@ -34,18 +34,23 @@
 //    곱하기 전에 GTAO 다중 반사 보정(Jimenez 외 2016 식 10)을 건다: 밝은 표면은 가려진 곳에서도 서로 튕긴 빛이 남는다.
 //
 //  ★ 2026-11-03 — 재질 AO(GB0.a). 지형 레이어 ORM.r 이 색에 곱해져 있던 것을 G-buffer 로 옮겼다.
-//    가림 = [2] 화면 AO × 재질 AO → 다중 반사 보정 → 주변광에만 곱한다(직접광 · 반사에는 안 곱한다 — [2] 와 같은 규칙).
+//    가림 = [2] 화면 AO × 재질 AO → 다중 반사 보정 → 주변광에만 곱한다(직접광 · RT 반사에는 안 곱한다 — [2] 와 같은 규칙).
 //    두 AO 가 보는 크기가 다르다: [2] 는 깊이 버퍼의 모양(메시), 재질 AO 는 텍스처 안의 틈(깊이 버퍼에 없는 요철).
+//    ★ 2026-11-15 — 흐린 환경 반사에도 곱한다(아래 11-14 절). 사용자: «간접광 프로브 GI로 하되 자세한 부분은 재질 AO»
+//      — 프로브(4 m 간격)도 [2](깊이 버퍼)도 텍스처 크기의 틈을 모르므로, 프로브에서 읽는 빛(확산 · 흐린 반사)은 둘 다 재질 AO 로 가린다.
+//    ★ 2026-11-15 — 일반 재질도 재질 AO 를 쓴다(사용자 «일반 재질도 그렇게 하도록 해줘»): glTF occlusionTexture 가
+//      metallicRoughness 와 같은 이미지(ORM)면 GB0.a = lerp(1, ORM.r, strength). 총 · 건물 · 소품 · 나무에 구운 AO 가 들어온다.
 //
 //  ★ 2026-11-14 반사 = F_env × [ w × RT 반사 + (1 − w) × 흐린 환경 반사 ]   (총 텍스처 얼룩 고침 — 노션 «총 텍스처 얼룩» 6절)
 //    예전: 거칠기 0.4(kReflectionMaxRoughness) 이상은 반사 0 · 아래는 RT 반사 — 문턱을 사이에 둔 Meshy 거칠기(≈ 0.43)가 얼룩졌다.
 //    · F_env  = 분할 합 환경 BRDF(Shading.hlsli EnvBrdf) — 재질 · 거칠기 · 보는 각도로 정해지는 세기
 //    · w      = 거칠기 gReflectionFadeStart(0.3) 에서 1 → gReflectionMaxRoughness(0.4) 에서 0, 선형. RT 가 안 돈 프레임은 0
-//    · 흐린 환경 반사 = GI 프로브(못 쓰면 하늘 조도)를 반사 방향으로 읽은 «조도/π» × AO
-//      (작은 틈의 가림은 프로브가 모르므로 AO 를 곱한다. RT 반사는 레이가 가림을 이미 본다.)
+//    · 흐린 환경 반사 = GI 프로브(못 쓰면 하늘 조도)를 반사 방향으로 읽은 «조도/π» × [2] AO × 재질 AO
+//      (작은 틈의 가림은 프로브가 모르므로 AO 를 곱한다. RT 반사는 레이가 메시의 가림을 이미 본다.)
 //      w = 1 인 픽셀(거칠기 0.3 이하 · RT 켜짐)은 프로브를 읽지 않는다.
 //    AO 가 «반사에는 곱하지 않는다» 는 8단계 줄은 RT 반사 몫에만 그대로다.
-//    ★ 2026-11-15 render/lab 에 합칠 때 — 흐린 환경 반사에 곱하는 AO 는 [2] 화면 AO 뿐이다. 재질 AO(GB0.a)도 곱할지는 미정(사용자 결정 대기).
+//    ★ 2026-11-15 — 흐린 환경 반사에 재질 AO(GB0.a)도 곱한다(사용자 «재질 AO 사용하도록»). AO 가 없는 재질은 1 이라 그대로다.
+//      틈에서 비스듬히 볼 때 하늘빛 반사가 새어 틈이 떠 보이던 것이 주변광과 같은 만큼 가려진다. 디버그 뷰 9 에서 보인다.
 // ============================================================
 
 #include "Shading.hlsli"
@@ -113,7 +118,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	const float3 P        = ReconstructWorldPosition(pixel, depth, gSize, gInvViewProj, gEyePos);
 	const float4 gb0      = gAlbedo[pixel];
 	const float3 albedo   = gb0.rgb;
-	const float  materialAo = gb0.a;   // 2026-11-03 — 재질 AO (일반 재질 1)
+	const float  materialAo = gb0.a;   // 2026-11-03 — 재질 AO (지형 = 레이어 ORM.r 배율, 11-15 부터 일반 재질 = glTF AO, 없으면 1)
 	const float3 N        = DecodeNormalOct(gNormal[pixel]);
 	const float4 material = gMaterial[pixel];
 	const float  rough    = max(material.r, kMinRoughness);   // 8비트 양자화로 바닥값 밑으로 내려가지 않게
@@ -147,7 +152,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 		? saturate((gReflectionMaxRoughness - rough) / max(gReflectionMaxRoughness - gReflectionFadeStart, 1.0e-4))
 		: 0.0;
 
-	// 2026-11-14 — 흐린 환경 반사: 프로브(가까운 겹 → 먼 겹) → 하늘 조도 → 상수 순서, 반사 방향으로 읽는다. × AO
+	// 2026-11-14 — 흐린 환경 반사: 프로브(가까운 겹 → 먼 겹) → 하늘 조도 → 상수 순서, 반사 방향으로 읽는다. × [2] AO × 재질 AO(11-15)
 	float3 reflectionEnv = float3(0.0, 0.0, 0.0);
 	if (reflectionWeight < 1.0)
 	{
@@ -159,7 +164,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 		if (envProbeWeight <= 0.0)
 			reflectionEnv = (gSkyEnabled != 0) ? SampleSkyIrradiance(gSkyIrradiance, gSkySampler, R)
 			                                   : float3(kAmbient, kAmbient, kAmbient);
-		reflectionEnv *= ao;
+		// 2026-11-15 — 재질 AO 도 곱한다: 프로브 · [2] 가 모르는 텍스처 크기의 틈(ORM.r). AO 가 없는 재질은 1.
+		//  다중 반사 보정(GtaoMultiBounce)은 걸지 않는다 — 그 보정은 확산끼리 튕긴 빛을 되돌리는 식이라 반사에는 맞지 않는다.
+		reflectionEnv *= ao * materialAo;
 	}
 
 	// 반사 그림 = w × RT + (1 − w) × 흐린 환경 — 세기는 F_env 가 정한다
