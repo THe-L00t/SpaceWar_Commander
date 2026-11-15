@@ -34,6 +34,7 @@
 #include "Client/Weapon/WeaponScene.h"          // 2026-11-15 줍기 · 떨구기 — 든 총 · 바닥 총 그리기
 #include "Shared/GameLogic/WeaponShowcase.h"    // 진열 자리(줍는 출처)
 #include "Shared/GameLogic/PlayerMovement.h"    // Shared::MoveWorld
+#include "Shared/GameLogic/ShotTrace.h"         // Shared::ShotHit — 2026-11-16 TraceVisibleShot
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -98,7 +99,14 @@ namespace swc {
 		void UpdatePlayer(float);
 		void UpdateWeapons(float);     // 2026-11-15 — 바닥 총 소식 · 든 총 그리기 · 줍기 대상 · E 줍기 · G 떨구기
 		void UpdateFire(float);
-		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim);
+		// length = 총구 앞 kTracerStart 부터 그릴 길이(m). 2026-11-16 — 처음 닿는 곳까지만(언덕 · 벽을 뚫지 않게).
+		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim, float length);
+		// 2026-11-15 크로스헤어 맞추기 — 카메라 눈에서 화면 가운데(조준선)로 그은 선이 처음 닿는 곳(겨눈 점)을 찾아
+		//  총구에서 그 점으로 가는 방향을 돌려준다. 겨눌 것이 없으면 사거리 끝 점. range = 든 총의 사거리(m).
+		Vec3d AimDirection(const Vec3d& muzzle, double range) const;
+		// 2026-11-16 — 클라에서 한 발이 처음 닿는 곳(Shared::TraceShot). 몸 = 연결돼 있을 때 그려진 원격 · NPC 자리,
+		//  충돌체 · 지형 = 지금 맵, 지형 허용 0(실제 지면). 겨눈 점(AimDirection) · 예광탄 길이(UpdateFire)가 같이 쓴다.
+		Shared::ShotHit TraceVisibleShot(const Vec3d& origin, const Vec3d& direction, double maxDistance, double minDistance) const;
 		void UpdateNetwork(float);
 		void RenderFrame();
 		void UpdateTitle(float);

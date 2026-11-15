@@ -99,6 +99,10 @@ namespace swc {
 		//  G-buffer · 배경 패스는 그 픽셀을 버리고, RT 레이(그림자 · AO · GI · 반사 · 반투명)는 그 자리를 지나간다.
 		bool  alphaMask = false;
 		float alphaCutoff = 0.5f;
+		// ── 재질 AO (2026-11-15) — glTF occlusionTexture.strength. 0 = AO 없음 ──
+		//  AO 는 Roughness 슬롯 텍스처(ORM)의 R 채널이다(Shared::SourceMaterial::occlusionStrength — 같은 이미지일 때만 켜진다).
+		//  셰이더: ao = lerp(1, ORM.r, occlusionStrength) → G-buffer GB0.a · RT 히트 → 주변광 · 흐린 환경 반사에만 곱한다.
+		float occlusionStrength = 0.0f;
 		std::array<uint32_t, kMaterialTextureCount> textures{
 			kInvalidModelIndex, kInvalidModelIndex, kInvalidModelIndex,
 			kInvalidModelIndex, kInvalidModelIndex };

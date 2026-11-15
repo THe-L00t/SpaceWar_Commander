@@ -16,6 +16,7 @@
 #include "Shared/GameLogic/PlayerMovement.h"
 #include "Shared/GameLogic/WeaponShowcase.h"
 #include "Shared/GameLogic/WeaponPickup.h"
+#include "Shared/GameLogic/ShotTrace.h"   // 한 발의 레이 — 몸 · 충돌체 · 지형(클라 겨눈 점과 같은 함수, 2026-11-15)
 #include "Shared/GameObject/Weapon.h"
 #include "Shared/Physics/CollisionWorld.h"
 #include "Shared/Physics/PhysicsCalculator.h"
@@ -1194,7 +1195,7 @@ void BroadcastNpcDespawn(UINT32 nNpcId)
 /////////////////////////////////////////////////////////////////////////
 //  한 발을 판정한다. ★ 행동 스레드에서만 부른다.
 //
-//  순서: 쏜 사람 -> 방향·원점 검사 -> 가장 가까운 대상 -> 지형 가림 -> 피해.
+//  순서: 쏜 사람 -> 방향·원점 검사 -> 한 발의 레이(Shared::TraceShot — 몸 · 충돌체 · 지형 중 먼저 닿는 것) -> 피해.
 //  클라는 «누가 맞았는지» 를 말하지 않는다 (명세 18절 원칙 4).
 //  ★ 쏜 사람의 맵 안에서만 판정한다(2026-11-01 맵 번호) — 대상 = 같은 맵 플레이어(+ 게임 맵이면 NPC), 가림 = 그 맵 지형.
 void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
@@ -1240,12 +1241,13 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 		origin.z = serverPos[2];
 	}
 
-	//4) 대상 — 다른 플레이어와 NPC 중 가장 가까운 것 하나.
-	bool	bHit		= false;
-	float	fBest		= spec.range;
-	UINT32	nHitPlayer	= 0;
-	UINT32	nHitNpc		= 0;
-
+	//4) 한 발의 레이 — Shared::TraceShot(클라 크로스헤어 겨눈 점과 같은 함수, 2026-11-15 사용자 «벽에 막히는건 당연히 막혀야지»).
+	//   대상 = 같은 맵의 다른 플레이어(+ 게임 맵이면 살아 있는 NPC) — 몸통 중심의 구(kHitRadius).
+	//   가림 = 그 맵의 충돌체(건물 · 바위 · 소품 · 나무 · 총 진열 상자)와 지형. 가장 먼저 닿는 것이 몸이면 명중, 아니면 막힘.
+	//   지형은 0.5 m 깊이까지 봐준다(예전 TerrainBlocks 의 여유와 같다 — 땅을 스치듯 지나는 발).
+	//   ★ 예전(~11-15): 가장 가까운 몸을 고른 뒤 지형만 봤다 — 건물 · 바위를 총알이 지나갔다(노션 「사격 시스템 설명」 4.2 의 1).
+	std::vector<Shared::ShotTarget> targets;
+	targets.reserve(list.size() + (nWorld == Shared::kWorldGameMap ? g_npcWorld.Count() : 0));
 	for (size_t i = 0; i < list.size(); ++i)
 	{
 		if (list[i]->PlayerId() == req.nShooterId) continue;
@@ -1253,41 +1255,40 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 
 		float target[3];
 		list[i]->LastPos(target);
-
-		const Shared::Vec3 center = { target[0], target[1], target[2] };
-
-		float fDist = 0.0f;
-		if (!Shared::PhysicsCalculator::RaySphere(origin, dir, center,
-			Shared::kHitRadius, fBest, fDist))
-			continue;
-
-		bHit = true;
-		fBest = fDist;
-		nHitPlayer = list[i]->PlayerId();
-		nHitNpc = 0;
+		targets.push_back({ Shared::Vec3d{ target[0], target[1], target[2] }, list[i]->PlayerId() });
 	}
+	const size_t nPlayerTargets = targets.size();   // 앞쪽 = 플레이어, 뒤쪽 = NPC
 
-	if (nWorld == Shared::kWorldGameMap)	//NPC 는 게임 맵에만 있다
+	if (nWorld == Shared::kWorldGameMap)	//NPC 는 게임 맵에만 있다 — 쓰러진 NPC 는 Snapshot 에서 빠진다
 	{
-		uint32_t nNpcId = 0;
-		float    fNpcDist = 0.0f;
-		if (g_npcWorld.Raycast(origin, dir, fBest, nNpcId, fNpcDist))
-		{
-			bHit = true;
-			fBest = fNpcDist;
-			nHitNpc = nNpcId;
-			nHitPlayer = 0;
-		}
+		std::vector<srv::NpcView> npcs;
+		g_npcWorld.Snapshot(npcs);
+		for (const srv::NpcView &npc : npcs)
+			targets.push_back({ Shared::Vec3d{ npc.pos.x, npc.pos.y, npc.pos.z }, npc.npcId });
 	}
 
-	if (!bHit) return;
+	Shared::ShotOptions options;
+	options.terrainTolerance = Shared::kShotServerTerrainTolerance;
+	const Shared::ShotHit hit = Shared::TraceShot(world.move,
+		Shared::Vec3d{ origin.x, origin.y, origin.z }, Shared::Vec3d{ dir.x, dir.y, dir.z }, spec.range,
+		targets.data(), targets.size(), options);
 
-	//5) 지형이 막고 있으면 맞지 않는다.
-	if (Shared::PhysicsCalculator::TerrainBlocks(&world.terrain, origin, dir, fBest))
+	//5) 몸보다 먼저 충돌체 · 지형에 닿으면 막힌다.
+	const float fBest = (float)hit.distance;
+	if (hit.kind == Shared::ShotHitKind::Collider)
+	{
+		printf("[사격] 플레이어 %u : 충돌체(건물 · 바위 등)에 막혔습니다 (%.1fm)\n", req.nShooterId, fBest);
+		return;
+	}
+	if (hit.kind == Shared::ShotHitKind::Terrain)
 	{
 		printf("[사격] 플레이어 %u : 지형에 막혔습니다 (%.1fm)\n", req.nShooterId, fBest);
 		return;
 	}
+	if (hit.kind != Shared::ShotHitKind::Body) return;   // 사거리 안에 아무것도 없다
+
+	const UINT32 nHitPlayer = hit.target < nPlayerTargets ? targets[hit.target].id : 0;
+	const UINT32 nHitNpc = hit.target < nPlayerTargets ? 0 : targets[hit.target].id;
 
 	//6) 피해.
 	if (nHitNpc != 0)

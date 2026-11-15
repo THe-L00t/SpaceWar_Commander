@@ -84,6 +84,13 @@ namespace Shared {
 		bool  alphaMask = false;
 		float alphaCutoff = 0.5f;                                               // glTF 기본값 0.5
 
+		// ── 재질 AO (2026-11-15) — glTF occlusionTexture ──
+		//  사용자 «일반 재질도 그렇게 하도록 해줘» (간접광 = GI 프로브, 프로브가 못 보는 세부 = 재질 AO).
+		//  셰이더는 Roughness 슬롯 텍스처의 R 채널을 AO 로 읽는다 — 그래서 AO 이미지가 metallicRoughness 이미지와 «같을 때»(ORM 묶음,
+		//  리소스 체크리스트 규격)만 켠다. 0 = AO 없음(가림 없음). 따로 된 AO 이미지는 슬롯이 없어 지금은 읽지 않는다
+		//  (11-15 기준 리소스 278 재질: 같은 이미지 189 · AO 없음 89 · 따로 0). 값 = glTF strength(0 ~ 1). OBJ 는 늘 0.
+		float occlusionStrength = 0.0f;
+
 		// 모델 파일이 있는 폴더 기준 상대 경로. 빈 문자열이면 그 슬롯은 없다.
 		// glTF 의 내장 이미지(.glb buffer / base64)는 ModelBuilder 가 쓸 수 있도록
 		// 아래 embeddedImage 로 따로 들어온다.

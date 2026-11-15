@@ -166,7 +166,8 @@ void CSProbeTrace(uint ray : SV_GroupThreadID, uint3 group : SV_GroupID)
 				Texture2D<float4> skyIrradiance = ResourceDescriptorHeap[gSkyIrradianceSrv];
 				indirect = SampleSkyIrradiance(skyIrradiance, gSkySampler, N);
 			}
-			result = float4(s.albedo * (1.0 - s.metallic) * (sun + indirect) + s.emissive, t);
+			// 2026-11-03 — 재질 AO 는 간접 조도에만(메인 라이팅과 같은 규칙)
+			result = float4(s.albedo * (1.0 - s.metallic) * (sun + indirect * s.ao) + s.emissive, t);
 		}
 	}
 	else

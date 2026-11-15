@@ -45,7 +45,7 @@ namespace Shared {
 		// ── 총 종류 표 — 조절은 여기서 (2026-11-14 제안값, 2026-11-15 부터 판정에 쓴다 — Weapon.h 머리 주석) ──
 		//  근거 범위(노션 「사격감 레퍼런스 조사」 0절 · 2절): 권총 분당 240 ~ 450발 · 기관총 545 ~ 936발 · 탄창 50 ~ 150,
 		//  Laser Rifle 은 현실 게임에 짝이 없어 반자동 DMR(분당 240 ~ 390발)을 기준으로 잡았다(기획 확인 대기).
-		//  권총의 발 간격 · 피해 · 사거리는 지금 서버 값(GameLogic.h kFireInterval 0.2 s · kShotDamage 25 · kFireRange 300 m)과 같다.
+		//  권총의 발 간격 · 피해는 예전 서버 값(GameLogic.h kFireInterval 0.2 s · kShotDamage 25)과 같다. 사거리는 아래 «사거리» 줄.
 		//  눕힌 높이 = 3인칭 glb 의 COL_<이름> X 반폭(2026-11-14 파일에서 잼).
 		//  예광 = 세 총 모두 매 발(2026-11-15 사용자 «예광탄 우선 매 발 나가게 해줘» — 기관총 3발마다 → 매 발. 조사의 CS2 기관총도 매 발).
 		//  모드 = 라이플 · 기관총 Auto(2026-11-15 사용자 «눌려있다면 해당 속도에 맞게 자동 발사되게 하자» — 라이플 Single → Auto).
@@ -55,14 +55,17 @@ namespace Shared {
 		//    (같은 날 사용자 «0.2 게이트 닫힌 사이에 들어온 클릭 신호는 버려줘» — Client Engine::UpdateFire).
 		//  간격 = 사용자 지정(2026-11-15 «라이플은 초당 9발 기관총 초당 11발로 수정해줘») — 라이플 0.25 s → 1/9 s(분당 540) ·
 		//    기관총 0.08 s → 1/11 s(분당 660). 권총은 제안값 0.20 s(초당 5발) 그대로.
+		//  사거리 = 세 총 모두 130 m(2026-11-16 사용자 «사거리 300이 의미 없을거 같아서 전부 130정도로 수정해줘» — 300 → 130).
+		//    행성 반지름 650 m 라 땅에 닿는 겨눈 점은 지평선(우클릭 조준 약 55 m · 평소 약 67 m)까지이고,
+		//    지평선 위로 솟은 몸(머리)도 약 100 ~ 115 m 까지만 보인다. 서버 판정(ResolveFire) · 클라 겨눈 점(AimDirection)이 이 값을 쓴다.
 		//  ★ 줄 순서 = WeaponType 순서.
 		constexpr WeaponSpec kSpecs[kWeaponTypeCount] =
 		{
 		//  총구 = 3인칭 glb 의 Muzzle 노드 translation(2026-11-15 파일에서 읽음 — 1인칭과 같은 자리).
 			// 이름          1인칭 glb                                      3인칭 glb                                      모드              탄               간격    피해   사거리  탄창  예비탄          장전   예광  눕힌 높이  총구 (x, y, z)                충돌 상자
-			{ "Pistol",     L"model\\weapon\\Pistol\\Pistol_FP.glb",         L"model\\weapon\\Pistol\\Pistol_TP.glb",         FireMode::Single, AmmoKind::Bullet, 0.20f, 25.0f, 300.0f,  12, kInfiniteAmmo, 1.5f, 1, 0.0162f, { 0.0f, 0.0349f, 0.1590f }, kPistolBoxes,     BoxCount(kPistolBoxes) },
-			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 50.0f, 300.0f,  10,  40,           2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
-			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 15.0f, 300.0f, 100, 200,           4.5f, 1, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
+			{ "Pistol",     L"model\\weapon\\Pistol\\Pistol_FP.glb",         L"model\\weapon\\Pistol\\Pistol_TP.glb",         FireMode::Single, AmmoKind::Bullet, 0.20f, 25.0f, 130.0f,  12, kInfiniteAmmo, 1.5f, 1, 0.0162f, { 0.0f, 0.0349f, 0.1590f }, kPistolBoxes,     BoxCount(kPistolBoxes) },
+			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 50.0f, 130.0f,  10,  40,           2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
+			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 15.0f, 130.0f, 100, 200,           4.5f, 1, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
 		};
 
 		constexpr WeaponSpec kNoSpec = { "", L"", L"", FireMode::Single, AmmoKind::Bullet, 0.0f, 0.0f, 0.0f, 0, 0, 0.0f, 1, 0.0f, { 0.0f, 0.0f, 0.0f }, nullptr, 0 };
