@@ -97,6 +97,11 @@ namespace swc {
 		uint32_t TlasMaxInstances() const;
 		uint32_t TlasDroppedInstances() const;
 
+		// ── GPU 구간 시간 보고 (2026-11-17 — Engine 자동 프레임 시간 측정 kAutoFrameBudget) ──
+		//  2 초마다 디버그 출력으로 내는 «[GPU 시간] N 프레임 평균 — 전체 … | 구간 …» 의 마지막 한 줄과, 지금까지 낸 보고 수.
+		const std::wstring& LastGpuTimeReport() const;
+		uint64_t GpuTimeReportCount() const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;

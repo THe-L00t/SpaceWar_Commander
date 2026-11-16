@@ -111,6 +111,23 @@ namespace swc {
 		void RenderFrame();
 		void UpdateTitle(float);
 
+		// ── 자동 프레임 시간 측정 (2026-11-17, Engine.cpp kAutoFrameBudget — 평소에는 꺼짐) ──
+		//  예시 행성 1 ~ 5 를 차례로 들어가 CPU · GPU 구간 시간을 모아 exe 옆 파일로 쓰고 창을 닫는다.
+		void RequestDebugPlanet(size_t index);   // 숫자키 · 자동 측정이 같이 쓰는 «예시 행성 index 로 넘어가기»
+		void UpdateFrameBudget(float dt, double updateMs, double renderMs, double endFrameMs);
+		void ResetFrameBudgetStage();
+		void WriteFrameBudget() const;
+		int                       budgetStage = 0;          // 0 = 시작 전, 1 ~ 5 = 예시 행성 측정 중, 6 = 끝
+		double                    budgetStageTime = 0.0;    // 그 행성에 들어간 뒤 흐른 시간(s)
+		uint64_t                  budgetReportMark = 0;     // 마지막으로 본 GPU 보고 번호(GRenderer::GpuTimeReportCount)
+		bool                      budgetSkipFirstReport = true;   // 측정 시작 뒤 첫 GPU 보고는 예열과 겹쳐 버린다
+		uint32_t                  budgetFrames = 0;
+		double                    budgetDtSum = 0.0, budgetUpdateSum = 0.0, budgetRenderSum = 0.0, budgetEndSum = 0.0;   // ms 합
+		double                    budgetUpdateMax = 0.0, budgetRenderMax = 0.0, budgetEndMax = 0.0;                     // ms
+		std::vector<std::wstring> budgetGpuReports;         // 측정 구간에 나온 GPU 보고 줄
+		std::wstring              budgetText;               // 파일에 쓸 내용
+		double                    lastEndFrameMs = 0.0;     // 이번 프레임 renderer.EndFrame() 시간(ms) — RenderFrame 이 잰다
+
 		HWND hwnd = nullptr;
 
 		// ── 명세 1절 «전체 구조» ────────────────────────────────

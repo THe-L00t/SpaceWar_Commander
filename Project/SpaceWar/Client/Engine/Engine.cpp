@@ -63,6 +63,20 @@ namespace
 	//  (60 fps 에서 0.2 s 마다 누른 클릭이 버려져 초당 2.5발이 된다 — 시뮬레이션). 0.1 ms 는 사람 손으로는 차이가 없다(2026-11-15).
 	constexpr float kFireGateTolerance = 1.0e-4f;
 
+	// ── 자동 프레임 시간 측정 (2026-11-17, 사용자 «지금까지 내용 렌더러 브랜치에 전부 머지하고 … 각 프레임 레이트 시간 예산 측정해줘») ──
+	//  true 로 빌드해 실행하면: 게임에 들어간 뒤 예시 행성 1 ~ 5 를 차례로 들어가(착륙 지점 L1 에 선 채로)
+	//  kFrameBudgetWarmup 초 기다리고 kFrameBudgetMeasure 초 동안 CPU 구간 시간과 GPU 구간 시간(GRenderer 의 2 초 보고)을 모아
+	//  exe 옆 frame_budget_<날짜_시각>.txt 에 쓰고 창을 닫는다. 평소에는 false — 잴 때만 켜서 빌드한다.
+	//  ★ Present(1, 0) 이라 수직 동기화가 켜져 있다 — «프레임 간격» 은 모니터 주사율에 묶이므로 실제 일은 구간 시간으로 본다.
+	constexpr bool   kAutoFrameBudget    = false;
+	constexpr double kFrameBudgetWarmup  = 6.0;    // s — 들어간 직후(오브젝트 고르기 · 업로드 · GI 수렴)를 빼려고
+	constexpr double kFrameBudgetMeasure = 12.0;   // s — GPU 보고(2 초마다)가 대여섯 번 나온다
+
+	double Milliseconds(std::chrono::steady_clock::duration d)
+	{
+		return std::chrono::duration<double, std::milli>(d).count();
+	}
+
 	// ── 크로스헤어 맞추기 (2026-11-15 사용자 «이제 크로스헤어에 맞도록 하는거 조절하자») ──
 	//  노션 「사격 시스템 설명」 4.1 의 ① — 눈 → 겨눈 점, 총구 → 겨눈 점(3인칭 슈터의 흔한 방식). Engine::AimDirection.
 	//  겨눈 점 찾기는 Shared::TraceShot(서버 판정과 같은 함수) — 지형 간격 · 좁히기 횟수도 거기(kShotTerrainStep · kShotTerrainRefine).
@@ -817,6 +831,7 @@ namespace swc {
 				continue;
 			}
 
+			const auto updateStart = std::chrono::steady_clock::now();   // 2026-11-17 자동 측정 — 게임 갱신 구간
 			HandleSystemKeys();
 			UpdatePlayer(dt);
 			UpdateDebugPlanetObjects();
@@ -829,8 +844,13 @@ namespace swc {
 			//  나중에 캐릭터 범위 단위 잡으로 쪼갠다(M5).
 			animator.Update(resources, dt);
 
+			const auto renderStart = std::chrono::steady_clock::now();
 			RenderFrame();
+			const auto renderEnd = std::chrono::steady_clock::now();
 			UpdateTitle(dt);
+			if (kAutoFrameBudget)
+				UpdateFrameBudget(dt, Milliseconds(renderStart - updateStart),
+					Milliseconds(renderEnd - renderStart) - lastEndFrameMs, lastEndFrameMs);
 		}
 	}
 
@@ -934,27 +954,34 @@ namespace swc {
 		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
 		{
 			if (!input.WasPressed('1' + int(i))) continue;
-			if (i == activeDebugPlanet) return;   // 이미 그 행성이다
-
-			if (network.Connected())
-			{
-				network.SendJoinWorld(Shared::WorldOfDebugPlanet(i));
-				Log(L"[맵] 서버에 맵 %u(%s)로 옮긴다고 알렸다", Shared::WorldOfDebugPlanet(i), PlanetDebugScene::Name(i));
-			}
-
-			loadStart = std::chrono::steady_clock::now();
-			const SceneId next = DebugPlanetSceneId(i);
-			if (sceneManager.DebugPlanet(i).Loaded())
-			{
-				sceneManager.ChangeScene(next, nullptr, resources);
-				return;
-			}
-			std::unique_ptr<LoadBatch> load = std::make_unique<LoadBatch>(
-				std::wstring(L"디버그 행성 ") + PlanetDebugScene::Name(i));
-			BuildDebugPlanetLoad(*load, i);
-			sceneManager.ChangeScene(next, std::move(load), resources);
+			RequestDebugPlanet(i);
 			return;
 		}
+	}
+
+	// 예시 행성 i 로 넘어가기를 요청한다 — 숫자키(HandleDebugPlanetKeys)와 자동 프레임 시간 측정(UpdateFrameBudget)이 같이 쓴다.
+	//  2026-11-17 HandleDebugPlanetKeys 에서 그대로 떼어 냈다(동작 같음).
+	void Engine::RequestDebugPlanet(size_t i)
+	{
+		if (i == activeDebugPlanet) return;   // 이미 그 행성이다
+
+		if (network.Connected())
+		{
+			network.SendJoinWorld(Shared::WorldOfDebugPlanet(i));
+			Log(L"[맵] 서버에 맵 %u(%s)로 옮긴다고 알렸다", Shared::WorldOfDebugPlanet(i), PlanetDebugScene::Name(i));
+		}
+
+		loadStart = std::chrono::steady_clock::now();
+		const SceneId next = DebugPlanetSceneId(i);
+		if (sceneManager.DebugPlanet(i).Loaded())
+		{
+			sceneManager.ChangeScene(next, nullptr, resources);
+			return;
+		}
+		std::unique_ptr<LoadBatch> load = std::make_unique<LoadBatch>(
+			std::wstring(L"디버그 행성 ") + PlanetDebugScene::Name(i));
+		BuildDebugPlanetLoad(*load, i);
+		sceneManager.ChangeScene(next, std::move(load), resources);
 	}
 
 	// 게임 맵(BuildGameLoad)과 같은 길 — 맵 glb 를 로딩 스레드에서 한 번 파싱해 렌더 메시와 접지면을 함께 얻고,
@@ -1904,7 +1931,9 @@ namespace swc {
 				XMFLOAT3(float(planet.center.x), float(planet.center.y), float(planet.center.z)), colliderView.Vertices());
 		}
 		renderer.DrawSprites(uiSprites);
+		const auto endFrameStart = std::chrono::steady_clock::now();
 		renderer.EndFrame();
+		lastEndFrameMs = Milliseconds(std::chrono::steady_clock::now() - endFrameStart);   // 2026-11-17 자동 측정 — Present + GPU 대기
 	}
 
 	// 로딩 씬 — 3D 는 그리지 않고 UI(배경 + 스피너)만 그린다.
@@ -2056,6 +2085,121 @@ namespace swc {
 			renderStats.dropped ? L" ★인스턴스 유실" : L"",
 			colliderText);
 		SetWindowText(hwnd, title);
+	}
+
+	// ── 자동 프레임 시간 측정 (2026-11-17, kAutoFrameBudget) ─────────────────────
+	//  Run 이 로딩이 아닌 프레임마다 부른다. 단계 = 예시 행성 번호(1 ~ 5): 들어가기 → 예열 → 측정 → 정리 → 다음 행성.
+	//  updateMs = 게임 갱신(입력 ~ 애니메이터), renderMs = RenderFrame 에서 EndFrame 을 뺀 것(추출 · TLAS 채우기 · 명령 기록),
+	//  endFrameMs = EndFrame(Present + GPU 끝 기다림 — 수직 동기화 대기도 여기에 들어간다).
+	void Engine::UpdateFrameBudget(float dt, double updateMs, double renderMs, double endFrameMs)
+	{
+		if (budgetStage == 0)
+		{
+			budgetText = L"자동 프레임 시간 측정 (Client/Engine/Engine.cpp kAutoFrameBudget)\n렌더러: " + renderer.StatusText() + L"\n";
+			wchar_t head[256];
+			swprintf_s(head, L"화면 %u×%u · 수직 동기화 켬(Present(1, 0)) · RT %s · 예열 %.0f s · 측정 %.0f s · 착륙 지점 L1 에 선 채로\n",
+				renderer.Width(), renderer.Height(),
+				renderer.SupportsRaytracing() && renderer.GetRayTracingParams().enabled ? L"켬" : L"끔",
+				kFrameBudgetWarmup, kFrameBudgetMeasure);
+			budgetText += head;
+			budgetStage = 1;
+			ResetFrameBudgetStage();
+			RequestDebugPlanet(0);
+			return;
+		}
+		if (budgetStage > int(PlanetDebugScene::kCount)) return;   // 끝났다(창을 닫는 중)
+
+		// 아직 그 행성에 안 들어갔으면 기다린다(로딩 중에는 Run 이 이 함수를 부르지 않는다).
+		const size_t target = size_t(budgetStage - 1);
+		if (!InDebugPlanet() || activeDebugPlanet != target) return;
+
+		budgetStageTime += dt;
+		if (budgetStageTime < kFrameBudgetWarmup)
+		{
+			budgetReportMark = renderer.GpuTimeReportCount();   // 예열 동안 나온 GPU 보고는 쓰지 않는다
+			budgetSkipFirstReport = true;
+			return;
+		}
+
+		++budgetFrames;
+		budgetDtSum += double(dt) * 1000.0;
+		budgetUpdateSum += updateMs;
+		budgetRenderSum += renderMs;
+		budgetEndSum += endFrameMs;
+		budgetUpdateMax = (std::max)(budgetUpdateMax, updateMs);
+		budgetRenderMax = (std::max)(budgetRenderMax, renderMs);
+		budgetEndMax = (std::max)(budgetEndMax, endFrameMs);
+		if (renderer.GpuTimeReportCount() != budgetReportMark)
+		{
+			budgetReportMark = renderer.GpuTimeReportCount();
+			// 측정 시작 뒤 첫 보고는 2 초 창의 앞부분이 예열에 걸쳐 있어 버린다.
+			if (budgetSkipFirstReport) budgetSkipFirstReport = false;
+			else budgetGpuReports.push_back(renderer.LastGpuTimeReport());
+		}
+		if (budgetStageTime < kFrameBudgetWarmup + kFrameBudgetMeasure) return;
+
+		// ── 이 행성 정리 ──
+		const double n = budgetFrames > 0 ? double(budgetFrames) : 1.0;
+		const RenderStats& s = renderer.Stats();
+		wchar_t line[640];
+		swprintf_s(line, L"\n== 예시 행성 %d %s — 측정 %u 프레임\n", budgetStage, PlanetDebugScene::Name(target), budgetFrames);
+		budgetText += line;
+		swprintf_s(line,
+			L"CPU(ms): 프레임 간격 평균 %.3f (%.1f fps) · 게임 갱신 평균 %.3f / 최대 %.3f · 렌더 기록 평균 %.3f / 최대 %.3f · "
+			L"EndFrame(Present + GPU 대기) 평균 %.3f / 최대 %.3f\n",
+			budgetDtSum / n, budgetDtSum > 0.0 ? 1000.0 * n / budgetDtSum : 0.0,
+			budgetUpdateSum / n, budgetUpdateMax, budgetRenderSum / n, budgetRenderMax, budgetEndSum / n, budgetEndMax);
+		budgetText += line;
+		swprintf_s(line, L"TLAS %u/%u(유실 %u) · 패킷 %zu · 그린 인스턴스 %zu · 그리기 %zu · 컬링 %zu · 래스터 유실 %zu · 삼각형 %.2fM\n",
+			renderer.TlasInstanceCount(), renderer.TlasMaxInstances(), renderer.TlasDroppedInstances(),
+			s.submitted, s.instances, s.drawCalls, s.culled, s.dropped, double(s.triangles) / 1000000.0);
+		budgetText += line;
+		budgetText += L"장면: " + terrainStatus + L"\n";
+		for (const std::wstring& report : budgetGpuReports)
+			budgetText += report + L"\n";
+		Log(L"[측정] 예시 행성 %d %s 끝 — %u 프레임", budgetStage, PlanetDebugScene::Name(target), budgetFrames);
+
+		++budgetStage;
+		ResetFrameBudgetStage();
+		if (budgetStage <= int(PlanetDebugScene::kCount))
+		{
+			RequestDebugPlanet(size_t(budgetStage - 1));
+			return;
+		}
+		WriteFrameBudget();
+		PostQuitMessage(0);
+	}
+
+	// 행성 하나의 측정값을 비운다(2026-11-17).
+	void Engine::ResetFrameBudgetStage()
+	{
+		budgetStageTime = 0.0;
+		budgetReportMark = renderer.GpuTimeReportCount();
+		budgetSkipFirstReport = true;
+		budgetFrames = 0;
+		budgetDtSum = budgetUpdateSum = budgetRenderSum = budgetEndSum = 0.0;
+		budgetUpdateMax = budgetRenderMax = budgetEndMax = 0.0;
+		budgetGpuReports.clear();
+	}
+
+	// exe 옆 frame_budget_<날짜_시각>.txt 에 UTF-8 로 쓴다(2026-11-17).
+	void Engine::WriteFrameBudget() const
+	{
+		SYSTEMTIME now = {};
+		GetLocalTime(&now);
+		wchar_t name[64];
+		swprintf_s(name, L"frame_budget_%04u%02u%02u_%02u%02u%02u.txt",
+			now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+		const std::wstring path = ExeDirectory() + name;
+		FILE* file = nullptr;
+		if (_wfopen_s(&file, path.c_str(), L"w, ccs=UTF-8") != 0 || !file)
+		{
+			Log(L"[측정] 결과 파일을 못 열었다 — %s", path.c_str());
+			return;
+		}
+		fputws(budgetText.c_str(), file);
+		fclose(file);
+		Log(L"[측정] 결과를 썼다 — %s", path.c_str());
 	}
 
 } // namespace swc

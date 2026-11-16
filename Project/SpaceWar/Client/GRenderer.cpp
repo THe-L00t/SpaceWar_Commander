@@ -1207,6 +1207,8 @@ namespace swc {
 		double         gpuFrameSum = 0.0;
 		uint32_t       gpuTimedFrames = 0;
 		LARGE_INTEGER  gpuReportStart = {};
+		std::wstring   lastGpuReport;          // 2026-11-17 — 마지막 보고 한 줄(LastGpuTimeReport, 끝 줄바꿈 없음)
+		uint64_t       gpuReportCount = 0;     // 지금까지 낸 보고 수(GpuTimeReportCount)
 
 		void MarkGpuTime(const wchar_t* name)
 		{
@@ -1250,6 +1252,8 @@ namespace swc {
 				swprintf_s(line, L" | %s %.3f", e.first.c_str(), e.second / gpuTimedFrames);
 				report += line;
 			}
+			lastGpuReport = report;   // 2026-11-17 — Engine 자동 프레임 시간 측정이 읽는다
+			++gpuReportCount;
 			report += L"\n";
 			OutputDebugStringW(report.c_str());
 			gpuTimeSums.clear();
@@ -5594,4 +5598,8 @@ namespace swc {
 	uint32_t GRenderer::TlasInstanceCount()   const { return impl->accel.InstanceCount(); }
 	uint32_t GRenderer::TlasMaxInstances()    const { return impl->accel.MaxInstances(); }
 	uint32_t GRenderer::TlasDroppedInstances()const { return impl->accel.DroppedInstances(); }
+
+	// 2026-11-17 — 자동 프레임 시간 측정(Engine kAutoFrameBudget)
+	const std::wstring& GRenderer::LastGpuTimeReport() const { return impl->lastGpuReport; }
+	uint64_t GRenderer::GpuTimeReportCount() const { return impl->gpuReportCount; }
 }
