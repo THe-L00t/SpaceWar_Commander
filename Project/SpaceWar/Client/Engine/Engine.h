@@ -28,6 +28,13 @@
 #include "Client/Planet.h"
 #include "Shared/Terrain/TerrainSampler.h"
 #include "Shared/Terrain/PlanetSurface.h"
+#include "Shared/Physics/CollisionWorld.h"
+#include "Client/DebugView/ColliderDebugView.h"
+#include "Client/Weapon/WeaponModels.h"
+#include "Client/Weapon/WeaponScene.h"          // 2026-11-15 줍기 · 떨구기 — 든 총 · 바닥 총 그리기
+#include "Shared/GameLogic/WeaponShowcase.h"    // 진열 자리(줍는 출처)
+#include "Shared/GameLogic/PlayerMovement.h"    // Shared::MoveWorld
+#include "Shared/GameLogic/ShotTrace.h"         // Shared::ShotHit — 2026-11-16 TraceVisibleShot
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -74,20 +81,52 @@ namespace swc {
 		// ── 예시 행성 디버그 씬 (2026-10-28, PlanetDebugScene.h) ──
 		//  숫자키 1~5 로 행성을 고른다. 처음이면 로드 묶음을 만들어 로딩 씬을 거치고,
 		//  씬에 들어가면 보이는 맵 · 접지면 · 스폰을 그 행성으로 바꿔 끼운다.
-		//  서버 세계는 게임 맵이라 디버그 행성에서는 네트워크를 돌리지 않는다.
+		//  ★ 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») — 행성을 고르면 서버에 JoinWorld 를 보내고,
+		//    서버가 그 행성을 판정한다(Shared/World/WorldCatalog.h · Network.h). 답이 오기 전 · 서버가 못 읽었으면 혼자 움직인다.
+		//  ★ 0 키 = 처음 씬(게임 맵, 맵 번호 0)으로 돌아간다 (2026-11-14 사용자 «처음 씬을 0번 키에 할당해주고»).
+		//    게임 맵은 처음에 이미 읽었으므로 묶음 없이 넘어가고, 들어가면 ReturnToGameMap 이 보이는 맵 · 접지면 · 스폰을 되돌린다.
 		void HandleDebugPlanetKeys();
 		void BuildDebugPlanetLoad(LoadBatch&, size_t index);
 		void EnterDebugPlanet(size_t index);
+		void ReturnToGameMap();
+		Vec3d GameMapSpawnPoint() const;   // 게임 맵 스폰(착륙 지점 L1 방향, 지면 위 kGroundOffset)
 		void UpdateDebugPlanetObjects();
 		void ParkNetworkNodes();
 		bool InDebugPlanet() const { return activeDebugPlanet != kNoDebugPlanet; }
+		// 지금 보이는 맵의 번호 — 게임 맵 0, 예시 행성 1 ~ 5(Shared/World/WorldCatalog.h).
+		uint32_t CurrentWorld() const;
 
 		void UpdatePlayer(float);
+		void UpdateWeapons(float);     // 2026-11-15 — 바닥 총 소식 · 든 총 그리기 · 줍기 대상 · E 줍기 · G 떨구기
 		void UpdateFire(float);
-		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim);
+		// length = 총구 앞 kTracerStart 부터 그릴 길이(m). 2026-11-16 — 처음 닿는 곳까지만(언덕 · 벽을 뚫지 않게).
+		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim, float length);
+		// 2026-11-15 크로스헤어 맞추기 — 카메라 눈에서 화면 가운데(조준선)로 그은 선이 처음 닿는 곳(겨눈 점)을 찾아
+		//  총구에서 그 점으로 가는 방향을 돌려준다. 겨눌 것이 없으면 사거리 끝 점. range = 든 총의 사거리(m).
+		Vec3d AimDirection(const Vec3d& muzzle, double range) const;
+		// 2026-11-16 — 클라에서 한 발이 처음 닿는 곳(Shared::TraceShot). 몸 = 연결돼 있을 때 그려진 원격 · NPC 자리,
+		//  충돌체 · 지형 = 지금 맵, 지형 허용 0(실제 지면). 겨눈 점(AimDirection) · 예광탄 길이(UpdateFire)가 같이 쓴다.
+		Shared::ShotHit TraceVisibleShot(const Vec3d& origin, const Vec3d& direction, double maxDistance, double minDistance) const;
 		void UpdateNetwork(float);
 		void RenderFrame();
 		void UpdateTitle(float);
+
+		// ── 자동 프레임 시간 측정 (2026-11-17, Engine.cpp kAutoFrameBudget — 평소에는 꺼짐) ──
+		//  예시 행성 1 ~ 5 를 차례로 들어가 CPU · GPU 구간 시간을 모아 exe 옆 파일로 쓰고 창을 닫는다.
+		void RequestDebugPlanet(size_t index);   // 숫자키 · 자동 측정이 같이 쓰는 «예시 행성 index 로 넘어가기»
+		void UpdateFrameBudget(float dt, double updateMs, double renderMs, double endFrameMs);
+		void ResetFrameBudgetStage();
+		void WriteFrameBudget() const;
+		int                       budgetStage = 0;          // 0 = 시작 전, 1 ~ 5 = 예시 행성 측정 중, 6 = 끝
+		double                    budgetStageTime = 0.0;    // 그 행성에 들어간 뒤 흐른 시간(s)
+		uint64_t                  budgetReportMark = 0;     // 마지막으로 본 GPU 보고 번호(GRenderer::GpuTimeReportCount)
+		bool                      budgetSkipFirstReport = true;   // 측정 시작 뒤 첫 GPU 보고는 예열과 겹쳐 버린다
+		uint32_t                  budgetFrames = 0;
+		double                    budgetDtSum = 0.0, budgetUpdateSum = 0.0, budgetRenderSum = 0.0, budgetEndSum = 0.0;   // ms 합
+		double                    budgetUpdateMax = 0.0, budgetRenderMax = 0.0, budgetEndMax = 0.0;                     // ms
+		std::vector<std::wstring> budgetGpuReports;         // 측정 구간에 나온 GPU 보고 줄
+		std::wstring              budgetText;               // 파일에 쓸 내용
+		double                    lastEndFrameMs = 0.0;     // 이번 프레임 renderer.EndFrame() 시간(ms) — RenderFrame 이 잰다
 
 		HWND hwnd = nullptr;
 
@@ -102,7 +141,6 @@ namespace swc {
 
 		Network                   network;        // Network (10절). 스레드 분리는 멀티스레딩 10장 M4
 		std::wstring              netStatus;
-		float                     sendAccumulator = 0.0f;
 		std::vector<RemoteView>   remoteViews;
 		std::vector<NpcView>      npcViews;
 
@@ -117,6 +155,14 @@ namespace swc {
 		Shared::PlanetSurface  planetSurface;     // GLB 지형. 렌더와 서버가 같은 구면 좌표를 사용한다.
 		Shared::TerrainSampler terrain;
 		std::wstring           terrainStatus;
+
+		// ── 정적 오브젝트 충돌체 (2026-10-29, Shared/Physics/CollisionWorld.h) ──
+		//  게임 맵 몫. 예시 행성 몫은 PlanetDebugScene::Collision(). 이동 예측(PlayerController)과 C 키 와이어프레임이 쓴다.
+		//  서버도 같은 파일로 판정한다(게임 맵 2026-10-29 B안, 예시 행성 2026-11-01 맵 번호).
+		Shared::CollisionWorld gameMapCollision;
+		ColliderDebugView      colliderView;
+		bool                   showColliders = false;   // C 키
+		const Shared::CollisionWorld* ActiveCollision() const;
 
 		// 로드 확인용 — 게임에 들어갈 때 콘솔에 «로드 N초 (행성 파싱/캐시)» 를 찍는다(Client/Log.h).
 		std::chrono::steady_clock::time_point loadStart{};
@@ -161,6 +207,51 @@ namespace swc {
 		MeshHandle              tracerMesh = kInvalidMesh;
 		std::vector<Tracer>     tracers;
 		std::vector<NodeHandle> freeTracerNodes;
+
+		// ── 총 모델 (2026-11-14, Shared/GameObject/Weapon.h · Client/Weapon/WeaponModels.h) ──
+		//  총 종류 × 1인칭 · 3인칭을 게임 로드 때 한 번 올린다. 명세에는 21절 «작업 중 추가된 클래스» 에 있다.
+		//  진열(weaponShowcase) — 사용자 «씬 처음 허공에 1인칭 모델과 3인칭 모델 총 6개 띄우는거까지만»:
+		//  게임 맵 스폰 앞 허공에 6개를 띄워 모델을 확인한다. 예시 행성에 들어가면 숨기고, 0 키로 돌아오면 다시 보인다.
+		WeaponModels            weaponModels;
+		NodeHandle              weaponShowcase = kInvalidNode;
+		void BuildWeaponShowcase();
+		// 2026-11-15 사용자 «충돌체도 같이 적용은 해줘봐» — BuildWeaponShowcase 가 진열 6개에 총마다 상자 묶음 충돌체
+		//  (WeaponSpec::colliderBoxes)를 gameMapCollision 에 넣는다. 자리는 Shared/GameLogic/WeaponShowcase.h —
+		//  서버도 같은 자리에 같은 충돌체를 넣는다(이동 판정이 서버 권위라서).
+		Shared::WeaponShowcaseSlot showcaseSlots[Shared::kWeaponShowcaseSlotCount];   // 진열 자리 = 줍는 출처(2026-11-15)
+		bool                       hasShowcaseSlots = false;
+
+		// ── 총 줍기 · 떨구기 · 든 총으로 쏘기 (2026-11-15, Shared/GameLogic/WeaponPickup.h · Client/Weapon/WeaponScene.h) ──
+		//  사용자: «주우면 애니메이션 시에 적절한 위치에 총을 고정시키고, 쏠 수 있도록 해줘. 줍기, 떨구기 둘 다 구현하면 되는거야.
+		//          이때 공중에 있는것을 줍고, 떨구면 땅바닥에 떨어지도록. 공중에 있는 총은 사라지지 않게»
+		//  접속 중 = 서버가 정한 것(network.MyWeapon · WeaponOf · 바닥 총 소식), 오프라인 = 아래 offline* 로 혼자 처리.
+		WeaponScene               weaponScene;
+		Shared::WeaponType        offlineHeld = Shared::WeaponType::None;   // 오프라인일 때 든 총
+		uint32_t                  offlineNextGroundId = 1;
+		std::vector<GroundWeaponEvent> groundEventScratch;                   // 네트워크에서 꺼낸 바닥 총 소식(매 프레임 재사용)
+		struct PickupTarget
+		{
+			bool               valid = false;
+			uint8_t            source = 0;          // Shared::kPickupFrom*
+			uint32_t           id = 0;              // 진열 자리 번호 · 바닥 총 번호
+			Shared::WeaponType type = Shared::WeaponType::None;
+			double             distance = 0.0;
+		};
+		PickupTarget              pickupTarget;     // 지금 E 로 주울 총(가장 가까운 것, Shared::kWeaponPickupRange 안)
+		float                     fireCooldown = 0.0f;   // 다음 발까지 남은 시간(s) — 든 총의 발 간격. 0 이면 «게이트가 열림»
+		uint32_t                  shotsFired = 0;        // 예광탄 간격(WeaponSpec::tracerEvery) 세기
+		Shared::WeaponType HeldWeapon() const;           // 지금 든 총(접속 = 서버 값, 오프라인 = offlineHeld)
+		Shared::MoveWorld  WeaponMoveWorld() const;      // 떨군 자리 · 진열 자리 계산용(planet · 지형)
+		void FindPickupTarget();
+		void OfflinePickup(const PickupTarget& target);
+		void OfflineDrop();
+
+		// 임시 크로스헤어 (2026-11-14) — 코드로 만든 UI 텍스처. 화면 한가운데(조준선)에 그린다(Engine.cpp kCrosshair*).
+		TextureHandle           crosshairTexture = kInvalidTexture;
+		// NPC 명중 표시 (2026-11-16) — 크로스헤어와 같은 방식의 X(네 분면 대각선, Engine.cpp kHitMarker*). 크로스헤어 위에 겹쳐 그린다.
+		//  서버가 «내 발이 NPC 에 맞았다»(Network::TakeNpcHits)고 알리면 hitMarkerTimer 를 kHitMarkerSeconds 로 채운다.
+		TextureHandle           hitMarkerTexture = kInvalidTexture;
+		float                   hitMarkerTimer = 0.0f;   // 남은 표시 시간(s). 0 이면 그리지 않는다
 
 		FramePacket               packet;       // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫

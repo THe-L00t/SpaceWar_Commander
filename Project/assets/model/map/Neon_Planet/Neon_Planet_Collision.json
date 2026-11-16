@@ -1,0 +1,1309 @@
+{
+ "version": 1,
+ "kind": "types",
+ "map": "Neon_Planet",
+ "source": "Neon_Planet_Placement.json",
+ "generated": "2026-10-29",
+ "generator": "Resource_Work/_tools/collision/col_build.py",
+ "player_height_m": 1.8,
+ "small_rock_ratio": 0.15,
+ "rules": [
+  "작은 식물(Grass_ · Fern_ · Bush_ · Flower_ · Shrub_ · Weed_)은 충돌 없음(method none) — 2026-10-29 사용자 «정말 작은 식물의 경우 우선은 충돌에서 빼줘»",
+  "돌(class rock)은 인스턴스 배율 < min_scale 이면 충돌 없음. min_scale = (1.8 m × 0.15) ÷ height_m — 사용자 «엄청 작은 돌들도 플레이어 기준 높이가 15%아래라면 충돌체도 만들지 마». 게임(로더)이 판정한다",
+  "나머지는 저폴리 — 사용자 «나머진은 저폴리로 충돌 가자». 이미 COL_ 이 있는 종류는 그대로(existing_col) — 단 렌더 표면 밖으로 0.30 m(p95) 넘게 부풀면 보이지 않는 벽이 되므로 아래 규칙으로 새로 만든다(replaced_col 에 원래 COL_ 기록). 나무는 줄기 각기둥(trunk), 건물은 평면 합치기 → 간선 붕괴, 돌 · 소품은 볼록 껍질이 맞으면 hull 아니면 간선 붕괴. 간선 붕괴 비율은 낮은 쪽부터 올려 cover · bulge p95 가 허용치(tol_m) 안인 첫 단계",
+  "오차: cover = 렌더 표면 → 충돌체(빠진 곳), bulge = 충돌체 표면 → 렌더(부푼 곳), 표본 3000 점씩, m"
+ ],
+ "types": {
+  "Bldg_Block_A": {
+   "class": "building",
+   "instances": 246,
+   "render_tris": 588,
+   "height_m": 6.265,
+   "render_min": [
+    -4.325,
+    -3.0,
+    -3.0
+   ],
+   "render_max": [
+    4.55,
+    6.265,
+    4.1
+   ],
+   "replaced_col": {
+    "tris": 12,
+    "bulge_p95_m": 1.409
+   },
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.032,
+   "bulge_p95_m": 0.031,
+   "cover_max_m": 0.133,
+   "bulge_max_m": 0.098,
+   "tris": 266,
+   "tried": [
+    [
+     "collapse 0.02",
+     76,
+     2.027
+    ],
+    [
+     "collapse 0.04",
+     76,
+     2.027
+    ],
+    [
+     "collapse 0.07",
+     76,
+     2.027
+    ],
+    [
+     "collapse 0.12",
+     76,
+     2.027
+    ],
+    [
+     "collapse 0.20",
+     105,
+     0.251
+    ],
+    [
+     "collapse 0.30",
+     158,
+     0.148
+    ],
+    [
+     "collapse 0.50",
+     266,
+     0.032
+    ]
+   ]
+  },
+  "Bldg_Block_B": {
+   "class": "building",
+   "instances": 84,
+   "render_tris": 1154,
+   "height_m": 12.723,
+   "render_min": [
+    -6.296,
+    -3.0,
+    -4.33
+   ],
+   "render_max": [
+    6.55,
+    12.723,
+    5.1
+   ],
+   "replaced_col": {
+    "tris": 12,
+    "bulge_p95_m": 1.968
+   },
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.016,
+   "bulge_p95_m": 0.016,
+   "cover_max_m": 0.093,
+   "bulge_max_m": 0.101,
+   "tris": 518,
+   "tried": [
+    [
+     "collapse 0.02",
+     144,
+     3.243
+    ],
+    [
+     "collapse 0.04",
+     144,
+     3.243
+    ],
+    [
+     "collapse 0.07",
+     144,
+     3.243
+    ],
+    [
+     "collapse 0.12",
+     144,
+     3.243
+    ],
+    [
+     "collapse 0.20",
+     206,
+     0.185
+    ],
+    [
+     "collapse 0.30",
+     310,
+     0.148
+    ],
+    [
+     "collapse 0.50",
+     518,
+     0.016
+    ]
+   ]
+  },
+  "Bldg_Block_C": {
+   "class": "building",
+   "instances": 34,
+   "render_tris": 1708,
+   "height_m": 15.504,
+   "render_min": [
+    -8.54,
+    -3.0,
+    -6.12
+   ],
+   "render_max": [
+    8.55,
+    15.504,
+    7.1
+   ],
+   "replaced_col": {
+    "tris": 24,
+    "bulge_p95_m": 2.72
+   },
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.029,
+   "bulge_p95_m": 0.025,
+   "cover_max_m": 0.142,
+   "bulge_max_m": 0.114,
+   "tris": 769,
+   "tried": [
+    [
+     "collapse 0.02",
+     214,
+     2.626
+    ],
+    [
+     "collapse 0.04",
+     214,
+     2.416
+    ],
+    [
+     "collapse 0.07",
+     214,
+     2.292
+    ],
+    [
+     "collapse 0.12",
+     214,
+     2.39
+    ],
+    [
+     "collapse 0.20",
+     307,
+     0.182
+    ],
+    [
+     "collapse 0.30",
+     461,
+     0.149
+    ],
+    [
+     "collapse 0.50",
+     769,
+     0.029
+    ]
+   ]
+  },
+  "Bldg_Hangar_A": {
+   "class": "building",
+   "instances": 32,
+   "render_tris": 688,
+   "height_m": 13.26,
+   "render_min": [
+    -7.3,
+    -3.0,
+    -6.3
+   ],
+   "render_max": [
+    9.3,
+    13.26,
+    6.54
+   ],
+   "replaced_col": {
+    "tris": 12,
+    "bulge_p95_m": 3.136
+   },
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.016,
+   "bulge_p95_m": 0.011,
+   "cover_max_m": 0.112,
+   "bulge_max_m": 0.095,
+   "tris": 311,
+   "tried": [
+    [
+     "collapse 0.02",
+     55,
+     3.361
+    ],
+    [
+     "collapse 0.04",
+     55,
+     3.282
+    ],
+    [
+     "collapse 0.07",
+     55,
+     3.465
+    ],
+    [
+     "collapse 0.12",
+     75,
+     1.955
+    ],
+    [
+     "collapse 0.20",
+     125,
+     0.348
+    ],
+    [
+     "collapse 0.30",
+     187,
+     0.184
+    ],
+    [
+     "collapse 0.50",
+     311,
+     0.016
+    ]
+   ]
+  },
+  "Bldg_Tower_A": {
+   "class": "building",
+   "instances": 34,
+   "render_tris": 572,
+   "height_m": 35.25,
+   "render_min": [
+    -4.0,
+    -3.0,
+    -4.0
+   ],
+   "render_max": [
+    4.0,
+    35.25,
+    5.1
+   ],
+   "replaced_col": {
+    "tris": 36,
+    "bulge_p95_m": 0.6
+   },
+   "method": "planar+collapse",
+   "ratio": 0.5,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.063,
+   "bulge_p95_m": 0.053,
+   "cover_max_m": 0.168,
+   "bulge_max_m": 0.165,
+   "tris": 242,
+   "tried": [
+    [
+     "collapse 0.02",
+     86,
+     2.261
+    ],
+    [
+     "collapse 0.04",
+     86,
+     2.261
+    ],
+    [
+     "collapse 0.07",
+     86,
+     2.261
+    ],
+    [
+     "collapse 0.12",
+     86,
+     2.261
+    ],
+    [
+     "collapse 0.20",
+     96,
+     1.918
+    ],
+    [
+     "collapse 0.30",
+     145,
+     0.259
+    ],
+    [
+     "collapse 0.50",
+     242,
+     0.063
+    ]
+   ]
+  },
+  "Bldg_Citadel_A": {
+   "class": "building",
+   "instances": 1,
+   "render_tris": 5654,
+   "height_m": 74.4,
+   "render_min": [
+    -14.1,
+    -3.0,
+    -11.12
+   ],
+   "render_max": [
+    14.1,
+    74.4,
+    14.5
+   ],
+   "replaced_col": {
+    "tris": 60,
+    "bulge_p95_m": 4.18
+   },
+   "method": "planar",
+   "tol_m": 0.1,
+   "cover_p95_m": 0.0,
+   "bulge_p95_m": 0.0,
+   "cover_max_m": 0.007,
+   "bulge_max_m": 0.004,
+   "tris": 4844,
+   "tried": [
+    [
+     "collapse 0.02",
+     763,
+     3.156
+    ],
+    [
+     "collapse 0.04",
+     763,
+     2.826
+    ],
+    [
+     "collapse 0.07",
+     763,
+     3.349
+    ],
+    [
+     "collapse 0.12",
+     763,
+     3.033
+    ],
+    [
+     "collapse 0.20",
+     967,
+     0.521
+    ],
+    [
+     "collapse 0.30",
+     1452,
+     0.386
+    ],
+    [
+     "collapse 0.50",
+     2422,
+     0.13
+    ]
+   ]
+  },
+  "Bldg_Tank_A": {
+   "class": "building",
+   "instances": 10,
+   "render_tris": 1784,
+   "height_m": 9.6,
+   "render_min": [
+    -8.0,
+    -2.0,
+    -4.5
+   ],
+   "render_max": [
+    8.2,
+    9.6,
+    4.5
+   ],
+   "replaced_col": {
+    "tris": 12,
+    "bulge_p95_m": 2.682
+   },
+   "method": "planar+collapse",
+   "ratio": 0.2,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.094,
+   "bulge_p95_m": 0.097,
+   "cover_max_m": 0.162,
+   "bulge_max_m": 0.149,
+   "tris": 356,
+   "tried": [
+    [
+     "collapse 0.02",
+     136,
+     2.505
+    ],
+    [
+     "collapse 0.04",
+     136,
+     2.505
+    ],
+    [
+     "collapse 0.07",
+     136,
+     2.505
+    ],
+    [
+     "collapse 0.12",
+     214,
+     1.197
+    ],
+    [
+     "collapse 0.20",
+     356,
+     0.097
+    ]
+   ]
+  },
+  "Bldg_Wall_A": {
+   "class": "building",
+   "instances": 916,
+   "render_tris": 104,
+   "height_m": 4.6,
+   "render_min": [
+    -4.05,
+    -3.0,
+    -0.8
+   ],
+   "render_max": [
+    4.05,
+    4.6,
+    0.95
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.542,
+   "bulge_p95_m": 0.155,
+   "cover_max_m": 0.55,
+   "bulge_max_m": 0.399,
+   "tris": 12
+  },
+  "Lamp_Street_A": {
+   "class": "prop",
+   "instances": 567,
+   "render_tris": 794,
+   "height_m": 7.36,
+   "render_min": [
+    -0.32,
+    -0.4,
+    -0.32
+   ],
+   "render_max": [
+    0.32,
+    7.36,
+    2.45
+   ],
+   "method": "collapse",
+   "ratio": 0.2,
+   "tol_m": 0.099,
+   "cover_p95_m": 0.018,
+   "bulge_p95_m": 0.018,
+   "cover_max_m": 0.02,
+   "bulge_max_m": 0.02,
+   "tris": 157,
+   "tried": [
+    [
+     "hull",
+     244,
+     1.452
+    ],
+    [
+     "collapse 0.02",
+     55,
+     0.257
+    ],
+    [
+     "collapse 0.04",
+     55,
+     0.257
+    ],
+    [
+     "collapse 0.07",
+     55,
+     0.257
+    ],
+    [
+     "collapse 0.12",
+     95,
+     0.251
+    ],
+    [
+     "collapse 0.20",
+     157,
+     0.018
+    ]
+   ]
+  },
+  "Prop_Bollard_A": {
+   "class": "prop",
+   "instances": 731,
+   "render_tris": 808,
+   "height_m": 1.0,
+   "render_min": [
+    -0.16,
+    -0.2,
+    -0.16
+   ],
+   "render_max": [
+    0.16,
+    1.0,
+    0.16
+   ],
+   "method": "hull",
+   "tol_m": 0.08,
+   "bulge_p95_m": 0.077,
+   "bulge_max_m": 0.101,
+   "tris": 172,
+   "tried": [
+    [
+     "hull",
+     172,
+     0.077
+    ]
+   ]
+  },
+  "Prop_Guardrail_A": {
+   "class": "prop",
+   "instances": 1936,
+   "render_tris": 964,
+   "height_m": 1.12,
+   "render_min": [
+    -2.12,
+    0.0,
+    -0.1
+   ],
+   "render_max": [
+    2.0,
+    1.12,
+    0.1
+   ],
+   "method": "collapse",
+   "ratio": 0.02,
+   "tol_m": 0.051,
+   "cover_p95_m": 0.046,
+   "bulge_p95_m": 0.035,
+   "cover_max_m": 0.073,
+   "bulge_max_m": 0.045,
+   "tris": 18,
+   "tried": [
+    [
+     "hull",
+     172,
+     0.187
+    ],
+    [
+     "collapse 0.02",
+     18,
+     0.046
+    ]
+   ]
+  },
+  "Prop_Barrier_A": {
+   "class": "prop",
+   "instances": 29,
+   "render_tris": 588,
+   "height_m": 0.82,
+   "render_min": [
+    -1.5,
+    0.0,
+    -0.3
+   ],
+   "render_max": [
+    1.5,
+    0.82,
+    0.3
+   ],
+   "method": "hull",
+   "tol_m": 0.127,
+   "bulge_p95_m": 0.094,
+   "bulge_max_m": 0.102,
+   "tris": 148,
+   "tried": [
+    [
+     "hull",
+     148,
+     0.094
+    ]
+   ]
+  },
+  "Prop_Crate_A": {
+   "class": "prop",
+   "instances": 240,
+   "render_tris": 1920,
+   "height_m": 1.202,
+   "render_min": [
+    -0.6,
+    -0.01,
+    -0.6
+   ],
+   "render_max": [
+    0.6,
+    1.202,
+    0.62
+   ],
+   "method": "hull",
+   "tol_m": 0.084,
+   "bulge_p95_m": 0.039,
+   "bulge_max_m": 0.049,
+   "tris": 156,
+   "tried": [
+    [
+     "hull",
+     156,
+     0.039
+    ]
+   ]
+  },
+  "Prop_Crate_B": {
+   "class": "prop",
+   "instances": 131,
+   "render_tris": 3516,
+   "height_m": 1.902,
+   "render_min": [
+    -1.2,
+    -0.01,
+    -0.6
+   ],
+   "render_max": [
+    1.2,
+    1.902,
+    0.64
+   ],
+   "method": "collapse",
+   "ratio": 0.5,
+   "tol_m": 0.04,
+   "cover_p95_m": 0.003,
+   "bulge_p95_m": 0.003,
+   "cover_max_m": 0.003,
+   "bulge_max_m": 0.003,
+   "tris": 1692,
+   "tried": [
+    [
+     "hull",
+     188,
+     0.298
+    ],
+    [
+     "collapse 0.02",
+     1273,
+     0.44
+    ],
+    [
+     "collapse 0.04",
+     1273,
+     0.433
+    ],
+    [
+     "collapse 0.07",
+     1273,
+     0.447
+    ],
+    [
+     "collapse 0.12",
+     1273,
+     0.451
+    ],
+    [
+     "collapse 0.20",
+     1273,
+     0.449
+    ],
+    [
+     "collapse 0.30",
+     1273,
+     0.446
+    ],
+    [
+     "collapse 0.50",
+     1692,
+     0.003
+    ]
+   ]
+  },
+  "Prop_Container_A": {
+   "class": "prop",
+   "instances": 46,
+   "render_tris": 3576,
+   "height_m": 2.6,
+   "render_min": [
+    -3.04,
+    -0.01,
+    -1.255
+   ],
+   "render_max": [
+    3.05,
+    2.6,
+    1.255
+   ],
+   "method": "hull",
+   "tol_m": 0.283,
+   "bulge_p95_m": 0.06,
+   "bulge_max_m": 0.142,
+   "tris": 62,
+   "tried": [
+    [
+     "hull",
+     62,
+     0.06
+    ]
+   ]
+  },
+  "Prop_UtilityBox_A": {
+   "class": "prop",
+   "instances": 124,
+   "render_tris": 1496,
+   "height_m": 1.82,
+   "render_min": [
+    -0.6,
+    -0.3,
+    -0.35
+   ],
+   "render_max": [
+    0.6,
+    1.82,
+    0.35
+   ],
+   "method": "hull",
+   "tol_m": 0.101,
+   "bulge_p95_m": 0.093,
+   "bulge_max_m": 0.122,
+   "tris": 154,
+   "tried": [
+    [
+     "hull",
+     154,
+     0.093
+    ]
+   ]
+  },
+  "Prop_HVAC_A": {
+   "class": "prop",
+   "instances": 147,
+   "render_tris": 2572,
+   "height_m": 1.346,
+   "render_min": [
+    -1.0,
+    0.0,
+    -0.55
+   ],
+   "render_max": [
+    1.0,
+    1.346,
+    0.55
+   ],
+   "method": "hull",
+   "tol_m": 0.106,
+   "bulge_p95_m": 0.048,
+   "bulge_max_m": 0.085,
+   "tris": 156,
+   "tried": [
+    [
+     "hull",
+     156,
+     0.048
+    ]
+   ]
+  },
+  "Prop_PipeRun_A": {
+   "class": "prop",
+   "instances": 590,
+   "render_tris": 2380,
+   "height_m": 1.318,
+   "render_min": [
+    -3.0,
+    -0.3,
+    -0.55
+   ],
+   "render_max": [
+    3.0,
+    1.318,
+    0.55
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.076,
+   "cover_p95_m": 0.051,
+   "bulge_p95_m": 0.048,
+   "cover_max_m": 0.088,
+   "bulge_max_m": 0.087,
+   "tris": 282,
+   "tried": [
+    [
+     "hull",
+     252,
+     0.843
+    ],
+    [
+     "collapse 0.02",
+     190,
+     0.817
+    ],
+    [
+     "collapse 0.04",
+     190,
+     0.817
+    ],
+    [
+     "collapse 0.07",
+     190,
+     0.817
+    ],
+    [
+     "collapse 0.12",
+     282,
+     0.051
+    ]
+   ]
+  },
+  "Prop_JunctionBox_A": {
+   "class": "prop",
+   "instances": 117,
+   "render_tris": 2380,
+   "height_m": 1.28,
+   "render_min": [
+    -2.339,
+    -0.35,
+    -0.917
+   ],
+   "render_max": [
+    2.338,
+    1.28,
+    0.782
+   ],
+   "method": "collapse",
+   "ratio": 0.2,
+   "tol_m": 0.063,
+   "cover_p95_m": 0.006,
+   "bulge_p95_m": 0.005,
+   "cover_max_m": 0.022,
+   "bulge_max_m": 0.02,
+   "tris": 466,
+   "tried": [
+    [
+     "hull",
+     244,
+     0.425
+    ],
+    [
+     "collapse 0.02",
+     172,
+     0.404
+    ],
+    [
+     "collapse 0.04",
+     172,
+     0.404
+    ],
+    [
+     "collapse 0.07",
+     172,
+     0.404
+    ],
+    [
+     "collapse 0.12",
+     278,
+     0.309
+    ],
+    [
+     "collapse 0.20",
+     466,
+     0.006
+    ]
+   ]
+  },
+  "Prop_Antenna_A": {
+   "class": "prop",
+   "instances": 41,
+   "render_tris": 4364,
+   "height_m": 16.75,
+   "render_min": [
+    -1.0,
+    -0.4,
+    -1.0
+   ],
+   "render_max": [
+    1.0,
+    16.75,
+    1.0
+   ],
+   "method": "collapse",
+   "ratio": 0.3,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.008,
+   "bulge_p95_m": 0.008,
+   "cover_max_m": 0.013,
+   "bulge_max_m": 0.013,
+   "tris": 1278,
+   "tried": [
+    [
+     "hull",
+     176,
+     0.846
+    ],
+    [
+     "collapse 0.02",
+     883,
+     0.613
+    ],
+    [
+     "collapse 0.04",
+     883,
+     0.613
+    ],
+    [
+     "collapse 0.07",
+     883,
+     0.613
+    ],
+    [
+     "collapse 0.12",
+     883,
+     0.613
+    ],
+    [
+     "collapse 0.20",
+     883,
+     0.613
+    ],
+    [
+     "collapse 0.30",
+     1278,
+     0.008
+    ]
+   ]
+  },
+  "Prop_Barrel_A": {
+   "class": "prop",
+   "instances": 118,
+   "render_tris": 3540,
+   "height_m": 0.895,
+   "render_min": [
+    -0.622,
+    -0.012,
+    -0.652
+   ],
+   "render_max": [
+    1.44,
+    0.895,
+    0.502
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.03,
+   "cover_p95_m": 0.024,
+   "bulge_p95_m": 0.022,
+   "cover_max_m": 0.041,
+   "bulge_max_m": 0.041,
+   "tris": 238,
+   "tried": [
+    [
+     "hull",
+     416,
+     0.195
+    ],
+    [
+     "collapse 0.02",
+     68,
+     0.096
+    ],
+    [
+     "collapse 0.04",
+     136,
+     0.038
+    ],
+    [
+     "collapse 0.07",
+     238,
+     0.024
+    ]
+   ]
+  },
+  "Prop_Hatch_A": {
+   "class": "prop",
+   "instances": 326,
+   "render_tris": 404,
+   "height_m": 0.097,
+   "render_min": [
+    -0.95,
+    -0.15,
+    -0.95
+   ],
+   "render_max": [
+    0.95,
+    0.097,
+    0.95
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.032,
+   "cover_p95_m": 0.02,
+   "bulge_p95_m": 0.002,
+   "cover_max_m": 0.02,
+   "bulge_max_m": 0.009,
+   "tris": 26,
+   "tried": [
+    [
+     "hull",
+     100,
+     0.19
+    ],
+    [
+     "collapse 0.02",
+     7,
+     0.187
+    ],
+    [
+     "collapse 0.04",
+     14,
+     0.084
+    ],
+    [
+     "collapse 0.07",
+     26,
+     0.02
+    ]
+   ]
+  },
+  "Prop_Vent_A": {
+   "class": "prop",
+   "instances": 116,
+   "render_tris": 2064,
+   "height_m": 3.05,
+   "render_min": [
+    -0.6,
+    -0.3,
+    -0.6
+   ],
+   "render_max": [
+    0.6,
+    3.05,
+    0.6
+   ],
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.045,
+   "cover_p95_m": 0.028,
+   "bulge_p95_m": 0.026,
+   "cover_max_m": 0.04,
+   "bulge_max_m": 0.04,
+   "tris": 144,
+   "tried": [
+    [
+     "hull",
+     196,
+     0.362
+    ],
+    [
+     "collapse 0.02",
+     40,
+     0.247
+    ],
+    [
+     "collapse 0.04",
+     82,
+     0.073
+    ],
+    [
+     "collapse 0.07",
+     144,
+     0.028
+    ]
+   ]
+  },
+  "Rock_Crag_A": {
+   "class": "rock",
+   "instances": 9207,
+   "render_tris": 2600,
+   "height_m": 1.969,
+   "render_min": [
+    -1.496,
+    -0.242,
+    -1.173
+   ],
+   "render_max": [
+    1.951,
+    1.969,
+    1.534
+   ],
+   "method": "hull",
+   "tol_m": 0.147,
+   "bulge_p95_m": 0.073,
+   "bulge_max_m": 0.121,
+   "min_scale": 0.1371,
+   "skipped_small": 0,
+   "tris": 518,
+   "tried": [
+    [
+     "hull",
+     518,
+     0.073
+    ]
+   ]
+  },
+  "Rock_Crag_B": {
+   "class": "rock",
+   "instances": 11326,
+   "render_tris": 1600,
+   "height_m": 1.195,
+   "render_min": [
+    -1.081,
+    -0.139,
+    -0.692
+   ],
+   "render_max": [
+    1.122,
+    1.195,
+    0.855
+   ],
+   "method": "hull",
+   "tol_m": 0.09,
+   "bulge_p95_m": 0.031,
+   "bulge_max_m": 0.054,
+   "min_scale": 0.2259,
+   "skipped_small": 0,
+   "tris": 446,
+   "tried": [
+    [
+     "hull",
+     446,
+     0.031
+    ]
+   ]
+  },
+  "Rock_Spire_A": {
+   "class": "rock",
+   "instances": 1931,
+   "render_tris": 2800,
+   "height_m": 4.072,
+   "render_min": [
+    -0.945,
+    -0.45,
+    -0.936
+   ],
+   "render_max": [
+    0.831,
+    4.072,
+    0.827
+   ],
+   "method": "hull",
+   "tol_m": 0.155,
+   "bulge_p95_m": 0.048,
+   "bulge_max_m": 0.074,
+   "min_scale": 0.0663,
+   "skipped_small": 0,
+   "tris": 360,
+   "tried": [
+    [
+     "hull",
+     360,
+     0.048
+    ]
+   ]
+  },
+  "Rock_Shard_A": {
+   "class": "rock",
+   "instances": 32804,
+   "render_tris": 1800,
+   "height_m": 1.773,
+   "render_min": [
+    -0.948,
+    -0.298,
+    -0.586
+   ],
+   "render_max": [
+    0.951,
+    1.773,
+    0.447
+   ],
+   "method": "hull",
+   "tol_m": 0.09,
+   "bulge_p95_m": 0.032,
+   "bulge_max_m": 0.055,
+   "min_scale": 0.1523,
+   "skipped_small": 0,
+   "tris": 310,
+   "tried": [
+    [
+     "hull",
+     310,
+     0.032
+    ]
+   ]
+  },
+  "Rock_Rubble_A": {
+   "class": "rock",
+   "instances": 13542,
+   "render_tris": 1920,
+   "height_m": 0.426,
+   "render_min": [
+    -0.723,
+    -0.051,
+    -0.85
+   ],
+   "render_max": [
+    0.856,
+    0.426,
+    1.042
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.03,
+   "cover_p95_m": 0.02,
+   "bulge_p95_m": 0.019,
+   "cover_max_m": 0.04,
+   "bulge_max_m": 0.038,
+   "min_scale": 0.6338,
+   "skipped_small": 0,
+   "tris": 230,
+   "tried": [
+    [
+     "hull",
+     216,
+     0.161
+    ],
+    [
+     "collapse 0.02",
+     38,
+     0.119
+    ],
+    [
+     "collapse 0.04",
+     76,
+     0.06
+    ],
+    [
+     "collapse 0.07",
+     134,
+     0.036
+    ],
+    [
+     "collapse 0.12",
+     230,
+     0.02
+    ]
+   ]
+  },
+  "Shrub_Dry_A": {
+   "class": "plant_small",
+   "instances": 28650,
+   "method": "none"
+  },
+  "Shrub_Dry_B": {
+   "class": "plant_small",
+   "instances": 30601,
+   "method": "none"
+  },
+  "Grass_Dry_A": {
+   "class": "plant_small",
+   "instances": 94901,
+   "method": "none"
+  },
+  "Grass_Dry_Patch_A": {
+   "class": "plant_small",
+   "instances": 50290,
+   "method": "none"
+  }
+ }
+}

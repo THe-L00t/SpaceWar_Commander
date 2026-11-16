@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include <cstring>
 #include "Shared/Protocol.h"
+#include "Shared/GameLogic/PlayerMovement.h"
 
 #pragma comment(lib, "ws2_32")
 
@@ -99,6 +100,80 @@ namespace swc {
 	void Network::OnPlayerLeave(const Shared::PlayerLeavePacket* p)
 	{
 		remotes.erase(p->playerId);
+		equips.erase(p->playerId);   // 2026-11-15 — 나간 사람의 총도 지운다(그 총은 떨어지지 않는다 — 버리기 키만)
+	}
+
+	// ── 총 줍기 · 떨구기 (2026-11-15, Shared/GameLogic/WeaponPickup.h) ──
+	//  ★ 서버가 정한 것만 들고 있는다. 내가 든 총도 서버가 WeaponEquip 으로 알려 줘야 바뀐다(줍기 요청만으로는 안 바뀐다).
+	void Network::OnWeaponEquip(const Shared::WeaponEquipPacket* p)
+	{
+		const Shared::WeaponType type = Shared::IsWeaponType(Shared::WeaponType(p->weaponType))
+			? Shared::WeaponType(p->weaponType) : Shared::WeaponType::None;
+		if (p->playerId == myId)
+		{
+			myWeapon = type;
+			return;
+		}
+		if (type == Shared::WeaponType::None) equips.erase(p->playerId);
+		else equips[p->playerId] = type;
+	}
+
+	void Network::OnGroundWeaponSpawn(const Shared::GroundWeaponSpawnPacket* p)
+	{
+		if (!Shared::IsWeaponType(Shared::WeaponType(p->weaponType))) return;
+		GroundWeaponEvent e;
+		e.kind = GroundWeaponEvent::Kind::Spawn;
+		e.groundId = p->groundId;
+		e.type = Shared::WeaponType(p->weaponType);
+		std::memcpy(e.startPos, p->startPos, sizeof(e.startPos));
+		std::memcpy(e.startAxisY, p->startAxisY, sizeof(e.startAxisY));
+		std::memcpy(e.startAxisZ, p->startAxisZ, sizeof(e.startAxisZ));
+		std::memcpy(e.restPos, p->restPos, sizeof(e.restPos));
+		std::memcpy(e.restAxisY, p->restAxisY, sizeof(e.restAxisY));
+		std::memcpy(e.restAxisZ, p->restAxisZ, sizeof(e.restAxisZ));
+		e.fallSeconds = p->fallSeconds;
+		groundEvents.push_back(e);
+	}
+
+	void Network::OnGroundWeaponRemove(const Shared::GroundWeaponRemovePacket* p)
+	{
+		GroundWeaponEvent e;
+		e.kind = GroundWeaponEvent::Kind::Remove;
+		e.groundId = p->groundId;
+		groundEvents.push_back(e);
+	}
+
+	Shared::WeaponType Network::WeaponOf(uint32_t playerId) const
+	{
+		if (playerId == myId) return myWeapon;
+		const auto found = equips.find(playerId);
+		return found == equips.end() ? Shared::WeaponType::None : found->second;
+	}
+
+	void Network::TakeGroundEvents(std::vector<GroundWeaponEvent>& out)
+	{
+		out.clear();
+		out.swap(groundEvents);
+	}
+
+	void Network::SendPickup(uint8_t source, uint32_t id)
+	{
+		if (!connected) return;
+		Shared::WeaponPickupPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::WeaponPickup;
+		pkt.source = source;
+		pkt.id = id;
+		SendRaw(&pkt, (int)sizeof(pkt));
+	}
+
+	void Network::SendDrop()
+	{
+		if (!connected) return;
+		Shared::WeaponDropPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::WeaponDrop;
+		SendRaw(&pkt, (int)sizeof(pkt));
 	}
 
 	// 서버가 판정한 체력. 클라는 규칙을 모르고 받은 값만 들고 있는다.
@@ -134,6 +209,109 @@ namespace swc {
 	void Network::OnNpcDespawn(const Shared::NpcDespawnPacket* p)
 	{
 		npcs.erase(p->npcId);
+	}
+
+	// ── NPC 명중 표시 (2026-11-16) ──
+	//  서버가 내 발이 NPC 에 맞았다고 알렸다(쏜 사람에게만 온다). 수만 세어 두고 Engine 이 프레임마다 꺼내 간다.
+	void Network::OnNpcHit(const Shared::NpcHitPacket*)
+	{
+		++npcHitsPending;
+	}
+
+	unsigned Network::TakeNpcHits()
+	{
+		const unsigned n = npcHitsPending;
+		npcHitsPending = 0;
+		return n;
+	}
+
+	// ── 이동 (B안, 2026-10-29) ──
+	//  서버 틱(30 Hz)마다 온다. 한 프레임에 둘 이상 오면 입력 번호가 가장 큰 것만 남긴다 — 보정은 가장 새 것으로 한 번이면 된다.
+	void Network::OnPlayerState(const Shared::PlayerStatePacket* p)
+	{
+		++nStates;
+		if (hasState && p->lastSeq < latestState.lastSeq) return;
+		latestState = *p;
+		hasState = true;
+	}
+
+	bool Network::TakePlayerState(Shared::PlayerStatePacket& out)
+	{
+		if (!hasState) return false;
+		out = latestState;
+		hasState = false;
+		return true;
+	}
+
+	// ── 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») ──────────────
+	//  행성을 바꿀 때 Engine 이 부른다. 서버가 WorldJoined 로 답할 때까지 «들어가는 중» 이다.
+	//  ★ 원격 · NPC 목록을 지금 비운다 — 옛 맵 사람들이 새 행성 화면에 남지 않게.
+	void Network::SendJoinWorld(uint32_t worldId)
+	{
+		if (!connected) return;
+
+		requestedWorld = worldId;
+		joinState = JoinState::Joining;
+		hasJoinResult = false;
+		ClearWorldState();
+
+		joinUnsent = true;
+		TrySendJoinWorld();
+	}
+
+	void Network::TrySendJoinWorld()
+	{
+		if (!joinUnsent || !connected) return;
+
+		Shared::JoinWorldPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::JoinWorld;
+		pkt.worldId = requestedWorld;
+
+		// 송신 버퍼가 차서 못 보냈으면 다음 Poll 에서 다시 보낸다 — 안 보내면 답이 영영 오지 않는다.
+		if (SendRaw(&pkt, (int)sizeof(pkt)))
+			joinUnsent = false;
+	}
+
+	// 서버의 답. 마지막으로 요청한 맵의 답만 받는다(빠르게 두 번 바꿨으면 앞 요청의 답은 버린다).
+	void Network::OnWorldJoined(const Shared::WorldJoinedPacket* p)
+	{
+		if (joinState != JoinState::Joining || p->worldId != requestedWorld) return;
+
+		joinState = p->ok ? JoinState::Joined : JoinState::Failed;
+		joinResult = WorldJoin{};
+		joinResult.world = p->worldId;
+		joinResult.ok = p->ok != 0;
+		for (int a = 0; a < 3; ++a)
+		{
+			joinResult.pos[a] = p->pos[a];
+			joinResult.facing[a] = p->facing[a];
+		}
+		hasJoinResult = true;
+		ClearWorldState();   // 들어가는 중에 받은 것은 이미 버렸다 — 혹시 남은 것도 지운다
+	}
+
+	bool Network::TakeWorldJoined(uint32_t world, WorldJoin& out)
+	{
+		if (!hasJoinResult || joinResult.world != world) return false;
+		out = joinResult;
+		hasJoinResult = false;
+		return true;
+	}
+
+	void Network::ClearWorldState()
+	{
+		remotes.clear();
+		npcs.clear();
+		hasState = false;
+		hasRespawn = false;
+		npcHitsPending = 0;   // 2026-11-16 — 옛 맵에서 맞힌 것은 새 맵에서 띄우지 않는다
+		// 2026-11-15 — 옛 맵의 남이 든 총 · 바닥 총을 지운다. 내 총은 맵을 바꿔도 들고 간다(서버가 새 맵에서 다시 알려 준다).
+		equips.clear();
+		GroundWeaponEvent clear;
+		clear.kind = GroundWeaponEvent::Kind::Clear;
+		groundEvents.clear();
+		groundEvents.push_back(clear);
 	}
 
 	bool Network::TakeRespawn(float outPos[3])
@@ -180,6 +358,20 @@ namespace swc {
 			if (nRecvd - nOffset < nSize)
 				break;
 
+			// ★ 맵을 바꾸는 중(2026-11-01) — 옛 맵의 위치 · 판정 패킷은 버린다. WorldJoined 뒤로 오는 것만 새 맵 것이다.
+			const bool worldScoped =
+				pHead->type == Shared::PacketType::PlayerMove || pHead->type == Shared::PacketType::NpcState ||
+				pHead->type == Shared::PacketType::NpcDespawn || pHead->type == Shared::PacketType::PlayerState ||
+				pHead->type == Shared::PacketType::PlayerNeutralized ||
+				pHead->type == Shared::PacketType::WeaponEquip || pHead->type == Shared::PacketType::GroundWeaponSpawn ||
+				pHead->type == Shared::PacketType::GroundWeaponRemove ||   // 2026-11-15 총 — 옛 맵 것은 버린다
+				pHead->type == Shared::PacketType::NpcHit;                 // 2026-11-16 NPC 명중 — 옛 맵(게임 맵)에서 맞힌 것
+			if (worldScoped && joinState == JoinState::Joining)
+			{
+				nOffset += nSize;
+				continue;
+			}
+
 			switch (pHead->type)
 			{
 			case Shared::PacketType::Welcome:
@@ -215,6 +407,36 @@ namespace swc {
 			case Shared::PacketType::NpcDespawn:
 				if (nSize == (int)sizeof(Shared::NpcDespawnPacket))
 					OnNpcDespawn((const Shared::NpcDespawnPacket*)pHead);
+				break;
+
+			case Shared::PacketType::PlayerState:
+				if (nSize == (int)sizeof(Shared::PlayerStatePacket))
+					OnPlayerState((const Shared::PlayerStatePacket*)pHead);
+				break;
+
+			case Shared::PacketType::WorldJoined:
+				if (nSize == (int)sizeof(Shared::WorldJoinedPacket))
+					OnWorldJoined((const Shared::WorldJoinedPacket*)pHead);
+				break;
+
+			case Shared::PacketType::WeaponEquip:
+				if (nSize == (int)sizeof(Shared::WeaponEquipPacket))
+					OnWeaponEquip((const Shared::WeaponEquipPacket*)pHead);
+				break;
+
+			case Shared::PacketType::GroundWeaponSpawn:
+				if (nSize == (int)sizeof(Shared::GroundWeaponSpawnPacket))
+					OnGroundWeaponSpawn((const Shared::GroundWeaponSpawnPacket*)pHead);
+				break;
+
+			case Shared::PacketType::GroundWeaponRemove:
+				if (nSize == (int)sizeof(Shared::GroundWeaponRemovePacket))
+					OnGroundWeaponRemove((const Shared::GroundWeaponRemovePacket*)pHead);
+				break;
+
+			case Shared::PacketType::NpcHit:
+				if (nSize == (int)sizeof(Shared::NpcHitPacket))
+					OnNpcHit((const Shared::NpcHitPacket*)pHead);
 				break;
 
 			default:
@@ -284,9 +506,17 @@ namespace swc {
 		myId = 0;
 		myHealth = -1.0f;
 		nHits = 0;
+		npcHitsPending = 0;
 		hasRespawn = false;
+		hasState = false;
+		nStates = 0;
 		remotes.clear();
 		npcs.clear();
+		// 맵 번호 (2026-11-01) — 서버는 접속한 세션을 게임 맵에 세운다(Server/main.cpp ThreadAcceptLoop).
+		requestedWorld = Shared::kWorldGameMap;
+		joinState = JoinState::Joined;
+		joinUnsent = false;
+		hasJoinResult = false;
 		connected = true;
 		return true;
 	}
@@ -325,6 +555,29 @@ namespace swc {
 		pkt.velocity[0] = 0.0f;
 		pkt.velocity[1] = 0.0f;
 		pkt.velocity[2] = 0.0f;
+
+		if (SendRaw(&pkt, (int)sizeof(pkt)))
+			++nSent;
+	}
+
+	// ── 입력 (B안, 2026-10-29) ──────────────────────────────
+	//
+	//  ★ 좌표가 아니라 입력을 보낸다 (명세 6.13 ② «같은 입력을 서버로»)
+	//    서버가 같은 이동 코드 · 같은 충돌체로 판정해 PlayerState 로 돌려준다.
+	void Network::SendInput(const Shared::MoveCommand& command)
+	{
+		if (!connected) return;
+
+		Shared::PlayerInputPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::PlayerInput;
+		pkt.seq = command.seq;
+		pkt.moveX = command.moveX;
+		pkt.moveZ = command.moveZ;
+		pkt.buttons = command.buttons;
+		pkt.look[0] = command.look[0];
+		pkt.look[1] = command.look[1];
+		pkt.look[2] = command.look[2];
 
 		if (SendRaw(&pkt, (int)sizeof(pkt)))
 			++nSent;
@@ -383,10 +636,20 @@ namespace swc {
 	{
 		if (!connected) return;
 
+		TrySendJoinWorld();   // 맵 번호(2026-11-01) — 못 보낸 것이 있으면 먼저 보낸다
+
 		for (;;)
 		{
-			const int nSpace = (int)sizeof(recvBuf) - nRecvd;
-			if (nSpace <= 0) { nRecvd = 0; break; }   // 방어: 해석 못 하는 쓰레기가 찼다
+			int nSpace = (int)sizeof(recvBuf) - nRecvd;
+			if (nSpace <= 0)
+			{
+				// 버퍼가 찼다 — 먼저 완전한 패킷을 꺼내 자리를 만든다(2026-10-29).
+				//  NPC 100마리면 초당 약 60 KB 가 와서, 프레임이 0.13 s 만 멈춰도 8 KB 가 찬다.
+				//  예전처럼 바로 비우면 패킷 중간부터 이어 읽게 돼 스트림이 어긋난다.
+				ProcessPackets();
+				nSpace = (int)sizeof(recvBuf) - nRecvd;
+				if (nSpace <= 0) { nRecvd = 0; break; }   // 방어: 해석 못 하는 쓰레기가 찼다
+			}
 
 			const int n = ::recv(sock, recvBuf + nRecvd, nSpace, 0);
 

@@ -45,6 +45,7 @@ namespace swc {
 		this->worldDirty.push_back(1);
 		this->prevPending.push_back(0);
 		this->flags.push_back(0);
+		this->rayTracingExcluded.push_back(0);
 		++layoutVersion;
 		return idx;
 	}
@@ -76,6 +77,12 @@ namespace swc {
 		if (this->visible[n] == value) return;
 		this->visible[n] = value;
 		this->localDirty[n] = 1;
+	}
+
+	void LegacyScene::SetRayTracingExcluded(NodeHandle n, bool excluded)
+	{
+		if (n >= this->rayTracingExcluded.size()) return;
+		this->rayTracingExcluded[n] = excluded ? 1 : 0;
 	}
 
 	void LegacyScene::UpdateWorldTransforms()
@@ -136,7 +143,7 @@ namespace swc {
 			item.prevWorld = prevWorld[i];
 			item.mesh = mesh[i];
 			item.material = material[i];
-			item.flags = flags[i];
+			item.flags = flags[i] | (rayTracingExcluded[i] ? kInstanceNoRayTracing : 0u);
 			out.instances.push_back(item);
 		}
 	}

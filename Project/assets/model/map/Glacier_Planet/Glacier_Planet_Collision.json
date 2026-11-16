@@ -1,0 +1,754 @@
+{
+ "version": 1,
+ "kind": "types",
+ "map": "Glacier_Planet",
+ "source": "Glacier_Planet_Placement.json",
+ "generated": "2026-10-29",
+ "generator": "Resource_Work/_tools/collision/col_build.py",
+ "player_height_m": 1.8,
+ "small_rock_ratio": 0.15,
+ "rules": [
+  "작은 식물(Grass_ · Fern_ · Bush_ · Flower_ · Shrub_ · Weed_)은 충돌 없음(method none) — 2026-10-29 사용자 «정말 작은 식물의 경우 우선은 충돌에서 빼줘»",
+  "돌(class rock)은 인스턴스 배율 < min_scale 이면 충돌 없음. min_scale = (1.8 m × 0.15) ÷ height_m — 사용자 «엄청 작은 돌들도 플레이어 기준 높이가 15%아래라면 충돌체도 만들지 마». 게임(로더)이 판정한다",
+  "나머지는 저폴리 — 사용자 «나머진은 저폴리로 충돌 가자». 이미 COL_ 이 있는 종류는 그대로(existing_col) — 단 렌더 표면 밖으로 0.30 m(p95) 넘게 부풀면 보이지 않는 벽이 되므로 아래 규칙으로 새로 만든다(replaced_col 에 원래 COL_ 기록). 나무는 줄기 각기둥(trunk), 건물은 평면 합치기 → 간선 붕괴, 돌 · 소품은 볼록 껍질이 맞으면 hull 아니면 간선 붕괴. 간선 붕괴 비율은 낮은 쪽부터 올려 cover · bulge p95 가 허용치(tol_m) 안인 첫 단계",
+  "오차: cover = 렌더 표면 → 충돌체(빠진 곳), bulge = 충돌체 표면 → 렌더(부푼 곳), 표본 3000 점씩, m"
+ ],
+ "types": {
+  "Ice_Serac_A": {
+   "class": "prop",
+   "instances": 916,
+   "render_tris": 6998,
+   "height_m": 3.533,
+   "render_min": [
+    -2.322,
+    -0.379,
+    -1.834
+   ],
+   "render_max": [
+    2.488,
+    3.533,
+    2.508
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 1.125,
+   "bulge_p95_m": 0.024,
+   "cover_max_m": 1.75,
+   "bulge_max_m": 0.043,
+   "tris": 1624
+  },
+  "Ice_Serac_B": {
+   "class": "prop",
+   "instances": 1431,
+   "render_tris": 6000,
+   "height_m": 2.148,
+   "render_min": [
+    -1.466,
+    -0.161,
+    -1.337
+   ],
+   "render_max": [
+    1.598,
+    2.148,
+    1.799
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.342,
+   "bulge_p95_m": 0.019,
+   "cover_max_m": 1.307,
+   "bulge_max_m": 0.059,
+   "tris": 1934
+  },
+  "Ice_Block_A": {
+   "class": "prop",
+   "instances": 1968,
+   "render_tris": 5000,
+   "height_m": 1.045,
+   "render_min": [
+    -1.912,
+    -0.186,
+    -1.35
+   ],
+   "render_max": [
+    1.931,
+    1.045,
+    1.6
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 1.013,
+   "bulge_p95_m": 0.013,
+   "cover_max_m": 1.313,
+   "bulge_max_m": 0.022,
+   "tris": 2684
+  },
+  "Ice_Cliff_A": {
+   "class": "prop",
+   "instances": 122,
+   "render_tris": 9000,
+   "height_m": 5.1,
+   "render_min": [
+    -4.297,
+    -0.446,
+    -1.57
+   ],
+   "render_max": [
+    5.925,
+    5.1,
+    3.52
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 1.373,
+   "bulge_p95_m": 0.069,
+   "cover_max_m": 2.904,
+   "bulge_max_m": 0.122,
+   "tris": 1496
+  },
+  "Ice_Pressure_Ridge_A": {
+   "class": "prop",
+   "instances": 227,
+   "render_tris": 3680,
+   "height_m": 0.791,
+   "render_min": [
+    -3.297,
+    -0.25,
+    -2.695
+   ],
+   "render_max": [
+    3.298,
+    0.791,
+    1.764
+   ],
+   "replaced_col": {
+    "tris": 214,
+    "bulge_p95_m": 0.514
+   },
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.096,
+   "cover_p95_m": 0.06,
+   "bulge_p95_m": 0.044,
+   "cover_max_m": 0.15,
+   "bulge_max_m": 0.088,
+   "tris": 256,
+   "tried": [
+    [
+     "hull",
+     172,
+     0.735
+    ],
+    [
+     "collapse 0.02",
+     72,
+     0.175
+    ],
+    [
+     "collapse 0.04",
+     146,
+     0.101
+    ],
+    [
+     "collapse 0.07",
+     256,
+     0.06
+    ]
+   ]
+  },
+  "Ice_Arch_A": {
+   "class": "prop",
+   "instances": 152,
+   "render_tris": 4504,
+   "height_m": 5.092,
+   "render_min": [
+    -4.977,
+    -0.852,
+    -1.807
+   ],
+   "render_max": [
+    4.639,
+    5.092,
+    1.876
+   ],
+   "replaced_col": {
+    "tris": 554,
+    "bulge_p95_m": 0.491
+   },
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.1,
+   "cover_p95_m": 0.073,
+   "bulge_p95_m": 0.069,
+   "cover_max_m": 0.151,
+   "bulge_max_m": 0.139,
+   "tris": 540,
+   "tried": [
+    [
+     "hull",
+     362,
+     1.807
+    ],
+    [
+     "collapse 0.02",
+     90,
+     0.379
+    ],
+    [
+     "collapse 0.04",
+     180,
+     0.173
+    ],
+    [
+     "collapse 0.07",
+     314,
+     0.111
+    ],
+    [
+     "collapse 0.12",
+     540,
+     0.073
+    ]
+   ]
+  },
+  "Ice_Penitentes_A": {
+   "class": "prop",
+   "instances": 244,
+   "render_tris": 9000,
+   "height_m": 1.584,
+   "render_min": [
+    -2.1,
+    -0.246,
+    -1.45
+   ],
+   "render_max": [
+    2.1,
+    1.584,
+    1.45
+   ],
+   "replaced_col": {
+    "tris": 572,
+    "bulge_p95_m": 0.309
+   },
+   "method": "collapse",
+   "ratio": 0.07,
+   "tol_m": 0.065,
+   "cover_p95_m": 0.063,
+   "bulge_p95_m": 0.043,
+   "cover_max_m": 0.301,
+   "bulge_max_m": 0.08,
+   "tris": 630,
+   "tried": [
+    [
+     "hull",
+     140,
+     0.327
+    ],
+    [
+     "collapse 0.02",
+     179,
+     0.235
+    ],
+    [
+     "collapse 0.04",
+     359,
+     0.128
+    ],
+    [
+     "collapse 0.07",
+     630,
+     0.063
+    ]
+   ]
+  },
+  "Granite_Boulder_A": {
+   "class": "rock",
+   "instances": 1590,
+   "render_tris": 5120,
+   "height_m": 2.281,
+   "render_min": [
+    -1.485,
+    -0.195,
+    -1.296
+   ],
+   "render_max": [
+    1.481,
+    2.281,
+    1.225
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.073,
+   "bulge_p95_m": 0.066,
+   "cover_max_m": 0.119,
+   "bulge_max_m": 0.098,
+   "min_scale": 0.1184,
+   "skipped_small": 0,
+   "tris": 600
+  },
+  "Granite_Boulder_B": {
+   "class": "rock",
+   "instances": 1577,
+   "render_tris": 1600,
+   "height_m": 1.102,
+   "render_min": [
+    -0.815,
+    -0.1,
+    -0.662
+   ],
+   "render_max": [
+    1.266,
+    1.102,
+    0.58
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.334,
+   "bulge_p95_m": 0.026,
+   "cover_max_m": 0.567,
+   "bulge_max_m": 0.047,
+   "min_scale": 0.245,
+   "skipped_small": 0,
+   "tris": 478
+  },
+  "Granite_Tor_A": {
+   "class": "rock",
+   "instances": 501,
+   "render_tris": 7000,
+   "height_m": 3.12,
+   "render_min": [
+    -2.567,
+    -0.308,
+    -1.777
+   ],
+   "render_max": [
+    3.105,
+    3.12,
+    1.518
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.125,
+   "bulge_p95_m": 0.085,
+   "cover_max_m": 1.27,
+   "bulge_max_m": 0.141,
+   "min_scale": 0.0865,
+   "skipped_small": 0,
+   "tris": 1496
+  },
+  "Granite_Slabs_Fallen_A": {
+   "class": "rock",
+   "instances": 513,
+   "render_tris": 960,
+   "height_m": 0.999,
+   "render_min": [
+    -1.553,
+    -0.12,
+    -1.18
+   ],
+   "render_max": [
+    1.109,
+    0.999,
+    0.883
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.019,
+   "bulge_p95_m": 0.02,
+   "cover_max_m": 0.063,
+   "bulge_max_m": 0.075,
+   "min_scale": 0.2703,
+   "skipped_small": 0,
+   "tris": 574
+  },
+  "Moraine_Ridge_A": {
+   "class": "rock",
+   "instances": 809,
+   "render_tris": 4710,
+   "height_m": 1.151,
+   "render_min": [
+    -3.3,
+    -0.151,
+    -1.2
+   ],
+   "render_max": [
+    3.3,
+    1.151,
+    1.278
+   ],
+   "replaced_col": {
+    "tris": 164,
+    "bulge_p95_m": 0.458
+   },
+   "method": "collapse",
+   "ratio": 0.04,
+   "tol_m": 0.086,
+   "cover_p95_m": 0.085,
+   "bulge_p95_m": 0.065,
+   "cover_max_m": 0.165,
+   "bulge_max_m": 0.136,
+   "min_scale": 0.2346,
+   "skipped_small": 0,
+   "tris": 188,
+   "tried": [
+    [
+     "hull",
+     164,
+     0.458
+    ],
+    [
+     "collapse 0.02",
+     94,
+     0.142
+    ],
+    [
+     "collapse 0.04",
+     188,
+     0.085
+    ]
+   ]
+  },
+  "Snow_Drift_A": {
+   "class": "prop",
+   "instances": 1024,
+   "render_tris": 1222,
+   "height_m": 0.827,
+   "render_min": [
+    -2.5,
+    -0.203,
+    -1.625
+   ],
+   "render_max": [
+    2.5,
+    0.827,
+    1.625
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.153,
+   "bulge_p95_m": 0.175,
+   "cover_max_m": 0.217,
+   "bulge_max_m": 0.232,
+   "tris": 152
+  },
+  "Frost_Rock_A": {
+   "class": "rock",
+   "instances": 22343,
+   "render_tris": 800,
+   "height_m": 0.572,
+   "render_min": [
+    -0.553,
+    -0.072,
+    -0.626
+   ],
+   "render_max": [
+    1.191,
+    0.572,
+    0.509
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.017,
+   "bulge_p95_m": 0.017,
+   "cover_max_m": 0.031,
+   "bulge_max_m": 0.033,
+   "min_scale": 0.472,
+   "skipped_small": 0,
+   "tris": 640
+  },
+  "Ice_Shards_A": {
+   "class": "rock",
+   "instances": 21961,
+   "render_tris": 800,
+   "height_m": 0.397,
+   "render_min": [
+    -0.857,
+    -0.065,
+    -0.988
+   ],
+   "render_max": [
+    0.934,
+    0.397,
+    0.874
+   ],
+   "method": "collapse",
+   "ratio": 0.3,
+   "tol_m": 0.031,
+   "cover_p95_m": 0.02,
+   "bulge_p95_m": 0.02,
+   "cover_max_m": 0.039,
+   "bulge_max_m": 0.035,
+   "min_scale": 0.6801,
+   "skipped_small": 0,
+   "tris": 240,
+   "tried": [
+    [
+     "hull",
+     158,
+     0.279
+    ],
+    [
+     "collapse 0.02",
+     20,
+     0.229
+    ],
+    [
+     "collapse 0.04",
+     32,
+     0.171
+    ],
+    [
+     "collapse 0.07",
+     56,
+     0.103
+    ],
+    [
+     "collapse 0.12",
+     96,
+     0.062
+    ],
+    [
+     "collapse 0.20",
+     160,
+     0.033
+    ],
+    [
+     "collapse 0.30",
+     240,
+     0.02
+    ]
+   ]
+  },
+  "Scree_Rubble_A": {
+   "class": "rock",
+   "instances": 19890,
+   "render_tris": 900,
+   "height_m": 0.329,
+   "render_min": [
+    -1.065,
+    -0.071,
+    -1.175
+   ],
+   "render_max": [
+    1.142,
+    0.329,
+    1.124
+   ],
+   "method": "collapse",
+   "ratio": 0.3,
+   "tol_m": 0.039,
+   "cover_p95_m": 0.023,
+   "bulge_p95_m": 0.02,
+   "cover_max_m": 0.043,
+   "bulge_max_m": 0.04,
+   "min_scale": 0.8207,
+   "skipped_small": 2092,
+   "tris": 270,
+   "tried": [
+    [
+     "hull",
+     124,
+     0.276
+    ],
+    [
+     "collapse 0.02",
+     36,
+     0.152
+    ],
+    [
+     "collapse 0.04",
+     36,
+     0.152
+    ],
+    [
+     "collapse 0.07",
+     62,
+     0.087
+    ],
+    [
+     "collapse 0.12",
+     108,
+     0.064
+    ],
+    [
+     "collapse 0.20",
+     180,
+     0.04
+    ],
+    [
+     "collapse 0.30",
+     270,
+     0.023
+    ]
+   ]
+  },
+  "Clear_Ice_Crystal_A": {
+   "class": "prop",
+   "instances": 174,
+   "render_tris": 12276,
+   "height_m": 2.609,
+   "render_min": [
+    -1.081,
+    -0.288,
+    -1.583
+   ],
+   "render_max": [
+    0.861,
+    2.609,
+    1.117
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.158,
+   "bulge_p95_m": 0.006,
+   "cover_max_m": 0.438,
+   "bulge_max_m": 0.106,
+   "tris": 926
+  },
+  "Clear_Ice_Pillar_A": {
+   "class": "prop",
+   "instances": 175,
+   "render_tris": 4698,
+   "height_m": 2.812,
+   "render_min": [
+    -0.769,
+    -0.292,
+    -0.603
+   ],
+   "render_max": [
+    0.623,
+    2.812,
+    0.857
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.252,
+   "bulge_p95_m": 0.011,
+   "cover_max_m": 0.494,
+   "bulge_max_m": 0.163,
+   "tris": 664
+  },
+  "Clear_Ice_Slab_A": {
+   "class": "prop",
+   "instances": 29,
+   "render_tris": 6836,
+   "height_m": 1.42,
+   "render_min": [
+    -1.634,
+    -0.176,
+    -0.764
+   ],
+   "render_max": [
+    1.523,
+    1.42,
+    0.619
+   ],
+   "method": "existing_col",
+   "cover_p95_m": 0.06,
+   "bulge_p95_m": 0.042,
+   "cover_max_m": 0.69,
+   "bulge_max_m": 0.2,
+   "tris": 290
+  },
+  "Tree_Frozen_A": {
+   "class": "tree",
+   "instances": 576,
+   "render_tris": 2360,
+   "height_m": 3.05,
+   "render_min": [
+    -1.124,
+    -0.638,
+    -0.73
+   ],
+   "render_max": [
+    0.704,
+    3.05,
+    1.618
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.19,
+   "trunk_top_m": 1.52,
+   "bark_faces": 2360,
+   "slices": 5,
+   "bark_inside_ratio": 0.426,
+   "tris": 40
+  },
+  "Tree_Frozen_B": {
+   "class": "tree",
+   "instances": 601,
+   "render_tris": 2288,
+   "height_m": 2.798,
+   "render_min": [
+    -1.102,
+    -0.616,
+    -0.726
+   ],
+   "render_max": [
+    1.159,
+    2.798,
+    1.055
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.179,
+   "trunk_top_m": 1.5,
+   "bark_faces": 2288,
+   "slices": 5,
+   "bark_inside_ratio": 0.438,
+   "tris": 40
+  },
+  "Grass_Frost_A": {
+   "class": "plant_small",
+   "instances": 1103,
+   "method": "none"
+  },
+  "Grass_Frost_Patch_A": {
+   "class": "plant_small",
+   "instances": 134,
+   "method": "none"
+  },
+  "Snow_Sastrugi_A": {
+   "class": "prop",
+   "instances": 8038,
+   "render_tris": 1500,
+   "height_m": 0.145,
+   "render_min": [
+    -1.203,
+    -0.08,
+    -0.703
+   ],
+   "render_max": [
+    1.202,
+    0.145,
+    0.708
+   ],
+   "method": "collapse",
+   "ratio": 0.2,
+   "tol_m": 0.034,
+   "cover_p95_m": 0.027,
+   "bulge_p95_m": 0.003,
+   "cover_max_m": 0.145,
+   "bulge_max_m": 0.008,
+   "tris": 300,
+   "tried": [
+    [
+     "hull",
+     68,
+     0.142
+    ],
+    [
+     "collapse 0.02",
+     30,
+     0.339
+    ],
+    [
+     "collapse 0.04",
+     60,
+     0.184
+    ],
+    [
+     "collapse 0.07",
+     104,
+     0.109
+    ],
+    [
+     "collapse 0.12",
+     180,
+     0.069
+    ],
+    [
+     "collapse 0.20",
+     300,
+     0.027
+    ]
+   ]
+  }
+ }
+}

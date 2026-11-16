@@ -68,18 +68,25 @@
     <ClInclude Include="Units.h" />
     <ClInclude Include="HeightmapData.h" />
     <ClInclude Include="Vec3.h" />
+    <ClInclude Include="Vec3d.h" />
     <ClInclude Include="PlanetConst.h" />
     <ClInclude Include="Terrain\TerrainSampler.h" />
     <ClInclude Include="Terrain\HeightmapLoader.h" />
     <ClInclude Include="Terrain\PlanetSurface.h" />
     <ClInclude Include="GameLogic\GameLogic.h" />
+    <ClInclude Include="GameLogic\PlayerMovement.h" />
+    <ClInclude Include="GameLogic\WeaponShowcase.h" />
+    <ClInclude Include="GameLogic\WeaponPickup.h" />
+    <ClInclude Include="GameLogic\ShotTrace.h" />
     <ClInclude Include="Physics\PhysicsCalculator.h" />
+    <ClInclude Include="Physics\CollisionWorld.h" />
     <ClInclude Include="GameObject\Object.h" />
     <ClInclude Include="GameObject\DynamicObject.h" />
     <ClInclude Include="GameObject\StaticObject.h" />
     <ClInclude Include="GameObject\Player.h" />
     <ClInclude Include="GameObject\OtherPlayer.h" />
     <ClInclude Include="GameObject\NPC.h" />
+    <ClInclude Include="GameObject\Weapon.h" />
     <ClInclude Include="AI\BehaviorTree.h" />
     <ClInclude Include="AI\BehaviorStatus.h" />
     <ClInclude Include="AI\BehaviorContext.h" />
@@ -101,6 +108,9 @@
     <ClInclude Include="Model\Readers\ObjReader.h" />
     <ClInclude Include="Model\Readers\GltfReader.h" />
     <ClInclude Include="Model\Readers\JsonValue.h" />
+    <ClInclude Include="World\WorldCatalog.h" />
+    <ClInclude Include="World\Placement.h" />
+    <ClInclude Include="World\WorldMap.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Shared.cpp" />
@@ -114,13 +124,21 @@
     <ClCompile Include="Terrain\HeightmapLoader.cpp" />
     <ClCompile Include="Terrain\PlanetSurface.cpp" />
     <ClCompile Include="GameLogic\GameLogic.cpp" />
+    <ClCompile Include="GameLogic\PlayerMovement.cpp" />
+    <ClCompile Include="GameLogic\WeaponShowcase.cpp" />
+    <ClCompile Include="GameLogic\WeaponPickup.cpp" />
+    <ClCompile Include="GameLogic\ShotTrace.cpp" />
     <ClCompile Include="Physics\PhysicsCalculator.cpp" />
+    <ClCompile Include="Physics\CollisionWorld.cpp" />
+    <ClCompile Include="World\Placement.cpp" />
+    <ClCompile Include="World\WorldMap.cpp" />
     <ClCompile Include="GameObject\Object.cpp" />
     <ClCompile Include="GameObject\DynamicObject.cpp" />
     <ClCompile Include="GameObject\StaticObject.cpp" />
     <ClCompile Include="GameObject\Player.cpp" />
     <ClCompile Include="GameObject\OtherPlayer.cpp" />
     <ClCompile Include="GameObject\NPC.cpp" />
+    <ClCompile Include="GameObject\Weapon.cpp" />
     <ClCompile Include="AI\BehaviorTree.cpp" />
     <ClCompile Include="AI\Node\BehaviorNode.cpp" />
     <ClCompile Include="AI\Node\CompositeNode.cpp" />

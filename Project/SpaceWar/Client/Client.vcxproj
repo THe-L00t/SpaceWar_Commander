@@ -123,12 +123,16 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="Resource\ModelBuilder.cpp" />
     <ClCompile Include="Animation\AnimationBlender.cpp" />
     <ClCompile Include="Resource\TextureLoader.cpp" />
+    <ClCompile Include="Resource\TextureBake.cpp" />
     <ClCompile Include="Model.cpp" />
     <ClCompile Include="Resource\LoadQueue.cpp" />
     <ClCompile Include="Resource\LoadBatch.cpp" />
     <ClCompile Include="Log.cpp" />
     <ClCompile Include="SkyPlanet.cpp" />
     <ClCompile Include="Net\Network.cpp" />
+    <ClCompile Include="DebugView\ColliderDebugView.cpp" />
+    <ClCompile Include="Weapon\WeaponModels.cpp" />
+    <ClCompile Include="Weapon\WeaponScene.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
@@ -150,6 +154,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <None Include="Shaders\Tonemap.hlsl" />
     <None Include="Shaders\RtShadow.hlsl" />
     <None Include="Shaders\Shading.hlsli" />
+    <None Include="Shaders\EnvBrdfLut.hlsli" />
     <None Include="Shaders\GBuffer.hlsli" />
     <None Include="Shaders\RtCommon.hlsli" />
     <None Include="Shaders\RtReflection.hlsl" />
@@ -185,6 +190,9 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="UI\UI.h" />
     <ClInclude Include="UISprite.h" />
     <ClInclude Include="DebugLine.h" />
+    <ClInclude Include="DebugView\ColliderDebugView.h" />
+    <ClInclude Include="Weapon\WeaponModels.h" />
+    <ClInclude Include="Weapon\WeaponScene.h" />
     <ClInclude Include="Log.h" />
     <ClInclude Include="Bridge\ClassBridge.h" />
     <ClInclude Include="State\StateManager.h" />
@@ -208,6 +216,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="Resource\LoadQueue.h" />
     <ClInclude Include="Resource\LoadBatch.h" />
     <ClInclude Include="Resource\TextureLoader.h" />
+    <ClInclude Include="Resource\TextureBake.h" />
     <ClInclude Include="Net\Network.h" />
     <ClInclude Include="MeshData.h" />
     <ClInclude Include="Model.h" />
@@ -240,7 +249,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\sky_planet\LOD3\future_ruins_fps_lod3.glb">
         <TargetFolder>sky_planet\LOD3</TargetFolder>
       </ModelAsset>
-      <!-- 예시 행성 디버그 씬 1~5 (2026-10-28) — 파일명이 Client/Scene/PlanetDebugScene.cpp 에도 적혀 있다. 바꿀 때 두 곳. -->
+      <!-- 예시 행성 디버그 씬 1~5 (2026-10-28) — 파일명이 Shared/World/WorldCatalog.h(맵 번호 1 ~ 5, 2026-11-01) · Server.vcxproj 에도 적혀 있다. 바꿀 때 세 곳. -->
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet.glb">
         <TargetFolder>map\Verdant_Planet</TargetFolder>
       </ModelAsset>
@@ -270,6 +279,26 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
         <TargetFolder>map\Volcanic_Planet</TargetFolder>
       </ModelAsset>
       <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json">
+        <TargetFolder>map\Glacier_Planet</TargetFolder>
+      </ModelAsset>
+      <!-- 정적 오브젝트 충돌체 묶음 · 설명 JSON (2026-10-29, Shared/Physics/CollisionWorld.h · col_build.py).
+           파일명이 Shared/PlanetConst.h(게임 맵) · Shared/World/WorldCatalog.h(예시 행성) · Server.vcxproj 에도 적혀 있다 — 바꿀 때 세 곳. -->
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.glb;$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated_Collision.json">
+        <TargetFolder>map</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Verdant_Planet\Verdant_Planet_Collision.json">
+        <TargetFolder>map\Verdant_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Neon_Planet\Neon_Planet_Collision.json">
+        <TargetFolder>map\Neon_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Ruin_Planet\Ruin_Planet_Collision.json">
+        <TargetFolder>map\Ruin_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Volcanic_Planet\Volcanic_Planet_Collision.json">
+        <TargetFolder>map\Volcanic_Planet</TargetFolder>
+      </ModelAsset>
+      <ModelAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.json">
         <TargetFolder>map\Glacier_Planet</TargetFolder>
       </ModelAsset>
       <!-- 지형 레이어 (2026-10-28) — 레이어 4종의 색 · ORM · 노멀 · 높이와 레이어 마스크의 밉맵 DDS(resource dfa4fe4).
@@ -304,6 +333,11 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       </ObjectAsset>
       <ObjectAsset Include="$(ProjectDir)..\..\assets\model\map\**\*_Emissive.dds">
         <Category>map</Category>
+      </ObjectAsset>
+      <!-- 총 모델 (2026-11-14, Shared/GameObject/Weapon.h · Client/Weapon/WeaponModels.h) — 총마다 1인칭 · 3인칭 glb.
+           텍스처는 glb 안에 내장(옆의 png 는 원본이라 복사하지 않는다). 파일명이 Shared/GameObject/Weapon.cpp 의 kSpecs 에도 적혀 있다. -->
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\weapon\**\*.glb">
+        <Category>weapon</Category>
       </ObjectAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />

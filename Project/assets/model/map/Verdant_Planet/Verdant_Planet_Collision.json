@@ -1,0 +1,407 @@
+{
+ "version": 1,
+ "kind": "types",
+ "map": "Verdant_Planet",
+ "source": "Verdant_Planet_Placement.json",
+ "generated": "2026-10-29",
+ "generator": "Resource_Work/_tools/collision/col_build.py",
+ "player_height_m": 1.8,
+ "small_rock_ratio": 0.15,
+ "rules": [
+  "작은 식물(Grass_ · Fern_ · Bush_ · Flower_ · Shrub_ · Weed_)은 충돌 없음(method none) — 2026-10-29 사용자 «정말 작은 식물의 경우 우선은 충돌에서 빼줘»",
+  "돌(class rock)은 인스턴스 배율 < min_scale 이면 충돌 없음. min_scale = (1.8 m × 0.15) ÷ height_m — 사용자 «엄청 작은 돌들도 플레이어 기준 높이가 15%아래라면 충돌체도 만들지 마». 게임(로더)이 판정한다",
+  "나머지는 저폴리 — 사용자 «나머진은 저폴리로 충돌 가자». 이미 COL_ 이 있는 종류는 그대로(existing_col) — 단 렌더 표면 밖으로 0.30 m(p95) 넘게 부풀면 보이지 않는 벽이 되므로 아래 규칙으로 새로 만든다(replaced_col 에 원래 COL_ 기록). 나무는 줄기 각기둥(trunk), 건물은 평면 합치기 → 간선 붕괴, 돌 · 소품은 볼록 껍질이 맞으면 hull 아니면 간선 붕괴. 간선 붕괴 비율은 낮은 쪽부터 올려 cover · bulge p95 가 허용치(tol_m) 안인 첫 단계",
+  "오차: cover = 렌더 표면 → 충돌체(빠진 곳), bulge = 충돌체 표면 → 렌더(부푼 곳), 표본 3000 점씩, m"
+ ],
+ "types": {
+  "Tree_Oak_A": {
+   "class": "tree",
+   "instances": 7002,
+   "render_tris": 15384,
+   "height_m": 14.089,
+   "render_min": [
+    -6.271,
+    -0.629,
+    -6.617
+   ],
+   "render_max": [
+    6.535,
+    14.089,
+    5.994
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.349,
+   "trunk_top_m": 3.0,
+   "bark_faces": 10064,
+   "slices": 7,
+   "bark_inside_ratio": 0.806,
+   "tris": 40
+  },
+  "Tree_Oak_B": {
+   "class": "tree",
+   "instances": 7107,
+   "render_tris": 18956,
+   "height_m": 14.662,
+   "render_min": [
+    -5.304,
+    -0.645,
+    -6.241
+   ],
+   "render_max": [
+    7.926,
+    14.662,
+    7.015
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.353,
+   "trunk_top_m": 3.0,
+   "bark_faces": 12368,
+   "slices": 7,
+   "bark_inside_ratio": 0.857,
+   "tris": 40
+  },
+  "Tree_Beech_A": {
+   "class": "tree",
+   "instances": 7084,
+   "render_tris": 16788,
+   "height_m": 23.339,
+   "render_min": [
+    -7.883,
+    -0.63,
+    -6.425
+   ],
+   "render_max": [
+    5.222,
+    23.339,
+    6.568
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.454,
+   "trunk_top_m": 3.0,
+   "bark_faces": 10928,
+   "slices": 4,
+   "bark_inside_ratio": 0.779,
+   "tris": 40
+  },
+  "Tree_Beech_B": {
+   "class": "tree",
+   "instances": 6996,
+   "render_tris": 15360,
+   "height_m": 20.012,
+   "render_min": [
+    -3.586,
+    -0.634,
+    -4.295
+   ],
+   "render_max": [
+    4.482,
+    20.012,
+    5.12
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.416,
+   "trunk_top_m": 3.0,
+   "bark_faces": 10280,
+   "slices": 5,
+   "bark_inside_ratio": 0.918,
+   "tris": 40
+  },
+  "Tree_Pine_A": {
+   "class": "tree",
+   "instances": 5809,
+   "render_tris": 22598,
+   "height_m": 19.727,
+   "render_min": [
+    -5.673,
+    -0.659,
+    -5.783
+   ],
+   "render_max": [
+    4.994,
+    19.727,
+    4.255
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.327,
+   "trunk_top_m": 3.0,
+   "bark_faces": 10170,
+   "slices": 4,
+   "bark_inside_ratio": 0.754,
+   "tris": 40
+  },
+  "Tree_Pine_B": {
+   "class": "tree",
+   "instances": 5827,
+   "render_tris": 20948,
+   "height_m": 18.524,
+   "render_min": [
+    -5.479,
+    -0.616,
+    -5.75
+   ],
+   "render_max": [
+    5.137,
+    18.524,
+    4.665
+   ],
+   "method": "trunk",
+   "trunk_radius_m": 0.313,
+   "trunk_top_m": 3.0,
+   "bark_faces": 9400,
+   "slices": 4,
+   "bark_inside_ratio": 0.723,
+   "tris": 40
+  },
+  "Bush_Broadleaf_A": {
+   "class": "plant_small",
+   "instances": 12424,
+   "method": "none"
+  },
+  "Bush_Broadleaf_B": {
+   "class": "plant_small",
+   "instances": 10238,
+   "method": "none"
+  },
+  "Fern_A": {
+   "class": "plant_small",
+   "instances": 29776,
+   "method": "none"
+  },
+  "Grass_Clump_A": {
+   "class": "plant_small",
+   "instances": 29301,
+   "method": "none"
+  },
+  "Grass_Clump_B": {
+   "class": "plant_small",
+   "instances": 20186,
+   "method": "none"
+  },
+  "Grass_Tall_A": {
+   "class": "plant_small",
+   "instances": 3339,
+   "method": "none"
+  },
+  "Grass_Wild_A": {
+   "class": "plant_small",
+   "instances": 7823,
+   "method": "none"
+  },
+  "Flower_Daisy_A": {
+   "class": "plant_small",
+   "instances": 3826,
+   "method": "none"
+  },
+  "Rock_Boulder_A": {
+   "class": "rock",
+   "instances": 2554,
+   "render_tris": 1800,
+   "height_m": 1.227,
+   "render_min": [
+    -0.986,
+    -0.138,
+    -0.799
+   ],
+   "render_max": [
+    1.186,
+    1.227,
+    0.977
+   ],
+   "method": "hull",
+   "tol_m": 0.094,
+   "bulge_p95_m": 0.038,
+   "bulge_max_m": 0.077,
+   "min_scale": 0.22,
+   "skipped_small": 0,
+   "tris": 524,
+   "tried": [
+    [
+     "hull",
+     524,
+     0.038
+    ]
+   ]
+  },
+  "Rock_Boulder_B": {
+   "class": "rock",
+   "instances": 2196,
+   "render_tris": 1400,
+   "height_m": 0.67,
+   "render_min": [
+    -0.821,
+    -0.079,
+    -0.721
+   ],
+   "render_max": [
+    0.829,
+    0.67,
+    0.676
+   ],
+   "method": "hull",
+   "tol_m": 0.08,
+   "bulge_p95_m": 0.021,
+   "bulge_max_m": 0.036,
+   "min_scale": 0.403,
+   "skipped_small": 0,
+   "tris": 472,
+   "tried": [
+    [
+     "hull",
+     472,
+     0.021
+    ]
+   ]
+  },
+  "Rock_Outcrop_A": {
+   "class": "rock",
+   "instances": 1833,
+   "render_tris": 3200,
+   "height_m": 3.085,
+   "render_min": [
+    -2.677,
+    -0.347,
+    -2.663
+   ],
+   "render_max": [
+    2.645,
+    3.085,
+    2.636
+   ],
+   "method": "hull",
+   "tol_m": 0.248,
+   "bulge_p95_m": 0.093,
+   "bulge_max_m": 0.165,
+   "min_scale": 0.0875,
+   "skipped_small": 0,
+   "tris": 622,
+   "tried": [
+    [
+     "hull",
+     622,
+     0.093
+    ]
+   ]
+  },
+  "Rock_Stones_A": {
+   "class": "rock",
+   "instances": 2961,
+   "render_tris": 1540,
+   "height_m": 0.306,
+   "render_min": [
+    -0.603,
+    -0.034,
+    -0.81
+   ],
+   "render_max": [
+    0.642,
+    0.306,
+    0.724
+   ],
+   "method": "collapse",
+   "ratio": 0.12,
+   "tol_m": 0.03,
+   "cover_p95_m": 0.017,
+   "bulge_p95_m": 0.016,
+   "cover_max_m": 0.031,
+   "bulge_max_m": 0.029,
+   "min_scale": 0.8824,
+   "skipped_small": 772,
+   "tris": 184,
+   "tried": [
+    [
+     "hull",
+     270,
+     0.151
+    ],
+    [
+     "collapse 0.02",
+     30,
+     0.109
+    ],
+    [
+     "collapse 0.04",
+     60,
+     0.057
+    ],
+    [
+     "collapse 0.07",
+     106,
+     0.033
+    ],
+    [
+     "collapse 0.12",
+     184,
+     0.017
+    ]
+   ]
+  },
+  "Log_Fallen_A": {
+   "class": "prop",
+   "instances": 790,
+   "render_tris": 1312,
+   "height_m": 0.648,
+   "render_min": [
+    -2.668,
+    -0.029,
+    -0.297
+   ],
+   "render_max": [
+    2.667,
+    0.648,
+    0.3
+   ],
+   "method": "hull",
+   "tol_m": 0.216,
+   "bulge_p95_m": 0.078,
+   "bulge_max_m": 0.094,
+   "tris": 394,
+   "tried": [
+    [
+     "hull",
+     394,
+     0.078
+    ]
+   ]
+  },
+  "Grass_Patch_A": {
+   "class": "plant_small",
+   "instances": 145397,
+   "method": "none"
+  },
+  "Grass_Patch_B": {
+   "class": "plant_small",
+   "instances": 48532,
+   "method": "none"
+  },
+  "Rock_Slab_A": {
+   "class": "rock",
+   "instances": 7006,
+   "render_tris": 2600,
+   "height_m": 2.005,
+   "render_min": [
+    -3.61,
+    -0.365,
+    -2.72
+   ],
+   "render_max": [
+    3.198,
+    2.005,
+    2.968
+   ],
+   "method": "hull",
+   "tol_m": 0.25,
+   "bulge_p95_m": 0.146,
+   "bulge_max_m": 0.238,
+   "min_scale": 0.1347,
+   "skipped_small": 0,
+   "tris": 344,
+   "tried": [
+    [
+     "hull",
+     344,
+     0.146
+    ]
+   ]
+  }
+ }
+}

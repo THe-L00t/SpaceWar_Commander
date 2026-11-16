@@ -12,9 +12,13 @@ namespace {
 	constexpr float kSprintDistance = 6.8_m;    // 질주 시 살짝 뒤로
 
 	constexpr float kShoulder    = 1.5_m;       // 오른쪽 어깨 오프셋
-	constexpr float kAimShoulder = 1.0_m;
+	// 조준 시 — 2026-11-14 사용자 «우클릭 조준시 … 좀 더 시점 낮춰주고 왼쪽으로 이동할것»: 1.0 → 0.6 m (화면 가운데 쪽으로)
+	constexpr float kAimShoulder = 0.6_m;
 
-	constexpr float kFocusHeight = 1.8_m;       // 타겟 기준 주시점 높이
+	constexpr float kFocusHeight    = 1.8_m;    // 타겟(몸통 중심) 기준 주시점 높이
+	// 조준 시 주시점 높이 — 같은 지시로 1.8 → 1.1 m. 몸통 중심이 지면 위 1 m 라 지면 위 2.1 m(캐릭터 키 1.8 m 의 머리보다 0.3 m 위)를 본다.
+	//  눈(eye)은 주시점에서 거리만큼 뒤에 있으므로 같이 낮아진다. 조준 전환 속도는 kZoomLag 그대로.
+	constexpr float kAimFocusHeight = 1.1_m;
 	constexpr float kMinEyeAlt   = 0.4_m;       // 지표면 위 최소 고도
 
 	constexpr float kFov       = 60.0_deg;
@@ -64,6 +68,7 @@ namespace swc {
 		forward = ProjectOntoPlane(forwardHint, up);
 		distance = kDistance;
 		shoulder = kShoulder;
+		focusHeight = kFocusHeight;
 		fov = kFov;
 	}
 
@@ -83,10 +88,11 @@ namespace swc {
 
 		distance = Damp(distance, wantDistance, kZoomLag, dt);
 		shoulder = Damp(shoulder, aiming ? kAimShoulder : kShoulder, kZoomLag, dt);
+		focusHeight = Damp(focusHeight, aiming ? kAimFocusHeight : kFocusHeight, kZoomLag, dt);
 		fov = Damp(fov, wantFov, kZoomLag, dt);
 
 		const Vec3d right = Cross(up, forward);
-		const Vec3d focus = smoothTarget + up * double(kFocusHeight) + right * double(shoulder);
+		const Vec3d focus = smoothTarget + up * double(focusHeight) + right * double(shoulder);
 
 		// eye -> focus 방향. pitch 가 클수록 카메라가 위에서 내려다본다.
 		const double cp = std::cos(pitch);
@@ -102,10 +108,10 @@ namespace swc {
 		if (eyeAlt < minAlt)
 			eye = planet.PositionAt(surfacePoint, minAlt);
 
-		eyePosition = eye.ToFloat3();
+		eyePosition = ToFloat3(eye);
 
-		const XMFLOAT3 focusF = focus.ToFloat3();
-		const XMFLOAT3 upF = up.ToFloat3();
+		const XMFLOAT3 focusF = ToFloat3(focus);
+		const XMFLOAT3 upF = ToFloat3(up);
 		const XMMATRIX view = XMMatrixLookAtLH(
 			XMLoadFloat3(&eyePosition), XMLoadFloat3(&focusF), XMLoadFloat3(&upF));
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH(fov, aspect, 0.1f, 20000.0f);
