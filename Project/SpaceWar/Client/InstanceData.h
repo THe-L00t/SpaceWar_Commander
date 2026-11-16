@@ -20,11 +20,15 @@
 // ============================================================
 
 namespace swc {
-	// InstanceData::flags — Extract 가 노드의 월드 행렬에서 정한다.
+	// InstanceData::flags — Extract 가 노드의 월드 행렬에서 정한다(반전 · 퇴화).
+	//  kInstanceNoRayTracing 만은 노드 설정이다(LegacyScene::SetRayTracingExcluded).
 	enum InstanceFlags : uint32_t
 	{
-		kInstanceMirrored   = 1u << 0,   // 행렬식 < 0 — 와인딩이 뒤집혀 반전 PSO 로 그린다
-		kInstanceDegenerate = 1u << 1,   // 행렬식 ≈ 0 — 그리지 않는다
+		kInstanceMirrored     = 1u << 0,   // 행렬식 < 0 — 와인딩이 뒤집혀 반전 PSO 로 그린다
+		kInstanceDegenerate   = 1u << 1,   // 행렬식 ≈ 0 — 그리지 않는다
+		// 2026-11-16 — TLAS 에 넣지 않는다(래스터에는 그린다 · 그림자 · 반사 · GI · AO 에는 안 나온다).
+		//  예광탄 — 사용자 «예광탄 빼. 총알이 날아가는 경로에 그림자 생겨서 이상해».
+		kInstanceNoRayTracing = 1u << 2,
 	};
 
 	struct InstanceData {

@@ -88,6 +88,19 @@ namespace
 	constexpr uint8_t  kCrosshairFill = 235;         // 흰색 불투명도
 	constexpr uint8_t  kCrosshairOutline = 150;      // 검은 테두리 불투명도
 
+	// ── NPC 명중 표시 (2026-11-16 사용자 «크로스헤어 그리는 방식 그대로 플레이어가 쏜 총이 NPC를 맞추면 x표시로 크로스헤어 주변에 표시해줘.
+	//    … +로 분할되는 각 분면마다 대각선 하나씩 그려서 표시해줘») ──
+	//  크로스헤어(+) 팔 사이 네 분면에 45° 선을 하나씩 — 넷을 모으면 X. 그리는 방식은 크로스헤어와 같다
+	//  (코드로 만든 32 px 텍스처 · 흰색 + 1 px 검은 테두리 · 두께 kCrosshairHalfThick · 화면 한가운데 UISprite — 크로스헤어 위에 겹친다).
+	//  ★ 맞았는지는 서버가 정한다(명세 18절 원칙 4) — 서버 ResolveFire 가 NPC 명중을 쏜 사람에게만 알린다(Shared::NpcHitPacket).
+	//    클라가 «맞을 것 같다» 로 미리 띄우지 않는다. 그래서 왕복 지연만큼 늦게 뜬다. 플레이어를 맞힌 발에는 띄우지 않는다(지시가 NPC).
+	//  선 = 분면 대각선(|x| = |y|) 위, 가운데에서 축 방향으로 kHitMarkerInner ~ kHitMarkerOuter px(대각선 길이 약 8.5 px — 팔 8 px 와 비슷).
+	//    안쪽 끝이 5 px 라 + 팔(가운데 4 ~ 12 px, 축 위)과 겹치지 않는다. 바깥 끝 11 px + 테두리 = 텍스처(반폭 16 px) 안.
+	//  값(5 · 11 px · 0.25 s)은 제가 고른 것 — 크로스헤어 팔과 비슷한 크기, 연사(초당 9 ~ 11발) 중에는 계속 보이고 멈추면 곧 사라지게.
+	constexpr float kHitMarkerInner   = 5.0f;    // 대각선 안쪽 끝 — 가운데에서 x · y 각각 (px)
+	constexpr float kHitMarkerOuter   = 11.0f;   // 대각선 바깥 끝 (px)
+	constexpr float kHitMarkerSeconds = 0.25f;   // 마지막 명중부터 보이는 시간(s) — 그동안 점점 흐려진다(UISprite tint a)
+
 	// ── 서버 전송 주기 ──────────────────────────────────────
 	//  2026-10-29 B안 — 좌표(1/30초) 대신 고정 틱 입력을 보낸다. 주기는 이동 틱(Shared::PlayerMovement::kTickSeconds = 1/60초)이고
 	//  렌더 프레임률과는 이미 분리돼 있다(PlayerController::Update 가 틱을 센다). 그래서 여기 따로 주기를 두지 않는다.
@@ -250,26 +263,25 @@ namespace
 		return m;
 	}
 
-	// 임시 크로스헤어 그림 (2026-11-14) — 위 상수 참고. premultiplied RGBA8.
-	swc::TextureData MakeCrosshairTexture()
+	// 코드로 그리는 조준 UI 텍스처 (2026-11-14 크로스헤어 · 2026-11-16 NPC 명중 X 가 같이 쓴다) — premultiplied RGBA8, 한 변 kCrosshairTexels.
+	//  shape(dx, dy) = 가운데에서 그 텍셀 중심까지의 |x| · |y| (px) 로 «흰색으로 칠하는가». 칠한 곳 둘레 1 px 는 검은 테두리.
+	template <class Shape>
+	swc::TextureData MakeAimTexture(const wchar_t* path, Shape shape)
 	{
 		swc::TextureData image;
-		image.path = L"(crosshair)";
+		image.path = path;
 		image.width = kCrosshairTexels;
 		image.height = kCrosshairTexels;
 		image.srgb = false;
 		image.pixels.assign(size_t(kCrosshairTexels) * kCrosshairTexels * 4, 0);
 
 		const float center = float(kCrosshairTexels) * 0.5f;
-		auto filled = [center](int x, int y)
+		auto filled = [center, &shape](int x, int y)
 		{
 			if (x < 0 || y < 0 || x >= int(kCrosshairTexels) || y >= int(kCrosshairTexels)) return false;
 			const float dx = std::fabs(float(x) + 0.5f - center);
 			const float dy = std::fabs(float(y) + 0.5f - center);
-			const bool dot = dx < kCrosshairHalfThick && dy < kCrosshairHalfThick;
-			const bool horizontal = dy < kCrosshairHalfThick && dx >= kCrosshairGap && dx < kCrosshairGap + kCrosshairArm;
-			const bool vertical = dx < kCrosshairHalfThick && dy >= kCrosshairGap && dy < kCrosshairGap + kCrosshairArm;
-			return dot || horizontal || vertical;
+			return shape(dx, dy);
 		};
 
 		for (int y = 0; y < int(kCrosshairTexels); ++y)
@@ -291,6 +303,31 @@ namespace
 			}
 		}
 		return image;
+	}
+
+	// 임시 크로스헤어 그림 (2026-11-14) — 위 kCrosshair* 상수 참고. 가운데 점 + 팔 4개(+).
+	swc::TextureData MakeCrosshairTexture()
+	{
+		return MakeAimTexture(L"(crosshair)", [](float dx, float dy)
+		{
+			const bool dot = dx < kCrosshairHalfThick && dy < kCrosshairHalfThick;
+			const bool horizontal = dy < kCrosshairHalfThick && dx >= kCrosshairGap && dx < kCrosshairGap + kCrosshairArm;
+			const bool vertical = dx < kCrosshairHalfThick && dy >= kCrosshairGap && dy < kCrosshairGap + kCrosshairArm;
+			return dot || horizontal || vertical;
+		});
+	}
+
+	// NPC 명중 X (2026-11-16) — 위 kHitMarker* 상수 참고. 네 분면마다 대각선 하나.
+	//  dx · dy 가 절댓값이라 한 식으로 네 분면이 다 나온다. 대각선(dx = dy)까지의 수직 거리 = |dx − dy| / √2 가 두께 안이고,
+	//  대각선 위 자리((dx + dy) / 2 — 축 방향 px)가 안쪽 ~ 바깥 끝 사이면 칠한다.
+	swc::TextureData MakeHitMarkerTexture()
+	{
+		return MakeAimTexture(L"(hit marker)", [](float dx, float dy)
+		{
+			const float across = std::fabs(dx - dy) * 0.70710678f;
+			const float along = (dx + dy) * 0.5f;
+			return across < kCrosshairHalfThick && along >= kHitMarkerInner && along < kHitMarkerOuter;
+		});
 	}
 
 	// 예시 행성 디버그 씬의 창 제목 몫 (2026-10-28)
@@ -672,6 +709,8 @@ namespace swc {
 				{
 					const NodeHandle tracer = scene.AddNode(kInvalidNode, tracerMesh, 0);
 					scene.SetLocalTransform(tracer, ParkedTransform());
+					// 2026-11-16 사용자 «예광탄 빼. 총알이 날아가는 경로에 그림자 생겨서 이상해» — TLAS 에서 뺀다(화면에는 그린다).
+					scene.SetRayTracingExcluded(tracer, true);
 					freeTracerNodes.push_back(tracer);
 				}
 
@@ -694,6 +733,10 @@ namespace swc {
 				crosshairTexture = renderer.CreateTexture(MakeCrosshairTexture());
 				if (crosshairTexture == kInvalidTexture)
 					Log(L"[UI] 크로스헤어 텍스처를 만들지 못했다 — %s", renderer.StatusText().c_str());
+				// NPC 명중 X (2026-11-16) — 같은 방식. 그리기는 RenderFrame(서버가 명중을 알린 뒤 kHitMarkerSeconds 동안).
+				hitMarkerTexture = renderer.CreateTexture(MakeHitMarkerTexture());
+				if (hitMarkerTexture == kInvalidTexture)
+					Log(L"[UI] 명중 표시 텍스처를 만들지 못했다 — %s", renderer.StatusText().c_str());
 				return true;
 			});
 
@@ -1613,6 +1656,9 @@ namespace swc {
 	//   송신은 Class Bridge → Network(9절), 수신은 Network → State Manager → OtherPlayer · NPC(6.13) 로 옮길 대상이다.
 	void Engine::UpdateNetwork(float dt)
 	{
+		// NPC 명중 X 의 남은 표시 시간(2026-11-16) — 끊겨도 줄어들어 사라지게 연결 검사보다 앞에서.
+		hitMarkerTimer = (std::max)(0.0f, hitMarkerTimer - dt);
+
 		if (!network.Connected())
 			return;
 
@@ -1628,6 +1674,11 @@ namespace swc {
 
 		//서버가 뿌린 다른 플레이어의 좌표와 내 판정 상태를 받는다. 논블로킹이라 즉시 돌아온다.
 		network.Poll();
+
+		// ── NPC 명중 표시 (2026-11-16) — 서버가 «내 발이 NPC 에 맞았다» 고 알렸으면 X 를 처음부터 다시 보인다(연사 중엔 계속 보인다).
+		//  로딩 중 Poll 이 받아 둔 것도 여기서 꺼낸다. 맵을 바꾸면 Network 가 비운다.
+		if (network.TakeNpcHits() > 0)
+			hitMarkerTimer = kHitMarkerSeconds;
 
 		// ── 서버가 이 맵에 넣었다 (2026-11-01) ──
 		//  서버가 정한 자리 · 방향에 다시 선다 — 되감기 기록을 끊으므로, 답을 기다리는 동안 혼자 움직인 것은 버린다.
@@ -1810,6 +1861,17 @@ namespace swc {
 			crosshair.center = XMFLOAT2(float(renderer.Width()) * 0.5f, float(renderer.Height()) * 0.5f);
 			crosshair.halfSize = XMFLOAT2(float(kCrosshairTexels) * 0.5f, float(kCrosshairTexels) * 0.5f);
 			uiSprites.push_back(crosshair);
+		}
+
+		// NPC 명중 X (2026-11-16) — 크로스헤어와 같은 자리 · 같은 크기로 그 위에 겹친다. 남은 시간에 비례해 흐려진다(tint a, UI.hlsl 이 색까지 곱한다).
+		if (hitMarkerTexture != kInvalidTexture && hitMarkerTimer > 0.0f)
+		{
+			UISprite marker;
+			marker.texture = hitMarkerTexture;
+			marker.center = XMFLOAT2(float(renderer.Width()) * 0.5f, float(renderer.Height()) * 0.5f);
+			marker.halfSize = XMFLOAT2(float(kCrosshairTexels) * 0.5f, float(kCrosshairTexels) * 0.5f);
+			marker.tint = XMFLOAT4(1.0f, 1.0f, 1.0f, hitMarkerTimer / kHitMarkerSeconds);
+			uiSprites.push_back(marker);
 		}
 
 		renderer.BeginFrame();

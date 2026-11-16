@@ -4681,7 +4681,8 @@ namespace swc {
 			for (const InstanceData& it : items)
 			{
 				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
-				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				// 2026-11-16 — kInstanceNoRayTracing(예광탄)은 래스터에만 그리고 TLAS 에는 넣지 않는다.
+				if (it.mesh >= impl->meshes.size() || (it.flags & (kInstanceDegenerate | kInstanceNoRayTracing))) continue;
 				const Impl::MeshGpu& mesh = impl->meshes[it.mesh];
 				const uint32_t blasIndex = mesh.blasIndex;
 				if (blasIndex == AccelStructure::kInvalidBlas) continue;

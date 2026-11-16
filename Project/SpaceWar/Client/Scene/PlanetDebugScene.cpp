@@ -406,12 +406,22 @@ namespace swc {
 		streamed = true;
 
 		// ① 점수 = 반지름 × 배율 ÷ 거리 (화면 크기 근사). 모델을 못 올린 종류는 뺀다.
+		//  ★ 2026-11-16 사용자 «반대편 반구는 제외하도록 수정해줘» — 눈의 반대편 반구(행성 중심 기준 내적 < 0)에 있는
+		//    오브젝트는 후보에 넣지 않는다. 전에는 점수만 봐서 큰 건물 · 다리가 반대편에서도 뽑혀 TLAS 자리를 먹었다.
 		scratch.clear();
+		farHemisphereSkipped = 0;
 		for (uint32_t i = 0; i < static_cast<uint32_t>(staticObjects.size()); ++i)
 		{
 			const Shared::StaticObject& object = staticObjects[i];
 			const ObjectType& type = objectTypes[object.meshIndex];
 			if (!type.loaded) continue;
+			const double facing = double(object.position.x) * eye.x + double(object.position.y) * eye.y +
+				double(object.position.z) * eye.z;
+			if (facing < 0.0)
+			{
+				++farHemisphereSkipped;
+				continue;
+			}
 			const double dx = double(object.position.x) - eye.x;
 			const double dy = double(object.position.y) - eye.y;
 			const double dz = double(object.position.z) - eye.z;
@@ -444,6 +454,7 @@ namespace swc {
 			meshes += cost;
 			selectStamp[i] = stamp;
 		}
+		selectedMeshes = meshes;
 
 		// ③ 이번에 빠진 것을 숨기고 종류별 빈 자리로 돌린다.
 		size_t kept = 0;
@@ -619,6 +630,9 @@ namespace swc {
 			status += L" · 오브젝트 보임 " + std::to_wstring(liveList.size()) + L" / 배치 " +
 				std::to_wstring(staticObjects.size()) + L" · 종류 " + std::to_wstring(loadedTypes) + L"/" +
 				std::to_wstring(objectTypes.size());
+			// 2026-11-16 — 고른 메시 수 / 예산 · 반대편 반구라 뺀 오브젝트 수(실행 중 확인용)
+			status += L" · 메시 " + std::to_wstring(selectedMeshes) + L"/" + std::to_wstring(kObjectMeshBudget) +
+				L" · 반대편 제외 " + std::to_wstring(farHemisphereSkipped);
 			if (skippedInstances > 0)
 				status += L" · 건너뜀 " + std::to_wstring(skippedInstances);
 		}

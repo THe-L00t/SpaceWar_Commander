@@ -127,6 +127,7 @@ namespace swc {
 
 		// 매 프레임. eye = 행성 중심 기준 위치(glTF 좌표 = 월드 − 행성 중심).
 		// 처음 · force · kRestreamDistance 이상 움직였을 때만 다시 고른다. 다시 골랐으면 true.
+		// ★ 2026-11-16 — 눈의 반대편 반구(행성 중심 기준 내적 < 0)에 있는 오브젝트는 고르지 않는다(사용자 지시).
 		bool StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force);
 
 		// ── 지형 레이어 (2026-10-28) ──
@@ -139,7 +140,7 @@ namespace swc {
 		bool ApplyTerrainLayers(size_t index, TerrainLayerSet&& layers, GRenderer& renderer, LegacyScene& scene,
 			std::wstring& error);
 
-		// 창 제목용 — «지형 N 삼각형 · 지형 레이어 섞기 / 대체 1장 · 오브젝트 보임 k / 배치 M · 종류 a/b»
+		// 창 제목용 — «지형 N 삼각형 · 지형 레이어 섞기 / 대체 1장 · 오브젝트 보임 k / 배치 M · 종류 a/b · 메시 n/예산 · 반대편 제외 f»
 		std::wstring Status() const;
 
 		const Shared::PlanetSurface& Ground() const { return ground; }
@@ -194,6 +195,8 @@ namespace swc {
 		std::vector<std::pair<float, uint32_t>> scratch;       // (점수, 인스턴스) — 고를 때마다 다시 쓴다
 		Vec3d                                   lastStreamEye;
 		bool                                    streamed = false;
+		size_t                                  selectedMeshes = 0;        // 2026-11-16 마지막으로 고른 메시 노드 수(≤ kObjectMeshBudget, 창 제목)
+		size_t                                  farHemisphereSkipped = 0;  // 2026-11-16 마지막 고르기에서 반대편 반구라 뺀 오브젝트 수(창 제목)
 	};
 
 } // namespace swc

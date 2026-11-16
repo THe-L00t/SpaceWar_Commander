@@ -211,6 +211,20 @@ namespace swc {
 		npcs.erase(p->npcId);
 	}
 
+	// ── NPC 명중 표시 (2026-11-16) ──
+	//  서버가 내 발이 NPC 에 맞았다고 알렸다(쏜 사람에게만 온다). 수만 세어 두고 Engine 이 프레임마다 꺼내 간다.
+	void Network::OnNpcHit(const Shared::NpcHitPacket*)
+	{
+		++npcHitsPending;
+	}
+
+	unsigned Network::TakeNpcHits()
+	{
+		const unsigned n = npcHitsPending;
+		npcHitsPending = 0;
+		return n;
+	}
+
 	// ── 이동 (B안, 2026-10-29) ──
 	//  서버 틱(30 Hz)마다 온다. 한 프레임에 둘 이상 오면 입력 번호가 가장 큰 것만 남긴다 — 보정은 가장 새 것으로 한 번이면 된다.
 	void Network::OnPlayerState(const Shared::PlayerStatePacket* p)
@@ -291,6 +305,7 @@ namespace swc {
 		npcs.clear();
 		hasState = false;
 		hasRespawn = false;
+		npcHitsPending = 0;   // 2026-11-16 — 옛 맵에서 맞힌 것은 새 맵에서 띄우지 않는다
 		// 2026-11-15 — 옛 맵의 남이 든 총 · 바닥 총을 지운다. 내 총은 맵을 바꿔도 들고 간다(서버가 새 맵에서 다시 알려 준다).
 		equips.clear();
 		GroundWeaponEvent clear;
@@ -349,7 +364,8 @@ namespace swc {
 				pHead->type == Shared::PacketType::NpcDespawn || pHead->type == Shared::PacketType::PlayerState ||
 				pHead->type == Shared::PacketType::PlayerNeutralized ||
 				pHead->type == Shared::PacketType::WeaponEquip || pHead->type == Shared::PacketType::GroundWeaponSpawn ||
-				pHead->type == Shared::PacketType::GroundWeaponRemove;   // 2026-11-15 총 — 옛 맵 것은 버린다
+				pHead->type == Shared::PacketType::GroundWeaponRemove ||   // 2026-11-15 총 — 옛 맵 것은 버린다
+				pHead->type == Shared::PacketType::NpcHit;                 // 2026-11-16 NPC 명중 — 옛 맵(게임 맵)에서 맞힌 것
 			if (worldScoped && joinState == JoinState::Joining)
 			{
 				nOffset += nSize;
@@ -416,6 +432,11 @@ namespace swc {
 			case Shared::PacketType::GroundWeaponRemove:
 				if (nSize == (int)sizeof(Shared::GroundWeaponRemovePacket))
 					OnGroundWeaponRemove((const Shared::GroundWeaponRemovePacket*)pHead);
+				break;
+
+			case Shared::PacketType::NpcHit:
+				if (nSize == (int)sizeof(Shared::NpcHitPacket))
+					OnNpcHit((const Shared::NpcHitPacket*)pHead);
 				break;
 
 			default:
@@ -485,6 +506,7 @@ namespace swc {
 		myId = 0;
 		myHealth = -1.0f;
 		nHits = 0;
+		npcHitsPending = 0;
 		hasRespawn = false;
 		hasState = false;
 		nStates = 0;

@@ -231,6 +231,10 @@ namespace swc {
 
 		// 임시 크로스헤어 (2026-11-14) — 코드로 만든 UI 텍스처. 화면 한가운데(조준선)에 그린다(Engine.cpp kCrosshair*).
 		TextureHandle           crosshairTexture = kInvalidTexture;
+		// NPC 명중 표시 (2026-11-16) — 크로스헤어와 같은 방식의 X(네 분면 대각선, Engine.cpp kHitMarker*). 크로스헤어 위에 겹쳐 그린다.
+		//  서버가 «내 발이 NPC 에 맞았다»(Network::TakeNpcHits)고 알리면 hitMarkerTimer 를 kHitMarkerSeconds 로 채운다.
+		TextureHandle           hitMarkerTexture = kInvalidTexture;
+		float                   hitMarkerTimer = 0.0f;   // 남은 표시 시간(s). 0 이면 그리지 않는다
 
 		FramePacket               packet;       // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫
