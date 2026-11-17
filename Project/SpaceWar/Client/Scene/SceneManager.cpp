@@ -96,4 +96,29 @@ namespace swc {
 		entered = id;
 	}
 
+	// ── 예시 행성 남기기 (2026-11-17) — SceneManager.h 설명 참고 ──
+	void SceneManager::NoteDebugPlanetEntered(size_t index)
+	{
+		if (index < debugPlanetEnteredAt.size())
+			debugPlanetEnteredAt[index] = ++debugPlanetEnterCount;
+	}
+
+	size_t SceneManager::DebugPlanetToRelease(size_t next, size_t keep) const
+	{
+		if (next >= debugPlanets.size() || debugPlanets[next].Loaded())
+			return PlanetDebugScene::kCount;   // 이미 올라간 행성으로 가면 아무것도 내리지 않는다
+		size_t loadedCount = 0;
+		size_t oldest = PlanetDebugScene::kCount;
+		for (size_t i = 0; i < debugPlanets.size(); ++i)
+		{
+			if (!debugPlanets[i].Loaded()) continue;
+			++loadedCount;
+			if (i == keep) continue;
+			if (oldest == PlanetDebugScene::kCount || debugPlanetEnteredAt[i] < debugPlanetEnteredAt[oldest])
+				oldest = i;
+		}
+		// next 가 들어오면 kKeptDebugPlanets + 1 개가 된다 → 하나를 먼저 내린다(읽기 전에 내려 GPU 메모리가 셋으로 겹치지 않게).
+		return loadedCount >= kKeptDebugPlanets ? oldest : PlanetDebugScene::kCount;
+	}
+
 } // namespace swc

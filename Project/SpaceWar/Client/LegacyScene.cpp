@@ -85,6 +85,30 @@ namespace swc {
 		this->rayTracingExcluded[n] = excluded ? 1 : 0;
 	}
 
+	void LegacyScene::ClearSubtree(NodeHandle root)
+	{
+		const size_t count = parent.size();
+		if (root >= count) return;
+		// 자식은 부모보다 뒤 번호로 들어오므로(AddNode 순서) root 부터 한 번 훑으면 아래 노드를 모두 찾는다.
+		std::vector<uint8_t> inside(count - root, 0);   // root 기준 번호 — 1 이면 root 아래
+		bool hadMesh = false;
+		for (size_t i = root; i < count; ++i)
+		{
+			const NodeHandle p = parent[i];
+			const bool under = i == root || (p != kInvalidNode && p >= root && inside[p - root]);
+			if (!under) continue;
+			inside[i - root] = 1;
+			hadMesh = hadMesh || mesh[i] != kInvalidMesh;
+			mesh[i] = kInvalidMesh;
+			material[i] = 0;
+			visible[i] = 0;
+			worldVisible[i] = 0;
+			localDirty[i] = 1;
+			rayTracingExcluded[i] = 0;
+		}
+		if (hadMesh) ++layoutVersion;   // 그리기 묶음에 있던 메시가 빠졌을 수 있다 — 렌더러가 묶음을 다시 만든다
+	}
+
 	void LegacyScene::UpdateWorldTransforms()
 	{
 		const size_t count = parent.size();

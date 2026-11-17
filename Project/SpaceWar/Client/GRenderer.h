@@ -52,6 +52,15 @@ namespace swc {
 		// ── 물가 페이드 (2026-10-29) — 투과 면이 땅(면 위로 올라온 불투명 표면)과 만나는 물가에서 옅어진다(폭 distance m, 0 = 끔) ──
 		//  얼어붙은 호수 면처럼 땅에 걸친 얇은 투과 면의 경계를 흐리게 한다. 프레임 밖에서 부른다. 실패하면 false.
 		bool SetMaterialEdgeFade(MaterialHandle, float distance);
+		// ── GPU 자원 놓기 (2026-11-17 예시 행성 해제 — 사용자 «이전에 있던 행성만 남기고, 더 오래된 행성은 해제») ──
+		//  메시(버퍼 · BLAS) · 텍스처 · 재질을 놓는다. 프레임 밖에서 부른다(프레임 안이면 아무것도 하지 않고 false).
+		//  GPU 를 한 번 기다린 뒤 놓는다(«펜스 뒤 해제» 의 가장 단순한 꼴 — 지금은 EndFrame 이 매 프레임 GPU 를 기다려 비용이 거의 없다.
+		//  CPU 가 GPU 를 기다리지 않게 바꾸면 «프레임 펜스가 지난 뒤 놓기» 목록으로 바꿔야 한다).
+		//  ★ 번호는 다시 쓰지 않는다 — 놓은 칸은 빈 칸으로 남는다(재질 상한 4096 · 바인드리스 65536 에 행성 하나가 재질 ≤ 56 ·
+		//    바인드리스 ≤ 393 칸이라 당장은 충분하다). 그 번호를 패킷에 넣으면 메시는 그리지 않고 재질은 0번(기본)으로 읽는다.
+		//  ★ 렌더러 기본 텍스처 · 0번 기본 재질은 놓지 않는다(목록에 있어도 건너뛴다). 같은 번호를 두 번 넣어도 된다.
+		bool Release(const std::vector<MeshHandle>& meshes, const std::vector<TextureHandle>& textures,
+			const std::vector<MaterialHandle>& materials);
 
 		void BeginFrame();
 		// BeginFrame마다 배경(view.background=true), 메인 패스를 각 한 번 호출한다.
@@ -101,6 +110,9 @@ namespace swc {
 		//  2 초마다 디버그 출력으로 내는 «[GPU 시간] N 프레임 평균 — 전체 … | 구간 …» 의 마지막 한 줄과, 지금까지 낸 보고 수.
 		const std::wstring& LastGpuTimeReport() const;
 		uint64_t GpuTimeReportCount() const;
+		// GPU 메모리 (2026-11-17 — 자동 측정이 «행성을 쌓으면 VRAM 이 넘치나» 를 본다). DXGI QueryVideoMemoryInfo 그대로(이 프로세스 몫).
+		//  local = 그래픽 카드 메모리의 사용량 · OS 가 준 예산, nonLocal = 시스템 메모리 쪽 사용량. 못 읽으면 false.
+		bool QueryVideoMemory(uint64_t& localUsage, uint64_t& localBudget, uint64_t& nonLocalUsage) const;
 
 	private:
 		struct Impl;

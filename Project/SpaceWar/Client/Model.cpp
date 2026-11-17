@@ -192,7 +192,28 @@ namespace swc {
 		nodes = data.nodes;
 		meshes = std::move(uploadedMeshes);
 		meshMaterials = std::move(uploadedMaterials);
+		// 2026-11-17 — 놓을 때(Release) 쓰려고 이 모델이 만든 텍스처 · 재질 번호를 남긴다(meshMaterials 에는 0번 기본 재질도 섞여 있다).
+		textures = std::move(textureHandles);
+		materials = std::move(materialHandles);
 		initialized = true;
+		return true;
+	}
+
+	// 2026-11-17 예시 행성 해제 — 이 모델이 만든 GPU 메시 · 텍스처 · 재질을 놓고 빈 모델로 돌아간다.
+	//  이 모델로 펼친 장면 노드는 호출자가 먼저 비워야 한다(LegacyScene::ClearSubtree).
+	bool Model::Release(GRenderer& renderer)
+	{
+		if (!renderer.Release(meshes, textures, materials))
+		{
+			lastError = L"모델 GPU 자원 놓기 실패: " + renderer.StatusText();
+			return false;
+		}
+		nodes.clear();
+		meshes.clear();
+		meshMaterials.clear();
+		textures.clear();
+		materials.clear();
+		initialized = false;
 		return true;
 	}
 

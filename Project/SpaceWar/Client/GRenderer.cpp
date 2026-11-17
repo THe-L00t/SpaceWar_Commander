@@ -815,6 +815,8 @@ namespace swc {
 			//  루트 상수는 terrainConstants(20 DWORD, 4단계부터 constants 보다 크다), 텍스처 5칸에는 배열 4개 + 마스크가 들어 있다.
 			bool terrain = false;
 			TerrainConstants terrainConstants{};
+			// 2026-11-17 — GRenderer::Release 로 놓은 재질. 칸은 남고(번호 재사용 없음) 패킷에 있으면 0번 재질로 읽는다(MaterialOf).
+			bool released = false;
 		};
 
 		// 묶음 키(Batch::pso) — 0 ~ 7 은 «양면 1 · 반전 2 · 알파 마스크 4» 조합, 8 · 9 = 지형 레이어 판(9 = 반전).
@@ -829,6 +831,7 @@ namespace swc {
 		uint8_t*               rtMaterialData = nullptr;
 
 		ComPtr<ID3D12Device5>              device;
+		ComPtr<IDXGIAdapter3>              adapter3;   // 2026-11-17 — GPU 메모리 계측(QueryVideoMemory). 못 얻어도 진행한다
 		ComPtr<ID3D12CommandQueue>         commandQueue;
 		ComPtr<IDXGISwapChain3>            swapChain;
 		ComPtr<ID3D12DescriptorHeap>       rtvHeap;
@@ -1149,6 +1152,18 @@ namespace swc {
 		std::vector<TextureGpu> textures;
 		std::vector<MaterialGpu> materials;
 		std::array<TextureHandle, kMaterialTextureCount> fallbackTextures{};
+
+		// ── 놓은 자원 거르기 (2026-11-17, GRenderer::Release) ──
+		//  놓은 메시는 버퍼가 비어 있다 — 패킷에 남아 있어도 래스터 · TLAS · 반투명 모두 그리지 않는다.
+		//  놓은 재질(또는 범위 밖 번호)은 0번 기본 재질로 읽는다.
+		bool MeshUsable(MeshHandle mesh) const
+		{
+			return mesh < meshes.size() && meshes[mesh].buffer.Get() != nullptr;
+		}
+		MaterialHandle MaterialOf(MaterialHandle material) const
+		{
+			return material < materials.size() && !materials[material].released ? material : 0;
+		}
 		UINT materialDescriptorSize = 0;
 		bool frameOpen = false;
 
@@ -1947,6 +1962,7 @@ namespace swc {
 			impl->status = L"D3D12 디바이스 생성 실패.";
 			return false;
 		}
+		pick.adapter.As(&impl->adapter3);   // 2026-11-17 — GPU 메모리 계측용(실패해도 렌더링과 무관)
 		// ★ 2026-10-27 2단계 — 임시 스위치 kEnableRaytracing 을 없앴다. 장치가 DXR 1.1 + SM 6.5 를 지원하면 RT 를 쓴다.
 		//   (지원하지 않으면 BLAS · TLAS 를 만들지 않고, [4a] RT 그림자를 건너뛰며, 라이팅은 그림자 없이 합성한다)
 		impl->rtSupported = pick.raytracing;
@@ -4610,6 +4626,53 @@ namespace swc {
 		return true;
 	}
 
+	// ── GPU 자원 놓기 (2026-11-17 예시 행성 해제) — GRenderer.h 설명 참고 ──
+	//  메시: 버퍼 · BLAS 를 놓고 바인드리스 칸(정점 · 인덱스 raw SRV)은 빈 칸으로 남긴다.
+	//  텍스처: 자원을 놓는다. 재질 테이블 · 바인드리스 · UI 칸의 SRV 는 남지만 그 칸을 읽는 재질도 함께 놓으므로 읽히지 않는다.
+	//  재질: released 표시 — 패킷에 남은 번호는 MaterialOf 가 0번으로 바꾼다.
+	bool GRenderer::Release(const std::vector<MeshHandle>& meshes, const std::vector<TextureHandle>& textures,
+		const std::vector<MaterialHandle>& materials)
+	{
+		if (!impl->device || !impl->fenceEvent || impl->frameOpen)
+		{
+			impl->status = L"GPU 자원 놓기: 장치가 없거나 프레임 안에서 불렀습니다.";
+			return false;
+		}
+		if (meshes.empty() && textures.empty() && materials.empty()) return true;
+
+		// GPU 가 이 자원을 읽는 명령을 다 끝낸 뒤에 놓는다. 비동기 컴퓨트(TLAS 빌드)는 그래픽 큐가 이미 기다렸으므로
+		// 그래픽 큐 하나만 기다리면 된다(EndFrame 과 같은 규칙).
+		if (!impl->WaitForGpu()) return false;
+
+		for (const MeshHandle handle : meshes)
+		{
+			if (handle >= impl->meshes.size()) continue;
+			Impl::MeshGpu& mesh = impl->meshes[handle];
+			if (mesh.blasIndex != AccelStructure::kInvalidBlas)
+				impl->accel.ReleaseMesh(mesh.blasIndex);
+			mesh.blasIndex = AccelStructure::kInvalidBlas;
+			mesh.buffer.Reset();
+			mesh.vbv = {};
+			mesh.ibv = {};
+			mesh.indexCount = 0;
+		}
+		for (const TextureHandle handle : textures)
+		{
+			if (handle >= impl->textures.size()) continue;
+			bool fallback = false;
+			for (const TextureHandle kept : impl->fallbackTextures)
+				fallback = fallback || kept == handle;
+			if (fallback) continue;   // 재질이 비운 칸을 채우는 렌더러 기본 텍스처 — 놓지 않는다
+			impl->textures[handle].resource.Reset();
+		}
+		for (const MaterialHandle handle : materials)
+		{
+			if (handle == 0 || handle >= impl->materials.size()) continue;   // 0번 = 기본 재질 — 놓지 않는다
+			impl->materials[handle].released = true;
+		}
+		return true;
+	}
+
 	void GRenderer::BeginFrame()
 	{
 		impl->frameOpen = true;
@@ -4686,13 +4749,14 @@ namespace swc {
 			{
 				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
 				// 2026-11-16 — kInstanceNoRayTracing(예광탄)은 래스터에만 그리고 TLAS 에는 넣지 않는다.
-				if (it.mesh >= impl->meshes.size() || (it.flags & (kInstanceDegenerate | kInstanceNoRayTracing))) continue;
+				// 2026-11-17 — 놓은 메시(GRenderer::Release)도 뺀다.
+				if (!impl->MeshUsable(it.mesh) || (it.flags & (kInstanceDegenerate | kInstanceNoRayTracing))) continue;
 				const Impl::MeshGpu& mesh = impl->meshes[it.mesh];
 				const uint32_t blasIndex = mesh.blasIndex;
 				if (blasIndex == AccelStructure::kInvalidBlas) continue;
 				// ★ 2026-10-27 렌더 2단계 — InstanceID = 재질 번호(그림자 셰이더가 재질 표를 찾는다),
 				//   투과 재질이면 FORCE_NON_OPAQUE 로 넣어 그림자 레이가 통과 후보로 본다.
-				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				const MaterialHandle material = impl->MaterialOf(it.material);
 				const uint32_t index = impl->accel.InstanceCount();
 				// 투과 · 알파 마스크(2026-10-28) 재질은 FORCE_NON_OPAQUE — 레이가 후보로 받아 남는 빛 · 빈 곳을 처리한다
 				impl->accel.AddInstance(blasIndex, it.world, material,
@@ -4746,7 +4810,7 @@ namespace swc {
 
 			auto materialOf = [&](const InstanceData& it) -> MaterialHandle
 			{
-				return it.material < impl->materials.size() ? it.material : 0;
+				return impl->MaterialOf(it.material);   // 2026-11-17 — 놓은 재질도 0번으로
 			};
 			auto psoOf = [&](const InstanceData& it) -> uint32_t
 			{
@@ -4764,7 +4828,7 @@ namespace swc {
 			for (size_t i = 0; i < usable; ++i)
 			{
 				const InstanceData& it = items[i];
-				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				if (!impl->MeshUsable(it.mesh) || (it.flags & kInstanceDegenerate)) continue;   // 2026-11-17 놓은 메시도 뺀다
 				// ★ 9단계 — 투과 재질(얼음)은 메인 G-buffer 에서 뺀다. 라이팅 뒤 [7] 반투명 패스가 그린다.
 				//   (반투명 파이프라인이 없는 장치는 예전처럼 여기서 불투명으로 그린다)
 				if (!view.background && impl->transparentPso && impl->materials[materialOf(it)].transmissive) continue;
@@ -5298,8 +5362,8 @@ namespace swc {
 			for (size_t i = 0; i < drawable; ++i)
 			{
 				const InstanceData& it = items[i];
-				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
-				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				if (!impl->MeshUsable(it.mesh) || (it.flags & kInstanceDegenerate)) continue;   // 2026-11-17 놓은 메시도 뺀다
+				const MaterialHandle material = impl->MaterialOf(it.material);
 				if (!impl->materials[material].transmissive) continue;
 				const XMVECTOR position = XMVectorSet(it.world._41, it.world._42, it.world._43, 1.0f);
 				impl->transparentDraws.push_back({ uint32_t(i), material, it.mesh,
@@ -5602,4 +5666,19 @@ namespace swc {
 	// 2026-11-17 — 자동 프레임 시간 측정(Engine kAutoFrameBudget)
 	const std::wstring& GRenderer::LastGpuTimeReport() const { return impl->lastGpuReport; }
 	uint64_t GRenderer::GpuTimeReportCount() const { return impl->gpuReportCount; }
+
+	// 2026-11-17 — GPU 메모리(이 프로세스 몫). 자동 프레임 시간 측정이 행성마다 찍는다.
+	bool GRenderer::QueryVideoMemory(uint64_t& localUsage, uint64_t& localBudget, uint64_t& nonLocalUsage) const
+	{
+		if (!impl->adapter3) return false;
+		DXGI_QUERY_VIDEO_MEMORY_INFO local = {};
+		DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal = {};
+		if (FAILED(impl->adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
+			FAILED(impl->adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocal)))
+			return false;
+		localUsage = local.CurrentUsage;
+		localBudget = local.Budget;
+		nonLocalUsage = nonLocal.CurrentUsage;
+		return true;
+	}
 }

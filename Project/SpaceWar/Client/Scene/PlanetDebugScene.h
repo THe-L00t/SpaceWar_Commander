@@ -117,6 +117,12 @@ namespace swc {
 		bool Build(const ModelData& data, Shared::PlanetSurface&& ground, GRenderer& renderer,
 			LegacyScene& scene, const Vec3d& planetCenter, std::wstring& error);
 
+		// ── 행성 내리기 (2026-11-17, 사용자 «이전에 있던 행성만 남기고, 더 오래된 행성은 해제») — 메인 스레드 · 프레임 밖 ──
+		//  이 행성의 GPU 자원(맵 · 오브젝트 · 지형 레이어)을 놓고, 장면 노드를 비우고, CPU 쪽(접지면 · 충돌체 · 배치)도 비운다.
+		//  끝나면 Loaded() = false — 다시 고르면 처음처럼 로드 묶음으로 읽는다. 지금 보이는 행성에는 부르지 않는다(Engine 이 고른다).
+		//  GPU 놓기에 실패하면 false(장면 · CPU 는 그래도 비운다).
+		bool Release(GRenderer& renderer, LegacyScene& scene);
+
 		// ── 배치 오브젝트 (메인 스레드) ──
 		void SetPlacement(PlanetPlacement&& placement);
 		size_t ObjectTypeCount() const { return objectTypes.size(); }
@@ -176,6 +182,8 @@ namespace swc {
 		bool                  loaded = false;
 		std::vector<NodeHandle> terrainNodes;          // 지형 메시(…_Planet_Terrain)의 그리기 노드 — 지형 레이어 재질로 바꾼다
 		bool                  terrainLayered = false;  // 지형 레이어 재질을 끼웠는가(창 제목)
+		std::vector<TextureHandle> terrainTextures;    // 2026-11-17 — 지형 레이어 텍스처(ApplyTerrainLayers 가 올린 것, Release 가 놓는다)
+		MaterialHandle        terrainMaterial = kInvalidMaterial;   // 2026-11-17 — 지형 레이어 재질(Release 가 놓는다)
 		// ── 땅 위 메시 경계 섞기 (2026-10-29) ──
 		//  오솔길 · 착륙 대지 중 «지형과 같은 땅» 재질인 것도 지형 레이어 재질로 그린다(ApplyTerrainLayers).
 		Vec3d                 center{ 0.0, 0.0, 0.0 };              // 월드의 행성 중심 — 지형 레이어 좌표의 원점

@@ -127,6 +127,12 @@ namespace swc {
 		std::vector<std::wstring> budgetGpuReports;         // 측정 구간에 나온 GPU 보고 줄
 		std::wstring              budgetText;               // 파일에 쓸 내용
 		double                    lastEndFrameMs = 0.0;     // 이번 프레임 renderer.EndFrame() 시간(ms) — RenderFrame 이 잰다
+		// 2026-11-17 «움직이면서도 한번 측정» — 행성마다 서 있기 뒤 움직이며 한 번 더
+		int                       budgetPhase = 0;          // 0 = 서 있기, 1 = 움직이며
+		bool                      budgetMoving = false;     // true 면 W + Shift 를 누른 채(InputManager::SetForcedKey) UpdatePlayer 가 카메라를 돌린다
+		double                    budgetDistance = 0.0;     // 측정 구간에 움직인 거리(m)
+		Vec3d                     budgetLastPos;            // 거리 재기용 앞 프레임 위치
+		uint32_t                  budgetRestreams = 0;      // 측정 구간에 오브젝트를 다시 고른 횟수(UpdateDebugPlanetObjects)
 
 		HWND hwnd = nullptr;
 
