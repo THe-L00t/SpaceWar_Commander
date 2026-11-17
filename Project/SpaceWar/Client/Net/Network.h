@@ -171,6 +171,9 @@ namespace swc {
 		// 2026-11-16 NPC 명중 표시 — 서버가 «내 발이 NPC 에 맞았다» 고 알린 수(지난번 꺼낸 뒤). 꺼내면 0 이 된다.
 		//  맞았는지는 서버가 정한다(명세 18절 원칙 4). Engine 이 이것으로 크로스헤어 둘레 X 를 띄운다.
 		unsigned TakeNpcHits();
+		// 2026-11-17 — 위 TakeNpcHits 가 마지막으로 꺼낸 명중의 NPC 번호들(받은 순서). 피를 서버 확인 뒤에 띄울 때 쓴다
+		//  (ParticleSystem::ConfirmNpcHits — Engine kBloodWaitsForServer 가 켜졌을 때만. 지금은 꺼짐).
+		const std::vector<uint32_t>& LastNpcHitIds() const { return npcHitIdsTaken; }
 
 		// 확인용 통계
 		unsigned SentCount() const { return nSent; }
@@ -232,6 +235,9 @@ namespace swc {
 		float    myHealth = -1.0f;      // 서버가 알려준 내 체력. 음수 = 아직 모름
 		unsigned nHits = 0;             // 내가 맞은 횟수 (표시용)
 		unsigned npcHitsPending = 0;    // 아직 안 꺼낸 내 발의 NPC 명중 수 (2026-11-16 — TakeNpcHits)
+		static constexpr size_t kMaxNpcHitIds = 256;   // 2026-11-17 — 꺼내기 전까지 남길 번호 수 상한
+		std::vector<uint32_t> npcHitIdsPending;        // 2026-11-17 — 아직 안 꺼낸 명중의 NPC 번호
+		std::vector<uint32_t> npcHitIdsTaken;          // 2026-11-17 — 마지막으로 꺼낸 번호(LastNpcHitIds)
 		bool     hasRespawn = false;    // 되살아날 자리를 받았는가
 		float    respawnPos[3] = { 0.0f, 0.0f, 0.0f };
 

@@ -114,6 +114,9 @@
     <Filter Include="클래스 목록\WeaponModels">
       <UniqueIdentifier>{5b9d3e17-82a4-4c6f-b0d1-7e42c8a95f63}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\ParticleSystem">
+      <UniqueIdentifier>{3f8c2a61-7d94-4e0b-a5c3-9b16e2d47f08}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
     </Filter>
@@ -223,6 +226,9 @@
     </ClCompile>
     <ClCompile Include="Weapon\WeaponScene.cpp">
       <Filter>클래스 목록\WeaponModels</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ParticleSystem.cpp">
+      <Filter>클래스 목록\ParticleSystem</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -373,6 +379,9 @@
     <ClInclude Include="Weapon\WeaponScene.h">
       <Filter>클래스 목록\WeaponModels</Filter>
     </ClInclude>
+    <ClInclude Include="Effects\ParticleSystem.h">
+      <Filter>클래스 목록\ParticleSystem</Filter>
+    </ClInclude>
     <ClInclude Include="Log.h">
       <Filter>클래스 목록\Log</Filter>
     </ClInclude>
@@ -481,6 +490,15 @@
       <Filter>셰이더</Filter>
     </None>
     <None Include="Shaders\DebugLines.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\Particles.hlsl">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ParticleCommon.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ParticleRt.hlsli">
       <Filter>셰이더</Filter>
     </None>
   </ItemGroup>

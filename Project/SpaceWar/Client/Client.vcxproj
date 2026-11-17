@@ -133,6 +133,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClCompile Include="DebugView\ColliderDebugView.cpp" />
     <ClCompile Include="Weapon\WeaponModels.cpp" />
     <ClCompile Include="Weapon\WeaponScene.cpp" />
+    <ClCompile Include="Effects\ParticleSystem.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Forward.hlsl" />
@@ -172,6 +173,9 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <None Include="Shaders\ReflectionClassify.hlsl" />
     <None Include="Shaders\TerrainLayers.hlsli" />
     <None Include="Shaders\DebugLines.hlsl" />
+    <None Include="Shaders\Particles.hlsl" />
+    <None Include="Shaders\ParticleCommon.hlsli" />
+    <None Include="Shaders\ParticleRt.hlsli" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.vcxproj">
@@ -193,6 +197,7 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
     <ClInclude Include="DebugView\ColliderDebugView.h" />
     <ClInclude Include="Weapon\WeaponModels.h" />
     <ClInclude Include="Weapon\WeaponScene.h" />
+    <ClInclude Include="Effects\ParticleSystem.h" />
     <ClInclude Include="Log.h" />
     <ClInclude Include="Bridge\ClassBridge.h" />
     <ClInclude Include="State\StateManager.h" />

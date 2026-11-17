@@ -56,6 +56,10 @@ namespace
 	constexpr float  kTracerLength = 120.0f;  // 가장 긴 길이 (m) — 지평선이 125m 다. 2026-11-16 부터 그 전에 닿으면 거기까지만
 	constexpr float  kTracerMinLength = 0.05f; // 이보다 짧으면 그리지 않는다(총구가 벽 · 땅에 붙어 있을 때)
 	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
+	// ── 피를 서버 확인 뒤에 띄울지 (2026-11-17 사용자 피 위치 «이것도 구현만 하고 아직 적용은 하지 마») ──
+	//  false(지금) = 내 발이 몸에 맞은 그 프레임에 바로 피. true = 맞은 자리를 기억해 두었다가(ParticleSystem::RememberBodyHit)
+	//  서버가 NpcHit 로 «맞았다» 고 알리면 그 자리에 피(ConfirmNpcHits). 플레이어 몸은 아직 확인을 잇지 않았다(PlayerHealth 연결 전).
+	constexpr bool   kBloodWaitsForServer = false;
 	// 한 프레임에 쏠 수 있는 최대 발 수 — 프레임이 발 간격보다 길 때(기관총 1/11 s 면 11 fps 밑) 밀린 발을 이만큼까지 같이 쏜다.
 	//  서버가 한꺼번에 받아 주는 발 수(Server main.cpp kFireBurstShots)와 같게 둔다(2026-11-15).
 	constexpr uint32_t kMaxShotsPerFrame = 3;
@@ -846,6 +850,8 @@ namespace swc {
 			UpdateWeapons(dt);   // 2026-11-15 — 든 총 · 바닥 총 · E 줍기 · G 떨구기. 이번 프레임 든 총으로 UpdateFire 가 쏜다
 			UpdateFire(dt);
 			UpdateNetwork(dt);
+			// 2026-11-17 피격 파티클 — 이번 프레임에 만든 것(내 발 · 서버 확인)까지 넣고 움직인다. 렌더 추출은 RenderFrame.
+			particles.Update(dt, planet);
 
 			// 애니메이션 포즈 — 게임 단계의 «출력» 이다 (멀티스레딩 명세 3.2 ③).
 			//  총구 위치·히트박스가 포즈를 쓰므로 렌더보다 먼저, 상태가 다 정해진 뒤에 돌린다.
@@ -1213,6 +1219,7 @@ namespace swc {
 
 		// 옛 맵의 원격 플레이어 · NPC 를 치운다. 새 맵 사람들은 서버가 이 맵에 넣은 뒤(WorldJoined) 다시 받는다(2026-11-01 맵 번호).
 		ParkNetworkNodes();
+		particles.Clear();   // 2026-11-17 — 옛 맵의 파티클 · 확인 기다리던 피 자리를 버린다
 
 		// 충돌체도 이 행성 것으로(2026-10-29) — 못 읽었으면 지형만 막는다.
 		controller.SetCollision(target.Collision().Loaded() ? &target.Collision() : nullptr);
@@ -1263,6 +1270,7 @@ namespace swc {
 
 		// 옛 맵의 원격 플레이어 · NPC 를 치운다. 게임 맵 사람들 · NPC 는 서버가 넣어 준 뒤 다시 받는다.
 		ParkNetworkNodes();
+		particles.Clear();   // 2026-11-17 — 옛 맵의 파티클을 버린다
 
 		controller.Spawn(GameMapSpawnPoint(), { 0.0, 0.0, 1.0 });
 		spawnPosition = controller.Position();
@@ -1595,6 +1603,25 @@ namespace swc {
 			(std::min)(double(spec.range), double(kTracerStart) + double(kTracerLength)), 0.0);
 		const double tracerEnd = along.kind == Shared::ShotHitKind::Body ? along.closest : along.distance;
 		const float tracerLength = float((std::min)(double(kTracerLength), tracerEnd - double(kTracerStart)));
+
+		// ── 피격 파티클 (2026-11-17) — 예광탄과 같은 선이 처음 닿는 곳. 내 발은 서버를 기다리지 않고 이 프레임에 만든다 ──
+		//  튀는 쪽: 지면이면 그 자리의 행성 위쪽, 나머지는 쏜 방향의 반대(Shared::ShotHit 에 표면 법선이 아직 없다).
+		//  몸이면 맞은 NPC 번호도 알아 둔다 — TraceVisibleShot 의 몸 목록은 «원격 플레이어 → NPC» 순서다.
+		ParticleSystem::Surface impactSurface = ParticleSystem::Surface::Ground;
+		const bool impact = ParticleSystem::SurfaceOf(along.kind, impactSurface);
+		const Vec3d impactPoint = muzzle + aim * along.distance;
+		const Vec3d impactNormal = along.kind == Shared::ShotHitKind::Terrain ? planet.Up(impactPoint) : aim * -1.0;
+		const XMFLOAT3& eyeFloat = camera.EyePosition();
+		const Vec3d eyePosition{ double(eyeFloat.x), double(eyeFloat.y), double(eyeFloat.z) };
+		bool impactNpc = false;
+		uint32_t impactNpcId = 0;
+		if (along.kind == Shared::ShotHitKind::Body && network.Connected() &&
+			along.target >= remoteViews.size() && along.target - remoteViews.size() < npcViews.size())
+		{
+			impactNpc = true;
+			impactNpcId = npcViews[along.target - remoteViews.size()].npcId;
+		}
+
 		const uint32_t maxShots = spec.fireMode == Shared::FireMode::Auto ? kMaxShotsPerFrame : 1u;
 		for (uint32_t shot = 0; shot < maxShots && fireCooldown <= kFireGateTolerance; ++shot)
 		{
@@ -1608,6 +1635,16 @@ namespace swc {
 				network.SendFire(origin, dir);
 			if (shotsFired++ % every == 0)
 				SpawnTracer(muzzle, aim, tracerLength);
+			if (impact)
+			{
+				if (impactSurface == ParticleSystem::Surface::Body && kBloodWaitsForServer)
+				{
+					if (impactNpc)
+						particles.RememberBodyHit(impactNpcId, impactPoint, impactNormal, eyePosition);
+				}
+				else
+					particles.EmitImpact(impactSurface, impactPoint, impactNormal, eyePosition);
+			}
 		}
 		fireCooldown = (std::max)(0.0f, fireCooldown);   // 상한에 걸려 남은 발은 버린다(다음 프레임에 몰아 쏘지 않게)
 	}
@@ -1744,7 +1781,12 @@ namespace swc {
 		// ── NPC 명중 표시 (2026-11-16) — 서버가 «내 발이 NPC 에 맞았다» 고 알렸으면 X 를 처음부터 다시 보인다(연사 중엔 계속 보인다).
 		//  로딩 중 Poll 이 받아 둔 것도 여기서 꺼낸다. 맵을 바꾸면 Network 가 비운다.
 		if (network.TakeNpcHits() > 0)
+		{
 			hitMarkerTimer = kHitMarkerSeconds;
+			// 2026-11-17 — 피를 서버 확인 뒤에 띄우는 길(지금은 꺼짐, kBloodWaitsForServer)
+			if (kBloodWaitsForServer)
+				particles.ConfirmNpcHits(network.LastNpcHitIds());
+		}
 
 		// ── 서버가 이 맵에 넣었다 (2026-11-01) ──
 		//  서버가 정한 자리 · 방향에 다시 선다 — 되감기 기록을 끊으므로, 답을 기다리는 동안 혼자 움직인 것은 버린다.
@@ -1915,6 +1957,11 @@ namespace swc {
 		packet.view.eyePosition = camera.EyePosition();
 		// 2026-10-27 렌더 6단계 — 하늘 · 해 높이의 기준(행성 위 플레이어 자리의 위)
 		packet.view.up = XMFLOAT3(float(controller.Up().x), float(controller.Up().y), float(controller.Up().z));
+		// 2026-11-17 피격 파티클 — 알파 묶음(먼 것부터) + 가산 묶음. 렌더러 [7b] 가 이 배열만 본다(명세 7절 Particle[]).
+		{
+			const XMFLOAT3& e = packet.view.eyePosition;
+			particles.Extract(Vec3d{ double(e.x), double(e.y), double(e.z) }, packet.particles, packet.particleAlphaCount);
+		}
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);

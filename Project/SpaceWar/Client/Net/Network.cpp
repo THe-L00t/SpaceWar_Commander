@@ -213,15 +213,20 @@ namespace swc {
 
 	// ── NPC 명중 표시 (2026-11-16) ──
 	//  서버가 내 발이 NPC 에 맞았다고 알렸다(쏜 사람에게만 온다). 수만 세어 두고 Engine 이 프레임마다 꺼내 간다.
-	void Network::OnNpcHit(const Shared::NpcHitPacket*)
+	void Network::OnNpcHit(const Shared::NpcHitPacket* p)
 	{
 		++npcHitsPending;
+		// 2026-11-17 — 어느 NPC 인지도 남긴다(피를 서버 확인 뒤에 띄울 때 ParticleSystem::ConfirmNpcHits 가 쓴다). 상한을 넘으면 세기만 한다.
+		if (p && npcHitIdsPending.size() < kMaxNpcHitIds)
+			npcHitIdsPending.push_back(p->npcId);
 	}
 
 	unsigned Network::TakeNpcHits()
 	{
 		const unsigned n = npcHitsPending;
 		npcHitsPending = 0;
+		npcHitIdsTaken.swap(npcHitIdsPending);   // 이번에 꺼낸 번호들 — LastNpcHitIds
+		npcHitIdsPending.clear();
 		return n;
 	}
 
@@ -306,6 +311,8 @@ namespace swc {
 		hasState = false;
 		hasRespawn = false;
 		npcHitsPending = 0;   // 2026-11-16 — 옛 맵에서 맞힌 것은 새 맵에서 띄우지 않는다
+		npcHitIdsPending.clear();   // 2026-11-17 — 번호도 같이
+		npcHitIdsTaken.clear();
 		// 2026-11-15 — 옛 맵의 남이 든 총 · 바닥 총을 지운다. 내 총은 맵을 바꿔도 들고 간다(서버가 새 맵에서 다시 알려 준다).
 		equips.clear();
 		GroundWeaponEvent clear;
@@ -507,6 +514,8 @@ namespace swc {
 		myHealth = -1.0f;
 		nHits = 0;
 		npcHitsPending = 0;
+		npcHitIdsPending.clear();   // 2026-11-17
+		npcHitIdsTaken.clear();
 		hasRespawn = false;
 		hasState = false;
 		nStates = 0;
