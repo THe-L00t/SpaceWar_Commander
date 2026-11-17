@@ -41,6 +41,11 @@ namespace swc {
 		// CompactMesh 의 커맨드가 끝난 뒤에 부른다. 압축 원본과 scratch 를 해제한다.
 		void FinishCompaction(uint32_t blasIndex);
 
+		// ── BLAS 하나를 놓는다 (2026-11-17 예시 행성 해제 — 사용자 «이전에 있던 행성만 남기고 더 오래된 행성은 해제») ──
+		//  GPU 가 이 BLAS 를 더는 읽지 않을 때 부른다(호출자 GRenderer::Release 가 GPU 를 기다린 뒤).
+		//  번호는 다시 쓰지 않고 빈 칸으로 남긴다. 그 번호로 AddInstance 를 부르면 아무것도 넣지 않는다.
+		void ReleaseMesh(uint32_t blasIndex);
+
 		// ★ 비행 중 프레임 수만큼의 인스턴스 슬롯 (2026-10-08)
 		//   인스턴스 디스크립터는 UPLOAD 힙에 있고 CPU 가 매 프레임 덮어쓴다.
 		//   지금은 프레임마다 GPU 완료를 기다리므로 한 벌로도 안전하지만,

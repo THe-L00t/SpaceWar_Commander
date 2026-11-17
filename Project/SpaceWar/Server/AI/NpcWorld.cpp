@@ -357,9 +357,14 @@ namespace srv {
 
 			entries[i].npc.health = Shared::GameLogic::ApplyDamage(entries[i].npc.health, damage);
 
+			// 피격 경직(2026-11-16) — 살아 있으면 다음 kNpcHitStunTicks 틱 동안 멈춘다. 또 맞으면 처음부터 다시 센다.
 			if (!Shared::GameLogic::IsDown(entries[i].npc.health))
+			{
+				entries[i].hitStunTicks = kNpcHitStunTicks;
 				return false;
+			}
 
+			entries[i].hitStunTicks = 0;
 			entries[i].alive = false;
 			entries[i].respawnTimer = Shared::kNpcRespawnDelay;
 			entries[i].ctx.decision = Shared::BehaviorDecision{};
@@ -398,7 +403,18 @@ namespace srv {
 
 				e.npc.position = PickMemberPosition(e.group);
 				e.npc.health = Shared::kMaxHealth;
+				e.hitStunTicks = 0;
 				e.alive = true;
+				continue;
+			}
+
+			// ── 0-1) 맞은 직후면 이번 틱은 그 자리에 선다(피격 경직, 2026-11-16) ──
+			//  트리도 돌리지 않는다 — 추격 대상도 이번 틱엔 없다(추격 수에서 빠진다). 멈춘 틱마다 하나씩 줄인다.
+			//  서버 틱 순서상 사격 판정(3-1)이 이 Tick(3) 뒤라, 맞은 다음 틱부터 kNpcHitStunTicks 틱 동안 멈춘다.
+			if (e.hitStunTicks > 0)
+			{
+				--e.hitStunTicks;
+				e.ctx.decision = Shared::BehaviorDecision{};
 				continue;
 			}
 
@@ -481,6 +497,16 @@ namespace srv {
 		for (size_t i = 0; i < entries.size(); ++i)
 		{
 			if (entries[i].alive && entries[i].ctx.decision.hasMoveTarget) ++n;
+		}
+		return n;
+	}
+
+	int NpcWorld::StunnedCount() const
+	{
+		int n = 0;
+		for (size_t i = 0; i < entries.size(); ++i)
+		{
+			if (entries[i].alive && entries[i].hitStunTicks > 0) ++n;
 		}
 		return n;
 	}

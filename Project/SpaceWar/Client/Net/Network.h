@@ -25,6 +25,7 @@ namespace Shared {
 	struct WeaponEquipPacket;
 	struct GroundWeaponSpawnPacket;
 	struct GroundWeaponRemovePacket;
+	struct NpcHitPacket;
 }
 
 // ============================================================
@@ -167,6 +168,13 @@ namespace swc {
 		// 마지막으로 맞은 순간부터 흐른 시간을 재려고 둔 피격 횟수 (표시용).
 		unsigned HitCount() const { return nHits; }
 
+		// 2026-11-16 NPC 명중 표시 — 서버가 «내 발이 NPC 에 맞았다» 고 알린 수(지난번 꺼낸 뒤). 꺼내면 0 이 된다.
+		//  맞았는지는 서버가 정한다(명세 18절 원칙 4). Engine 이 이것으로 크로스헤어 둘레 X 를 띄운다.
+		unsigned TakeNpcHits();
+		// 2026-11-17 — 위 TakeNpcHits 가 마지막으로 꺼낸 명중의 NPC 번호들(받은 순서). 피를 서버 확인 뒤에 띄울 때 쓴다
+		//  (ParticleSystem::ConfirmNpcHits — Engine kBloodWaitsForServer 가 켜졌을 때만. 지금은 꺼짐).
+		const std::vector<uint32_t>& LastNpcHitIds() const { return npcHitIdsTaken; }
+
 		// 확인용 통계
 		unsigned SentCount() const { return nSent; }
 		unsigned EchoCount() const { return nEcho; }
@@ -206,7 +214,8 @@ namespace swc {
 		void OnWeaponEquip(const Shared::WeaponEquipPacket*);
 		void OnGroundWeaponSpawn(const Shared::GroundWeaponSpawnPacket*);
 		void OnGroundWeaponRemove(const Shared::GroundWeaponRemovePacket*);
-		void TrySendJoinWorld();       // 못 보낸 JoinWorld 를 다시 보낸다(송신 버퍼가 찼을 때)
+		void OnNpcHit(const Shared::NpcHitPacket*);   // 2026-11-16 — 내 발의 NPC 명중
+		void TrySendJoinWorld();      // 못 보낸 JoinWorld 를 다시 보낸다(송신 버퍼가 찼을 때)
 		void ClearWorldState();        // 원격 · NPC 목록 · 받아 둔 판정 · 리스폰을 비운다(맵을 바꿀 때)
 
 		SOCKET sock = INVALID_SOCKET;
@@ -225,6 +234,10 @@ namespace swc {
 		// ── 전투 ────────────────────────────────────────────
 		float    myHealth = -1.0f;      // 서버가 알려준 내 체력. 음수 = 아직 모름
 		unsigned nHits = 0;             // 내가 맞은 횟수 (표시용)
+		unsigned npcHitsPending = 0;    // 아직 안 꺼낸 내 발의 NPC 명중 수 (2026-11-16 — TakeNpcHits)
+		static constexpr size_t kMaxNpcHitIds = 256;   // 2026-11-17 — 꺼내기 전까지 남길 번호 수 상한
+		std::vector<uint32_t> npcHitIdsPending;        // 2026-11-17 — 아직 안 꺼낸 명중의 NPC 번호
+		std::vector<uint32_t> npcHitIdsTaken;          // 2026-11-17 — 마지막으로 꺼낸 번호(LastNpcHitIds)
 		bool     hasRespawn = false;    // 되살아날 자리를 받았는가
 		float    respawnPos[3] = { 0.0f, 0.0f, 0.0f };
 

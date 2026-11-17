@@ -102,11 +102,24 @@ namespace swc {
 		PlanetDebugScene& DebugPlanet(size_t index) { return debugPlanets[index]; }
 		const PlanetDebugScene& DebugPlanet(size_t index) const { return debugPlanets[index]; }
 
+		// ── 예시 행성 남기기 (2026-11-17, 사용자 «이전에 있던 행성만 남기고, 더 오래된 행성은 해제하는 방식으로 해줘 우선») ──
+		//  명세 5절 «씬 … 전환 및 생명주기» — 어느 행성을 내릴지는 여기서 정하고, 내리기는 Engine 이 부른다(PlanetDebugScene::Release).
+		//  GPU 에 남기는 예시 행성 = 지금 행성 + 바로 전 행성. 게임 맵(0 키)은 세지 않는다(늘 남는다).
+		//  ★ 나중에 «우주에서 가까운 행성 미리 로드» 로 바뀐다(사용자) — 그때 이 규칙을 갈아 끼운다.
+		static constexpr size_t kKeptDebugPlanets = 2;
+		// 예시 행성 index 에 들어갔다(Engine::EnterDebugPlanet). 내릴 행성을 «마지막으로 들어간 때» 로 고를 때 쓴다.
+		void NoteDebugPlanetEntered(size_t index);
+		// 아직 올리지 않은 next 를 읽기 전에 내릴 행성. 올라간 행성이 kKeptDebugPlanets 개 이상이면
+		//  keep(지금 보이는 행성 — 없으면 아무 값)을 뺀 것 중 마지막으로 들어간 때가 가장 이른 것. 없으면 PlanetDebugScene::kCount.
+		size_t DebugPlanetToRelease(size_t next, size_t keep) const;
+
 	private:
 		void Enter(SceneId id);
 
 		LoadingScene                loading;
 		std::array<PlanetDebugScene, PlanetDebugScene::kCount> debugPlanets;
+		std::array<uint64_t, PlanetDebugScene::kCount> debugPlanetEnteredAt{};   // 2026-11-17 — 마지막으로 들어간 순번(0 = 아직)
+		uint64_t                    debugPlanetEnterCount = 0;                      // 2026-11-17 — 들어간 횟수(순번을 매긴다)
 		SceneId                     active = SceneId::None;
 		SceneId                     pending = SceneId::None;
 		SceneId                     entered = SceneId::None;

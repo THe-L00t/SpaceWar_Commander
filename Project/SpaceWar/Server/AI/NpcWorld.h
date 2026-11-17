@@ -43,6 +43,12 @@
 //  ★ 오브젝트 충돌 (2026-10-29 사용자 «npc도 오브젝트와 충돌하도록 해줘»)
 //    쫓아 움직인 자리가 정적 충돌체와 겹치면 접평면으로 밀어낸다(PushOutOfObjects) — 높이는 그대로 지형이 정한다.
 //    캡슐은 플레이어와 같다(Shared::PlayerMovement). 플레이어 · NPC 끼리는 아직 부딪히지 않는다.
+//
+//  ★ 피격 경직 (2026-11-16 사용자 «NPC의 피격을 처리할건데, 우선은 피격당하면 몇프레임 멈추는 방식으로 구현해줘»)
+//    맞고도 살아 있으면 다음 kNpcHitStunTicks 틱 동안 트리 · 이동을 건너뛰고 그 자리에 선다. 또 맞으면 처음부터 다시 센다(쌓이지 않는다).
+//    서버만 NPC 를 움직이므로 서버에서 멈추면 모든 클라 화면에서 같이 멈춘다(클라는 받은 좌표를 100 ms 늦게 보간해 그린다).
+//    길이는 기획 발표자료(docs/기획안/발표자료.html) «히트스톱 0.05~0.1초» 의 위쪽 끝 0.1 s ≈ 30 Hz 틱 3개.
+//    명세 6.4.2 State 의 «Hit» 자리이지만 Shared::NPC 에 State 필드가 아직 없어 NpcWorld 의 항목에 둔다.
 // ============================================================
 
 namespace Shared { class TerrainSampler; class CollisionWorld; struct CapsuleContact; }
@@ -54,6 +60,9 @@ namespace srv {
 
 	// 무리 하나의 마릿수 — 무리 수 = kNpcSpawnCount ÷ kNpcGroupSize (나머지는 마지막 무리에 덜 든다).
 	inline constexpr int kNpcGroupSize = 10;
+
+	// 맞은 뒤 멈추는 서버 틱 수(2026-11-16 피격 경직) — 틱 33 ms 라 3틱 ≈ 0.1 s. 조절은 여기서.
+	inline constexpr int kNpcHitStunTicks = 3;
 
 	// 서버가 보는 플레이어 한 명. NpcWorld 는 세션도 소켓도 모른다.
 	struct PlayerView
@@ -115,6 +124,9 @@ namespace srv {
 		// 지금 몇 마리가 추격 중인가 (콘솔 표시용).
 		int ChasingCount() const;
 
+		// 지금 몇 마리가 맞아서 멈춰 있는가 (콘솔 표시용, 2026-11-16 피격 경직).
+		int StunnedCount() const;
+
 	private:
 		struct Entry
 		{
@@ -124,6 +136,7 @@ namespace srv {
 
 			bool  alive = true;
 			float respawnTimer = 0.0f;   // 쓰러진 뒤 남은 시간 (s)
+			int   hitStunTicks = 0;      // 맞은 뒤 남은 멈춤 틱(0 = 움직인다, 2026-11-16)
 			uint32_t group = 0;          // groupCenters 번호 — 재등장도 이 무리 자리에 한다
 		};
 

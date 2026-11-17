@@ -56,12 +56,38 @@ namespace
 	constexpr float  kTracerLength = 120.0f;  // 가장 긴 길이 (m) — 지평선이 125m 다. 2026-11-16 부터 그 전에 닿으면 거기까지만
 	constexpr float  kTracerMinLength = 0.05f; // 이보다 짧으면 그리지 않는다(총구가 벽 · 땅에 붙어 있을 때)
 	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
+	// ── 피를 서버 확인 뒤에 띄울지 (2026-11-17 사용자 피 위치 «이것도 구현만 하고 아직 적용은 하지 마») ──
+	//  false(지금) = 내 발이 몸에 맞은 그 프레임에 바로 피. true = 맞은 자리를 기억해 두었다가(ParticleSystem::RememberBodyHit)
+	//  서버가 NpcHit 로 «맞았다» 고 알리면 그 자리에 피(ConfirmNpcHits). 플레이어 몸은 아직 확인을 잇지 않았다(PlayerHealth 연결 전).
+	constexpr bool   kBloodWaitsForServer = false;
 	// 한 프레임에 쏠 수 있는 최대 발 수 — 프레임이 발 간격보다 길 때(기관총 1/11 s 면 11 fps 밑) 밀린 발을 이만큼까지 같이 쏜다.
 	//  서버가 한꺼번에 받아 주는 발 수(Server main.cpp kFireBurstShots)와 같게 둔다(2026-11-15).
 	constexpr uint32_t kMaxShotsPerFrame = 3;
 	// 게이트가 «열렸다» 고 보는 여유(s) — 간격(0.2 s)을 프레임 dt 로 깎다 보면 부동소수 오차로 아주 조금 남아 한 프레임 늦게 열린다
 	//  (60 fps 에서 0.2 s 마다 누른 클릭이 버려져 초당 2.5발이 된다 — 시뮬레이션). 0.1 ms 는 사람 손으로는 차이가 없다(2026-11-15).
 	constexpr float kFireGateTolerance = 1.0e-4f;
+
+	// ── 자동 프레임 시간 측정 (2026-11-17, 사용자 «지금까지 내용 렌더러 브랜치에 전부 머지하고 … 각 프레임 레이트 시간 예산 측정해줘») ──
+	//  true 로 빌드해 실행하면: 게임에 들어간 뒤 예시 행성 1 ~ 5 를 차례로 들어가(착륙 지점 L1 에 선 채로)
+	//  kFrameBudgetWarmup 초 기다리고 kFrameBudgetMeasure 초 동안 CPU 구간 시간과 GPU 구간 시간(GRenderer 의 2 초 보고)을 모아
+	//  exe 옆 frame_budget_<날짜_시각>.txt 에 쓰고 창을 닫는다. 평소에는 false — 잴 때만 켜서 빌드한다.
+	//  ★ Present(1, 0) 이라 수직 동기화가 켜져 있다 — «프레임 간격» 은 모니터 주사율에 묶이므로 실제 일은 구간 시간으로 본다.
+	constexpr bool   kAutoFrameBudget    = false;
+	constexpr double kFrameBudgetWarmup  = 6.0;    // s — 들어간 직후(오브젝트 고르기 · 업로드 · GI 수렴)를 빼려고
+	constexpr double kFrameBudgetMeasure = 10.0;   // s — GPU 보고(2 초마다)가 네댓 번 나온다
+	// 2026-11-17 사용자 «움직이면서도 한번 측정해주고» — 서 있기 측정 뒤 같은 행성에서 W + Shift(달리기)를 누른 채
+	//  카메라를 일정하게 돌려 원을 그리며 달린다(멈춰 서지 않게 · 15 m 마다 다시 고르기가 돈다). 예열 뒤 같은 시간만큼 잰다.
+	// 2026-11-17 사용자 «glacier를 단독으로만 측정해줘 … 다른 행성도 실행 후 해당 씬만 로드하여 재측정해줘»
+	//  -1 = 예시 행성 1 ~ 5 를 차례로(한 번 올린 행성은 지우지 않고 쌓인다), 0 ~ 4 = 그 행성 하나만 올려 재고 닫는다.
+	//  (처음 씬인 게임 맵은 어느 쪽이든 시작할 때 올라간다)
+	constexpr int    kFrameBudgetOnlyPlanet = -1;
+	constexpr double kFrameBudgetMoveWarmup = 2.0;                         // s — 달리기 시작 직후
+	constexpr double kFrameBudgetTurnRate   = 10.0 * 3.14159265358979 / 180.0;   // rad/s — 10°/s (11 m/s 면 반지름 약 63 m 원)
+
+	double Milliseconds(std::chrono::steady_clock::duration d)
+	{
+		return std::chrono::duration<double, std::milli>(d).count();
+	}
 
 	// ── 크로스헤어 맞추기 (2026-11-15 사용자 «이제 크로스헤어에 맞도록 하는거 조절하자») ──
 	//  노션 「사격 시스템 설명」 4.1 의 ① — 눈 → 겨눈 점, 총구 → 겨눈 점(3인칭 슈터의 흔한 방식). Engine::AimDirection.
@@ -87,6 +113,19 @@ namespace
 	constexpr float    kCrosshairHalfThick = 1.0f;   // 팔 · 점 반두께 (px) — 두께 2 px
 	constexpr uint8_t  kCrosshairFill = 235;         // 흰색 불투명도
 	constexpr uint8_t  kCrosshairOutline = 150;      // 검은 테두리 불투명도
+
+	// ── NPC 명중 표시 (2026-11-16 사용자 «크로스헤어 그리는 방식 그대로 플레이어가 쏜 총이 NPC를 맞추면 x표시로 크로스헤어 주변에 표시해줘.
+	//    … +로 분할되는 각 분면마다 대각선 하나씩 그려서 표시해줘») ──
+	//  크로스헤어(+) 팔 사이 네 분면에 45° 선을 하나씩 — 넷을 모으면 X. 그리는 방식은 크로스헤어와 같다
+	//  (코드로 만든 32 px 텍스처 · 흰색 + 1 px 검은 테두리 · 두께 kCrosshairHalfThick · 화면 한가운데 UISprite — 크로스헤어 위에 겹친다).
+	//  ★ 맞았는지는 서버가 정한다(명세 18절 원칙 4) — 서버 ResolveFire 가 NPC 명중을 쏜 사람에게만 알린다(Shared::NpcHitPacket).
+	//    클라가 «맞을 것 같다» 로 미리 띄우지 않는다. 그래서 왕복 지연만큼 늦게 뜬다. 플레이어를 맞힌 발에는 띄우지 않는다(지시가 NPC).
+	//  선 = 분면 대각선(|x| = |y|) 위, 가운데에서 축 방향으로 kHitMarkerInner ~ kHitMarkerOuter px(대각선 길이 약 8.5 px — 팔 8 px 와 비슷).
+	//    안쪽 끝이 5 px 라 + 팔(가운데 4 ~ 12 px, 축 위)과 겹치지 않는다. 바깥 끝 11 px + 테두리 = 텍스처(반폭 16 px) 안.
+	//  값(5 · 11 px · 0.25 s)은 제가 고른 것 — 크로스헤어 팔과 비슷한 크기, 연사(초당 9 ~ 11발) 중에는 계속 보이고 멈추면 곧 사라지게.
+	constexpr float kHitMarkerInner   = 5.0f;    // 대각선 안쪽 끝 — 가운데에서 x · y 각각 (px)
+	constexpr float kHitMarkerOuter   = 11.0f;   // 대각선 바깥 끝 (px)
+	constexpr float kHitMarkerSeconds = 0.25f;   // 마지막 명중부터 보이는 시간(s) — 그동안 점점 흐려진다(UISprite tint a)
 
 	// ── 서버 전송 주기 ──────────────────────────────────────
 	//  2026-10-29 B안 — 좌표(1/30초) 대신 고정 틱 입력을 보낸다. 주기는 이동 틱(Shared::PlayerMovement::kTickSeconds = 1/60초)이고
@@ -250,26 +289,25 @@ namespace
 		return m;
 	}
 
-	// 임시 크로스헤어 그림 (2026-11-14) — 위 상수 참고. premultiplied RGBA8.
-	swc::TextureData MakeCrosshairTexture()
+	// 코드로 그리는 조준 UI 텍스처 (2026-11-14 크로스헤어 · 2026-11-16 NPC 명중 X 가 같이 쓴다) — premultiplied RGBA8, 한 변 kCrosshairTexels.
+	//  shape(dx, dy) = 가운데에서 그 텍셀 중심까지의 |x| · |y| (px) 로 «흰색으로 칠하는가». 칠한 곳 둘레 1 px 는 검은 테두리.
+	template <class Shape>
+	swc::TextureData MakeAimTexture(const wchar_t* path, Shape shape)
 	{
 		swc::TextureData image;
-		image.path = L"(crosshair)";
+		image.path = path;
 		image.width = kCrosshairTexels;
 		image.height = kCrosshairTexels;
 		image.srgb = false;
 		image.pixels.assign(size_t(kCrosshairTexels) * kCrosshairTexels * 4, 0);
 
 		const float center = float(kCrosshairTexels) * 0.5f;
-		auto filled = [center](int x, int y)
+		auto filled = [center, &shape](int x, int y)
 		{
 			if (x < 0 || y < 0 || x >= int(kCrosshairTexels) || y >= int(kCrosshairTexels)) return false;
 			const float dx = std::fabs(float(x) + 0.5f - center);
 			const float dy = std::fabs(float(y) + 0.5f - center);
-			const bool dot = dx < kCrosshairHalfThick && dy < kCrosshairHalfThick;
-			const bool horizontal = dy < kCrosshairHalfThick && dx >= kCrosshairGap && dx < kCrosshairGap + kCrosshairArm;
-			const bool vertical = dx < kCrosshairHalfThick && dy >= kCrosshairGap && dy < kCrosshairGap + kCrosshairArm;
-			return dot || horizontal || vertical;
+			return shape(dx, dy);
 		};
 
 		for (int y = 0; y < int(kCrosshairTexels); ++y)
@@ -291,6 +329,31 @@ namespace
 			}
 		}
 		return image;
+	}
+
+	// 임시 크로스헤어 그림 (2026-11-14) — 위 kCrosshair* 상수 참고. 가운데 점 + 팔 4개(+).
+	swc::TextureData MakeCrosshairTexture()
+	{
+		return MakeAimTexture(L"(crosshair)", [](float dx, float dy)
+		{
+			const bool dot = dx < kCrosshairHalfThick && dy < kCrosshairHalfThick;
+			const bool horizontal = dy < kCrosshairHalfThick && dx >= kCrosshairGap && dx < kCrosshairGap + kCrosshairArm;
+			const bool vertical = dx < kCrosshairHalfThick && dy >= kCrosshairGap && dy < kCrosshairGap + kCrosshairArm;
+			return dot || horizontal || vertical;
+		});
+	}
+
+	// NPC 명중 X (2026-11-16) — 위 kHitMarker* 상수 참고. 네 분면마다 대각선 하나.
+	//  dx · dy 가 절댓값이라 한 식으로 네 분면이 다 나온다. 대각선(dx = dy)까지의 수직 거리 = |dx − dy| / √2 가 두께 안이고,
+	//  대각선 위 자리((dx + dy) / 2 — 축 방향 px)가 안쪽 ~ 바깥 끝 사이면 칠한다.
+	swc::TextureData MakeHitMarkerTexture()
+	{
+		return MakeAimTexture(L"(hit marker)", [](float dx, float dy)
+		{
+			const float across = std::fabs(dx - dy) * 0.70710678f;
+			const float along = (dx + dy) * 0.5f;
+			return across < kCrosshairHalfThick && along >= kHitMarkerInner && along < kHitMarkerOuter;
+		});
 	}
 
 	// 예시 행성 디버그 씬의 창 제목 몫 (2026-10-28)
@@ -672,6 +735,8 @@ namespace swc {
 				{
 					const NodeHandle tracer = scene.AddNode(kInvalidNode, tracerMesh, 0);
 					scene.SetLocalTransform(tracer, ParkedTransform());
+					// 2026-11-16 사용자 «예광탄 빼. 총알이 날아가는 경로에 그림자 생겨서 이상해» — TLAS 에서 뺀다(화면에는 그린다).
+					scene.SetRayTracingExcluded(tracer, true);
 					freeTracerNodes.push_back(tracer);
 				}
 
@@ -694,6 +759,10 @@ namespace swc {
 				crosshairTexture = renderer.CreateTexture(MakeCrosshairTexture());
 				if (crosshairTexture == kInvalidTexture)
 					Log(L"[UI] 크로스헤어 텍스처를 만들지 못했다 — %s", renderer.StatusText().c_str());
+				// NPC 명중 X (2026-11-16) — 같은 방식. 그리기는 RenderFrame(서버가 명중을 알린 뒤 kHitMarkerSeconds 동안).
+				hitMarkerTexture = renderer.CreateTexture(MakeHitMarkerTexture());
+				if (hitMarkerTexture == kInvalidTexture)
+					Log(L"[UI] 명중 표시 텍스처를 만들지 못했다 — %s", renderer.StatusText().c_str());
 				return true;
 			});
 
@@ -774,20 +843,28 @@ namespace swc {
 				continue;
 			}
 
+			const auto updateStart = std::chrono::steady_clock::now();   // 2026-11-17 자동 측정 — 게임 갱신 구간
 			HandleSystemKeys();
 			UpdatePlayer(dt);
 			UpdateDebugPlanetObjects();
 			UpdateWeapons(dt);   // 2026-11-15 — 든 총 · 바닥 총 · E 줍기 · G 떨구기. 이번 프레임 든 총으로 UpdateFire 가 쏜다
 			UpdateFire(dt);
 			UpdateNetwork(dt);
+			// 2026-11-17 피격 파티클 — 이번 프레임에 만든 것(내 발 · 서버 확인)까지 넣고 움직인다. 렌더 추출은 RenderFrame.
+			particles.Update(dt, planet);
 
 			// 애니메이션 포즈 — 게임 단계의 «출력» 이다 (멀티스레딩 명세 3.2 ③).
 			//  총구 위치·히트박스가 포즈를 쓰므로 렌더보다 먼저, 상태가 다 정해진 뒤에 돌린다.
 			//  나중에 캐릭터 범위 단위 잡으로 쪼갠다(M5).
 			animator.Update(resources, dt);
 
+			const auto renderStart = std::chrono::steady_clock::now();
 			RenderFrame();
+			const auto renderEnd = std::chrono::steady_clock::now();
 			UpdateTitle(dt);
+			if (kAutoFrameBudget)
+				UpdateFrameBudget(dt, Milliseconds(renderStart - updateStart),
+					Milliseconds(renderEnd - renderStart) - lastEndFrameMs, lastEndFrameMs);
 		}
 	}
 
@@ -891,27 +968,58 @@ namespace swc {
 		for (size_t i = 0; i < PlanetDebugScene::kCount; ++i)
 		{
 			if (!input.WasPressed('1' + int(i))) continue;
-			if (i == activeDebugPlanet) return;   // 이미 그 행성이다
-
-			if (network.Connected())
-			{
-				network.SendJoinWorld(Shared::WorldOfDebugPlanet(i));
-				Log(L"[맵] 서버에 맵 %u(%s)로 옮긴다고 알렸다", Shared::WorldOfDebugPlanet(i), PlanetDebugScene::Name(i));
-			}
-
-			loadStart = std::chrono::steady_clock::now();
-			const SceneId next = DebugPlanetSceneId(i);
-			if (sceneManager.DebugPlanet(i).Loaded())
-			{
-				sceneManager.ChangeScene(next, nullptr, resources);
-				return;
-			}
-			std::unique_ptr<LoadBatch> load = std::make_unique<LoadBatch>(
-				std::wstring(L"디버그 행성 ") + PlanetDebugScene::Name(i));
-			BuildDebugPlanetLoad(*load, i);
-			sceneManager.ChangeScene(next, std::move(load), resources);
+			RequestDebugPlanet(i);
 			return;
 		}
+	}
+
+	// 예시 행성 i 로 넘어가기를 요청한다 — 숫자키(HandleDebugPlanetKeys)와 자동 프레임 시간 측정(UpdateFrameBudget)이 같이 쓴다.
+	//  2026-11-17 HandleDebugPlanetKeys 에서 그대로 떼어 냈다(동작 같음).
+	void Engine::RequestDebugPlanet(size_t i)
+	{
+		if (i == activeDebugPlanet) return;   // 이미 그 행성이다
+
+		if (network.Connected())
+		{
+			network.SendJoinWorld(Shared::WorldOfDebugPlanet(i));
+			Log(L"[맵] 서버에 맵 %u(%s)로 옮긴다고 알렸다", Shared::WorldOfDebugPlanet(i), PlanetDebugScene::Name(i));
+		}
+
+		loadStart = std::chrono::steady_clock::now();
+		const SceneId next = DebugPlanetSceneId(i);
+		if (sceneManager.DebugPlanet(i).Loaded())
+		{
+			sceneManager.ChangeScene(next, nullptr, resources);
+			return;
+		}
+
+		// ── 오래된 행성 내리기 (2026-11-17, 사용자 «이전에 있던 행성만 남기고, 더 오래된 행성은 해제하는 방식으로 해줘 우선») ──
+		//  다섯을 다 올려 두면 GPU 메모리 예산을 넘어 Glacier G-buffer 가 4 → 56 ms 가 됐다(작업기록 ② 14.7).
+		//  새 행성을 읽기 «전에» 내려 GPU 메모리가 행성 셋으로 겹치지 않게 한다. 고르기 규칙은 SceneManager(kKeptDebugPlanets = 2).
+		//  지금 보이는 행성(activeDebugPlanet)은 내리지 않는다 — 게임 맵이면 kNoDebugPlanet 이라 어느 행성과도 같지 않다.
+		for (size_t old = sceneManager.DebugPlanetToRelease(i, activeDebugPlanet); old < PlanetDebugScene::kCount;
+			old = sceneManager.DebugPlanetToRelease(i, activeDebugPlanet))
+		{
+			constexpr double kMiB = 1024.0 * 1024.0;
+			uint64_t usedBefore = 0, usedAfter = 0, budget = 0, nonLocal = 0;
+			const bool measuredBefore = renderer.QueryVideoMemory(usedBefore, budget, nonLocal);
+			const bool released = sceneManager.DebugPlanet(old).Release(renderer, scene);
+			colliderView.Clear();   // 와이어 표시는 마지막 충돌체를 주소로 기억한다 — 같은 자리에 다시 읽히므로 비운다
+			const bool measuredAfter = renderer.QueryVideoMemory(usedAfter, budget, nonLocal);
+			if (measuredBefore && measuredAfter)
+				Log(L"[디버그 행성] %s 내림%s — GPU 메모리 %.0f → %.0f MiB (예산 %.0f MiB)", PlanetDebugScene::Name(old),
+					released ? L"" : L"(GPU 자원 일부 못 놓음)",
+					double(usedBefore) / kMiB, double(usedAfter) / kMiB, double(budget) / kMiB);
+			else
+				Log(L"[디버그 행성] %s 내림%s", PlanetDebugScene::Name(old), released ? L"" : L"(GPU 자원 일부 못 놓음)");
+			if (!released)
+				Log(L"[디버그 행성] 놓기 실패 원인 — %s", renderer.StatusText().c_str());
+		}
+
+		std::unique_ptr<LoadBatch> load = std::make_unique<LoadBatch>(
+			std::wstring(L"디버그 행성 ") + PlanetDebugScene::Name(i));
+		BuildDebugPlanetLoad(*load, i);
+		sceneManager.ChangeScene(next, std::move(load), resources);
 	}
 
 	// 게임 맵(BuildGameLoad)과 같은 길 — 맵 glb 를 로딩 스레드에서 한 번 파싱해 렌더 메시와 접지면을 함께 얻고,
@@ -1111,6 +1219,7 @@ namespace swc {
 
 		// 옛 맵의 원격 플레이어 · NPC 를 치운다. 새 맵 사람들은 서버가 이 맵에 넣은 뒤(WorldJoined) 다시 받는다(2026-11-01 맵 번호).
 		ParkNetworkNodes();
+		particles.Clear();   // 2026-11-17 — 옛 맵의 파티클 · 확인 기다리던 피 자리를 버린다
 
 		// 충돌체도 이 행성 것으로(2026-10-29) — 못 읽었으면 지형만 막는다.
 		controller.SetCollision(target.Collision().Loaded() ? &target.Collision() : nullptr);
@@ -1129,6 +1238,7 @@ namespace swc {
 		terrainStatus = DebugPlanetStatus(index, target);
 
 		activeDebugPlanet = index;
+		sceneManager.NoteDebugPlanetEntered(index);   // 2026-11-17 — 내릴 행성을 «마지막으로 들어간 때» 로 고른다
 		titleTimer = 0.0f;
 
 		const double seconds = std::chrono::duration<double>(
@@ -1160,6 +1270,7 @@ namespace swc {
 
 		// 옛 맵의 원격 플레이어 · NPC 를 치운다. 게임 맵 사람들 · NPC 는 서버가 넣어 준 뒤 다시 받는다.
 		ParkNetworkNodes();
+		particles.Clear();   // 2026-11-17 — 옛 맵의 파티클을 버린다
 
 		controller.Spawn(GameMapSpawnPoint(), { 0.0, 0.0, 1.0 });
 		spawnPosition = controller.Position();
@@ -1373,7 +1484,10 @@ namespace swc {
 		if (!InDebugPlanet()) return;
 		PlanetDebugScene& target = sceneManager.DebugPlanet(activeDebugPlanet);
 		if (target.StreamObjects(scene, controller.Position() - planet.center, false))
+		{
 			terrainStatus = DebugPlanetStatus(activeDebugPlanet, target);
+			++budgetRestreams;   // 2026-11-17 자동 측정 — 움직이며 잴 때 다시 고른 횟수
+		}
 	}
 
 	// 원격 플레이어 · NPC 노드를 화면 밖으로 치우고 빈 노드 목록으로 돌린다(노드는 지우지 않고 재사용한다).
@@ -1410,6 +1524,9 @@ namespace swc {
 			camera.AddLook(input.MouseDeltaX() * scale, input.MouseDeltaY() * scale);
 		}
 
+		// 2026-11-17 자동 측정의 «움직이며» — 카메라를 일정하게 돌린다(이동 방향이 카메라를 따라 돌아 원을 그린다).
+		if (kAutoFrameBudget && budgetMoving)
+			camera.AddLook(float(kFrameBudgetTurnRate * double(dt)), 0.0f);
 		controller.Update(dt, input, camera);
 		camera.SetSprinting(controller.IsSprinting());
 		camera.Update(dt, controller.Position(), controller.Up(), planet);
@@ -1486,6 +1603,25 @@ namespace swc {
 			(std::min)(double(spec.range), double(kTracerStart) + double(kTracerLength)), 0.0);
 		const double tracerEnd = along.kind == Shared::ShotHitKind::Body ? along.closest : along.distance;
 		const float tracerLength = float((std::min)(double(kTracerLength), tracerEnd - double(kTracerStart)));
+
+		// ── 피격 파티클 (2026-11-17) — 예광탄과 같은 선이 처음 닿는 곳. 내 발은 서버를 기다리지 않고 이 프레임에 만든다 ──
+		//  튀는 쪽: 지면이면 그 자리의 행성 위쪽, 나머지는 쏜 방향의 반대(Shared::ShotHit 에 표면 법선이 아직 없다).
+		//  몸이면 맞은 NPC 번호도 알아 둔다 — TraceVisibleShot 의 몸 목록은 «원격 플레이어 → NPC» 순서다.
+		ParticleSystem::Surface impactSurface = ParticleSystem::Surface::Ground;
+		const bool impact = ParticleSystem::SurfaceOf(along.kind, impactSurface);
+		const Vec3d impactPoint = muzzle + aim * along.distance;
+		const Vec3d impactNormal = along.kind == Shared::ShotHitKind::Terrain ? planet.Up(impactPoint) : aim * -1.0;
+		const XMFLOAT3& eyeFloat = camera.EyePosition();
+		const Vec3d eyePosition{ double(eyeFloat.x), double(eyeFloat.y), double(eyeFloat.z) };
+		bool impactNpc = false;
+		uint32_t impactNpcId = 0;
+		if (along.kind == Shared::ShotHitKind::Body && network.Connected() &&
+			along.target >= remoteViews.size() && along.target - remoteViews.size() < npcViews.size())
+		{
+			impactNpc = true;
+			impactNpcId = npcViews[along.target - remoteViews.size()].npcId;
+		}
+
 		const uint32_t maxShots = spec.fireMode == Shared::FireMode::Auto ? kMaxShotsPerFrame : 1u;
 		for (uint32_t shot = 0; shot < maxShots && fireCooldown <= kFireGateTolerance; ++shot)
 		{
@@ -1499,6 +1635,16 @@ namespace swc {
 				network.SendFire(origin, dir);
 			if (shotsFired++ % every == 0)
 				SpawnTracer(muzzle, aim, tracerLength);
+			if (impact)
+			{
+				if (impactSurface == ParticleSystem::Surface::Body && kBloodWaitsForServer)
+				{
+					if (impactNpc)
+						particles.RememberBodyHit(impactNpcId, impactPoint, impactNormal, eyePosition);
+				}
+				else
+					particles.EmitImpact(impactSurface, impactPoint, impactNormal, eyePosition);
+			}
 		}
 		fireCooldown = (std::max)(0.0f, fireCooldown);   // 상한에 걸려 남은 발은 버린다(다음 프레임에 몰아 쏘지 않게)
 	}
@@ -1613,6 +1759,9 @@ namespace swc {
 	//   송신은 Class Bridge → Network(9절), 수신은 Network → State Manager → OtherPlayer · NPC(6.13) 로 옮길 대상이다.
 	void Engine::UpdateNetwork(float dt)
 	{
+		// NPC 명중 X 의 남은 표시 시간(2026-11-16) — 끊겨도 줄어들어 사라지게 연결 검사보다 앞에서.
+		hitMarkerTimer = (std::max)(0.0f, hitMarkerTimer - dt);
+
 		if (!network.Connected())
 			return;
 
@@ -1628,6 +1777,16 @@ namespace swc {
 
 		//서버가 뿌린 다른 플레이어의 좌표와 내 판정 상태를 받는다. 논블로킹이라 즉시 돌아온다.
 		network.Poll();
+
+		// ── NPC 명중 표시 (2026-11-16) — 서버가 «내 발이 NPC 에 맞았다» 고 알렸으면 X 를 처음부터 다시 보인다(연사 중엔 계속 보인다).
+		//  로딩 중 Poll 이 받아 둔 것도 여기서 꺼낸다. 맵을 바꾸면 Network 가 비운다.
+		if (network.TakeNpcHits() > 0)
+		{
+			hitMarkerTimer = kHitMarkerSeconds;
+			// 2026-11-17 — 피를 서버 확인 뒤에 띄우는 길(지금은 꺼짐, kBloodWaitsForServer)
+			if (kBloodWaitsForServer)
+				particles.ConfirmNpcHits(network.LastNpcHitIds());
+		}
 
 		// ── 서버가 이 맵에 넣었다 (2026-11-01) ──
 		//  서버가 정한 자리 · 방향에 다시 선다 — 되감기 기록을 끊으므로, 답을 기다리는 동안 혼자 움직인 것은 버린다.
@@ -1798,6 +1957,11 @@ namespace swc {
 		packet.view.eyePosition = camera.EyePosition();
 		// 2026-10-27 렌더 6단계 — 하늘 · 해 높이의 기준(행성 위 플레이어 자리의 위)
 		packet.view.up = XMFLOAT3(float(controller.Up().x), float(controller.Up().y), float(controller.Up().z));
+		// 2026-11-17 피격 파티클 — 알파 묶음(먼 것부터) + 가산 묶음. 렌더러 [7b] 가 이 배열만 본다(명세 7절 Particle[]).
+		{
+			const XMFLOAT3& e = packet.view.eyePosition;
+			particles.Extract(Vec3d{ double(e.x), double(e.y), double(e.z) }, packet.particles, packet.particleAlphaCount);
+		}
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);
@@ -1810,6 +1974,17 @@ namespace swc {
 			crosshair.center = XMFLOAT2(float(renderer.Width()) * 0.5f, float(renderer.Height()) * 0.5f);
 			crosshair.halfSize = XMFLOAT2(float(kCrosshairTexels) * 0.5f, float(kCrosshairTexels) * 0.5f);
 			uiSprites.push_back(crosshair);
+		}
+
+		// NPC 명중 X (2026-11-16) — 크로스헤어와 같은 자리 · 같은 크기로 그 위에 겹친다. 남은 시간에 비례해 흐려진다(tint a, UI.hlsl 이 색까지 곱한다).
+		if (hitMarkerTexture != kInvalidTexture && hitMarkerTimer > 0.0f)
+		{
+			UISprite marker;
+			marker.texture = hitMarkerTexture;
+			marker.center = XMFLOAT2(float(renderer.Width()) * 0.5f, float(renderer.Height()) * 0.5f);
+			marker.halfSize = XMFLOAT2(float(kCrosshairTexels) * 0.5f, float(kCrosshairTexels) * 0.5f);
+			marker.tint = XMFLOAT4(1.0f, 1.0f, 1.0f, hitMarkerTimer / kHitMarkerSeconds);
+			uiSprites.push_back(marker);
 		}
 
 		renderer.BeginFrame();
@@ -1842,7 +2017,9 @@ namespace swc {
 				XMFLOAT3(float(planet.center.x), float(planet.center.y), float(planet.center.z)), colliderView.Vertices());
 		}
 		renderer.DrawSprites(uiSprites);
+		const auto endFrameStart = std::chrono::steady_clock::now();
 		renderer.EndFrame();
+		lastEndFrameMs = Milliseconds(std::chrono::steady_clock::now() - endFrameStart);   // 2026-11-17 자동 측정 — Present + GPU 대기
 	}
 
 	// 로딩 씬 — 3D 는 그리지 않고 UI(배경 + 스피너)만 그린다.
@@ -1994,6 +2171,162 @@ namespace swc {
 			renderStats.dropped ? L" ★인스턴스 유실" : L"",
 			colliderText);
 		SetWindowText(hwnd, title);
+	}
+
+	// ── 자동 프레임 시간 측정 (2026-11-17, kAutoFrameBudget) ─────────────────────
+	//  Run 이 로딩이 아닌 프레임마다 부른다. 단계 = 예시 행성 번호(1 ~ 5), 행성마다 두 번 잰다:
+	//  ① 서 있기(착륙 지점 L1, 예열 kFrameBudgetWarmup) ② 움직이며(W + Shift + 카메라 회전, 예열 kFrameBudgetMoveWarmup) → 다음 행성.
+	//  updateMs = 게임 갱신(입력 ~ 애니메이터), renderMs = RenderFrame 에서 EndFrame 을 뺀 것(추출 · TLAS 채우기 · 명령 기록),
+	//  endFrameMs = EndFrame(Present + GPU 끝 기다림 — 수직 동기화 대기도 여기에 들어간다).
+	void Engine::UpdateFrameBudget(float dt, double updateMs, double renderMs, double endFrameMs)
+	{
+		if (budgetStage == 0)
+		{
+			budgetText = L"자동 프레임 시간 측정 (Client/Engine/Engine.cpp kAutoFrameBudget)\n렌더러: " + renderer.StatusText() + L"\n";
+			wchar_t head[320];
+			swprintf_s(head, L"화면 %u×%u · 수직 동기화 켬(Present(1, 0)) · RT %s · 서 있기 예열 %.0f s · 움직이며 예열 %.0f s · 측정 각 %.0f s"
+				L" · 움직이며 = W + Shift · 카메라 %.0f°/s 회전\n",
+				renderer.Width(), renderer.Height(),
+				renderer.SupportsRaytracing() && renderer.GetRayTracingParams().enabled ? L"켬" : L"끔",
+				kFrameBudgetWarmup, kFrameBudgetMoveWarmup, kFrameBudgetMeasure, kFrameBudgetTurnRate * 180.0 / 3.14159265358979);
+			budgetText += head;
+			budgetText += kFrameBudgetOnlyPlanet >= 0 ? L"행성: 하나만(다른 예시 행성은 올리지 않음)\n" : L"행성: 1 ~ 5 차례로(올린 행성은 쌓인다)\n";
+			const int first = kFrameBudgetOnlyPlanet >= 0 ? kFrameBudgetOnlyPlanet : 0;
+			budgetStage = first + 1;
+			ResetFrameBudgetStage();
+			RequestDebugPlanet(size_t(first));
+			return;
+		}
+		if (budgetStage > int(PlanetDebugScene::kCount)) return;   // 끝났다(창을 닫는 중)
+
+		// 아직 그 행성에 안 들어갔으면 기다린다(로딩 중에는 Run 이 이 함수를 부르지 않는다).
+		const size_t target = size_t(budgetStage - 1);
+		if (!InDebugPlanet() || activeDebugPlanet != target) return;
+
+		budgetStageTime += dt;
+		const double warmup = budgetPhase == 0 ? kFrameBudgetWarmup : kFrameBudgetMoveWarmup;
+		if (budgetStageTime < warmup)
+		{
+			budgetReportMark = renderer.GpuTimeReportCount();   // 예열 동안 나온 GPU 보고는 쓰지 않는다
+			budgetSkipFirstReport = true;
+			budgetLastPos = controller.Position();
+			budgetRestreams = 0;
+			return;
+		}
+
+		budgetDistance += Length(controller.Position() - budgetLastPos);
+		budgetLastPos = controller.Position();
+		++budgetFrames;
+		budgetDtSum += double(dt) * 1000.0;
+		budgetUpdateSum += updateMs;
+		budgetRenderSum += renderMs;
+		budgetEndSum += endFrameMs;
+		budgetUpdateMax = (std::max)(budgetUpdateMax, updateMs);
+		budgetRenderMax = (std::max)(budgetRenderMax, renderMs);
+		budgetEndMax = (std::max)(budgetEndMax, endFrameMs);
+		if (renderer.GpuTimeReportCount() != budgetReportMark)
+		{
+			budgetReportMark = renderer.GpuTimeReportCount();
+			// 측정 시작 뒤 첫 보고는 2 초 창의 앞부분이 예열에 걸쳐 있어 버린다.
+			if (budgetSkipFirstReport) budgetSkipFirstReport = false;
+			else budgetGpuReports.push_back(renderer.LastGpuTimeReport());
+		}
+		if (budgetStageTime < warmup + kFrameBudgetMeasure) return;
+
+		// ── 이 행성 · 이 단계 정리 ──
+		const double n = budgetFrames > 0 ? double(budgetFrames) : 1.0;
+		const RenderStats& s = renderer.Stats();
+		wchar_t line[640];
+		if (budgetPhase == 0)
+			swprintf_s(line, L"\n== 예시 행성 %d %s · 서 있기 — 측정 %u 프레임\n", budgetStage, PlanetDebugScene::Name(target), budgetFrames);
+		else
+			swprintf_s(line, L"\n== 예시 행성 %d %s · 움직이며 — 측정 %u 프레임 · 이동 %.0f m · 다시 고르기 %u 회\n",
+				budgetStage, PlanetDebugScene::Name(target), budgetFrames, budgetDistance, budgetRestreams);
+		budgetText += line;
+		swprintf_s(line,
+			L"CPU(ms): 프레임 간격 평균 %.3f (%.1f fps) · 게임 갱신 평균 %.3f / 최대 %.3f · 렌더 기록 평균 %.3f / 최대 %.3f · "
+			L"EndFrame(Present + GPU 대기) 평균 %.3f / 최대 %.3f\n",
+			budgetDtSum / n, budgetDtSum > 0.0 ? 1000.0 * n / budgetDtSum : 0.0,
+			budgetUpdateSum / n, budgetUpdateMax, budgetRenderSum / n, budgetRenderMax, budgetEndSum / n, budgetEndMax);
+		budgetText += line;
+		swprintf_s(line, L"TLAS %u/%u(유실 %u) · 패킷 %zu · 그린 인스턴스 %zu · 그리기 %zu · 컬링 %zu · 래스터 유실 %zu · 삼각형 %.2fM\n",
+			renderer.TlasInstanceCount(), renderer.TlasMaxInstances(), renderer.TlasDroppedInstances(),
+			s.submitted, s.instances, s.drawCalls, s.culled, s.dropped, double(s.triangles) / 1000000.0);
+		budgetText += line;
+		budgetText += L"장면: " + terrainStatus + L"\n";
+		{
+			uint64_t vramUsage = 0, vramBudget = 0, sharedUsage = 0;   // 2026-11-17 — 행성을 쌓으면 VRAM 이 넘치나
+			if (renderer.QueryVideoMemory(vramUsage, vramBudget, sharedUsage))
+			{
+				swprintf_s(line, L"GPU 메모리: 사용 %.0f MiB / 예산 %.0f MiB · 시스템 메모리 쪽 %.0f MiB\n",
+					double(vramUsage) / 1048576.0, double(vramBudget) / 1048576.0, double(sharedUsage) / 1048576.0);
+				budgetText += line;
+			}
+		}
+		for (const std::wstring& report : budgetGpuReports)
+			budgetText += report + L"\n";
+		Log(L"[측정] 예시 행성 %d %s %s 끝 — %u 프레임", budgetStage, PlanetDebugScene::Name(target),
+			budgetPhase == 0 ? L"서 있기" : L"움직이며", budgetFrames);
+
+		if (budgetPhase == 0)
+		{
+			// ② 같은 행성에서 움직이며 — 달리기 키를 누른 채로 두고 UpdatePlayer 가 카메라를 돌린다.
+			budgetPhase = 1;
+			budgetMoving = true;
+			input.SetForcedKey('W', true);
+			input.SetForcedKey(VK_SHIFT, true);
+			ResetFrameBudgetStage();
+			return;
+		}
+		budgetPhase = 0;
+		budgetMoving = false;
+		input.SetForcedKey('W', false);
+		input.SetForcedKey(VK_SHIFT, false);
+		++budgetStage;
+		ResetFrameBudgetStage();
+		if (kFrameBudgetOnlyPlanet < 0 && budgetStage <= int(PlanetDebugScene::kCount))
+		{
+			RequestDebugPlanet(size_t(budgetStage - 1));
+			return;
+		}
+		budgetStage = int(PlanetDebugScene::kCount) + 1;   // 끝 — 창이 닫힐 때까지 더 재지 않는다
+		WriteFrameBudget();
+		PostQuitMessage(0);
+	}
+
+	// 행성 하나의 측정값을 비운다(2026-11-17).
+	void Engine::ResetFrameBudgetStage()
+	{
+		budgetStageTime = 0.0;
+		budgetReportMark = renderer.GpuTimeReportCount();
+		budgetSkipFirstReport = true;
+		budgetFrames = 0;
+		budgetDtSum = budgetUpdateSum = budgetRenderSum = budgetEndSum = 0.0;
+		budgetUpdateMax = budgetRenderMax = budgetEndMax = 0.0;
+		budgetGpuReports.clear();
+		budgetDistance = 0.0;
+		budgetLastPos = controller.Position();
+		budgetRestreams = 0;
+	}
+
+	// exe 옆 frame_budget_<날짜_시각>.txt 에 UTF-8 로 쓴다(2026-11-17).
+	void Engine::WriteFrameBudget() const
+	{
+		SYSTEMTIME now = {};
+		GetLocalTime(&now);
+		wchar_t name[64];
+		swprintf_s(name, L"frame_budget_%04u%02u%02u_%02u%02u%02u.txt",
+			now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+		const std::wstring path = ExeDirectory() + name;
+		FILE* file = nullptr;
+		if (_wfopen_s(&file, path.c_str(), L"w, ccs=UTF-8") != 0 || !file)
+		{
+			Log(L"[측정] 결과 파일을 못 열었다 — %s", path.c_str());
+			return;
+		}
+		fputws(budgetText.c_str(), file);
+		fclose(file);
+		Log(L"[측정] 결과를 썼다 — %s", path.c_str());
 	}
 
 } // namespace swc

@@ -117,6 +117,12 @@ namespace swc {
 		bool Build(const ModelData& data, Shared::PlanetSurface&& ground, GRenderer& renderer,
 			LegacyScene& scene, const Vec3d& planetCenter, std::wstring& error);
 
+		// ── 행성 내리기 (2026-11-17, 사용자 «이전에 있던 행성만 남기고, 더 오래된 행성은 해제») — 메인 스레드 · 프레임 밖 ──
+		//  이 행성의 GPU 자원(맵 · 오브젝트 · 지형 레이어)을 놓고, 장면 노드를 비우고, CPU 쪽(접지면 · 충돌체 · 배치)도 비운다.
+		//  끝나면 Loaded() = false — 다시 고르면 처음처럼 로드 묶음으로 읽는다. 지금 보이는 행성에는 부르지 않는다(Engine 이 고른다).
+		//  GPU 놓기에 실패하면 false(장면 · CPU 는 그래도 비운다).
+		bool Release(GRenderer& renderer, LegacyScene& scene);
+
 		// ── 배치 오브젝트 (메인 스레드) ──
 		void SetPlacement(PlanetPlacement&& placement);
 		size_t ObjectTypeCount() const { return objectTypes.size(); }
@@ -127,6 +133,7 @@ namespace swc {
 
 		// 매 프레임. eye = 행성 중심 기준 위치(glTF 좌표 = 월드 − 행성 중심).
 		// 처음 · force · kRestreamDistance 이상 움직였을 때만 다시 고른다. 다시 골랐으면 true.
+		// ★ 2026-11-16 — 눈의 반대편 반구(행성 중심 기준 내적 < 0)에 있는 오브젝트는 고르지 않는다(사용자 지시).
 		bool StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force);
 
 		// ── 지형 레이어 (2026-10-28) ──
@@ -139,7 +146,7 @@ namespace swc {
 		bool ApplyTerrainLayers(size_t index, TerrainLayerSet&& layers, GRenderer& renderer, LegacyScene& scene,
 			std::wstring& error);
 
-		// 창 제목용 — «지형 N 삼각형 · 지형 레이어 섞기 / 대체 1장 · 오브젝트 보임 k / 배치 M · 종류 a/b»
+		// 창 제목용 — «지형 N 삼각형 · 지형 레이어 섞기 / 대체 1장 · 오브젝트 보임 k / 배치 M · 종류 a/b · 메시 n/예산 · 반대편 제외 f»
 		std::wstring Status() const;
 
 		const Shared::PlanetSurface& Ground() const { return ground; }
@@ -175,6 +182,8 @@ namespace swc {
 		bool                  loaded = false;
 		std::vector<NodeHandle> terrainNodes;          // 지형 메시(…_Planet_Terrain)의 그리기 노드 — 지형 레이어 재질로 바꾼다
 		bool                  terrainLayered = false;  // 지형 레이어 재질을 끼웠는가(창 제목)
+		std::vector<TextureHandle> terrainTextures;    // 2026-11-17 — 지형 레이어 텍스처(ApplyTerrainLayers 가 올린 것, Release 가 놓는다)
+		MaterialHandle        terrainMaterial = kInvalidMaterial;   // 2026-11-17 — 지형 레이어 재질(Release 가 놓는다)
 		// ── 땅 위 메시 경계 섞기 (2026-10-29) ──
 		//  오솔길 · 착륙 대지 중 «지형과 같은 땅» 재질인 것도 지형 레이어 재질로 그린다(ApplyTerrainLayers).
 		Vec3d                 center{ 0.0, 0.0, 0.0 };              // 월드의 행성 중심 — 지형 레이어 좌표의 원점
@@ -194,6 +203,8 @@ namespace swc {
 		std::vector<std::pair<float, uint32_t>> scratch;       // (점수, 인스턴스) — 고를 때마다 다시 쓴다
 		Vec3d                                   lastStreamEye;
 		bool                                    streamed = false;
+		size_t                                  selectedMeshes = 0;        // 2026-11-16 마지막으로 고른 메시 노드 수(≤ kObjectMeshBudget, 창 제목)
+		size_t                                  farHemisphereSkipped = 0;  // 2026-11-16 마지막 고르기에서 반대편 반구라 뺀 오브젝트 수(창 제목)
 	};
 
 } // namespace swc

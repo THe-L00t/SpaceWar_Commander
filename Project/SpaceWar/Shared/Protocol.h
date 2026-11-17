@@ -39,6 +39,9 @@ enum class PacketType : uint16_t {
     WeaponEquip,         // 서버 -> 같은 맵 : 이 플레이어가 든 총(빈손 = WeaponType::None)
     GroundWeaponSpawn,   // 서버 -> 같은 맵 : 바닥 총 하나(떨어지기 시작 자세 · 누운 자세 · 떨어지는 시간)
     GroundWeaponRemove,  // 서버 -> 같은 맵 : 이 바닥 총이 없어졌다(누가 주웠다 · 개수 상한)
+
+    // ── NPC 명중 표시 (2026-11-16) — ★ 끝에 붙인다 ──
+    NpcHit,              // 서버 -> 쏜 사람 : 네 발이 이 NPC 에 맞았다(쓰러뜨린 발 포함)
 };
 
 // 모든 패킷 공통 헤더
@@ -247,6 +250,16 @@ struct GroundWeaponRemovePacket {
     uint32_t     groundId;
 };
 
+// 서버 -> 쏜 사람 : 네 발이 이 NPC 에 맞았다 (2026-11-16 사용자 «플레이어가 쏜 총이 NPC를 맞추면 x표시로 크로스헤어 주변에 표시해줘»).
+//
+// ★ 맞았는지는 서버가 정한다 (명세 18절 원칙 4) — 클라는 이 패킷을 받아야 크로스헤어 둘레에 X 를 띄운다(Engine kHitMarker*).
+//   쏜 사람 한 명에게만 보낸다. 쓰러뜨린 발도 맞은 발이라 보낸다(쓰러짐은 따로 NpcDespawn 이 같은 맵 전원에게 간다).
+//   이 번호를 모르는 옛 클라는 크기만큼 건너뛴다(ProcessPackets default).
+struct NpcHitPacket {
+    PacketHeader header;
+    uint32_t     npcId;
+};
+
 // ── 크기 확인 ────────────────────────────────────────────────
 //  구조체를 그대로 바이트로 보내므로 크기가 어긋나면 좌표가 통째로 깨진다.
 //  런타임에 이상한 값이 나오는 것보다 컴파일이 실패하는 편이 낫다.
@@ -268,5 +281,6 @@ static_assert(sizeof(WeaponDropPacket)        ==  8, "WeaponDropPacket 크기 �
 static_assert(sizeof(WeaponEquipPacket)       == 12, "WeaponEquipPacket 크기 변경됨");
 static_assert(sizeof(GroundWeaponSpawnPacket) == 88, "GroundWeaponSpawnPacket 크기 변경됨");
 static_assert(sizeof(GroundWeaponRemovePacket) == 8, "GroundWeaponRemovePacket 크기 변경됨");
+static_assert(sizeof(NpcHitPacket)            ==  8, "NpcHitPacket 크기 변경됨");
 
 } // namespace Shared

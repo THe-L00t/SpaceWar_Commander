@@ -1192,6 +1192,17 @@ void BroadcastNpcDespawn(UINT32 nNpcId)
 	SendToWorld(Shared::kWorldGameMap, &pkt, (int)sizeof(pkt), 0);
 }
 
+//쏜 사람에게만 — «네 발이 이 NPC 에 맞았다»(2026-11-16 NPC 명중 표시). 클라는 이것을 받아 크로스헤어 둘레에 X 를 띄운다.
+void SendNpcHit(const SessionPtr &pShooter, UINT32 nNpcId)
+{
+	Shared::NpcHitPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::NpcHit;
+	pkt.npcId = nNpcId;
+
+	pShooter->Send(&pkt, (int)sizeof(pkt));
+}
+
 /////////////////////////////////////////////////////////////////////////
 //  한 발을 판정한다. ★ 행동 스레드에서만 부른다.
 //
@@ -1293,10 +1304,12 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	//6) 피해.
 	if (nHitNpc != 0)
 	{
+		//★ 2026-11-16 사용자 «플레이어가 쏜 총이 NPC를 맞추면 x표시로 크로스헤어 주변에 표시해줘» — 쏜 사람에게 알린다(쓰러뜨린 발도).
+		SendNpcHit(pShooter, nHitNpc);
 		if (g_npcWorld.Damage(nHitNpc, spec.damage))
 			printf("[명중] 플레이어 %u -> NPC %u 쓰러짐 (%.1fm)\n", req.nShooterId, nHitNpc, fBest);
 		else
-			printf("[명중] 플레이어 %u -> NPC %u (%.1fm)\n", req.nShooterId, nHitNpc, fBest);
+			printf("[명중] 플레이어 %u -> NPC %u (%.1fm) · %d틱 멈춤\n", req.nShooterId, nHitNpc, fBest, srv::kNpcHitStunTicks);
 		return;
 	}
 
@@ -1736,8 +1749,8 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 			nTicks = 0;
 			if (!views.empty())
 			{
-				printf("[NPC] %zu 마리 / 추격 %d 마리 (플레이어 %zu명)\n",
-					views.size(), g_npcWorld.ChasingCount(), players.size());
+				printf("[NPC] %zu 마리 / 추격 %d 마리 / 맞아서 멈춤 %d 마리 (플레이어 %zu명)\n",
+					views.size(), g_npcWorld.ChasingCount(), g_npcWorld.StunnedCount(), players.size());
 			}
 			//이동 판정 계측(2026-10-29) — 초당 처리한 입력 수(1명당 약 60이 정상) · 넘쳐 버린 입력 누계
 			//  2026-11-01 맵 번호 — 맵별 인원(맵 번호:인원, 맵 없음 = 바꾸는 중 · 실패)과 그 맵 충돌체 유무를 함께 찍는다.

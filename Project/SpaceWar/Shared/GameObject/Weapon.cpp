@@ -58,14 +58,17 @@ namespace Shared {
 		//  사거리 = 세 총 모두 130 m(2026-11-16 사용자 «사거리 300이 의미 없을거 같아서 전부 130정도로 수정해줘» — 300 → 130).
 		//    행성 반지름 650 m 라 땅에 닿는 겨눈 점은 지평선(우클릭 조준 약 55 m · 평소 약 67 m)까지이고,
 		//    지평선 위로 솟은 몸(머리)도 약 100 ~ 115 m 까지만 보인다. 서버 판정(ResolveFire) · 클라 겨눈 점(AimDirection)이 이 값을 쓴다.
+		//  피해 = 라이플 50 → 4 · 기관총 15 → 3(2026-11-16 사용자 «기관총과 라이플의 데미지를 수정해줘. 너무 일찍 죽어서 확인하지 못해»
+		//    — NPC 피격 경직(Server NpcWorld kNpcHitStunTicks)을 보려고. 체력 100 을 계속 쏘면 라이플 25발 ≈ 2.8 s · 기관총 34발 ≈ 3.1 s 에 쓰러진다.
+		//    값은 제가 고른 것(«약 3초»). 플레이어끼리 쏠 때도 같은 값이다. 권총 25 는 그대로.
 		//  ★ 줄 순서 = WeaponType 순서.
 		constexpr WeaponSpec kSpecs[kWeaponTypeCount] =
 		{
 		//  총구 = 3인칭 glb 의 Muzzle 노드 translation(2026-11-15 파일에서 읽음 — 1인칭과 같은 자리).
 			// 이름          1인칭 glb                                      3인칭 glb                                      모드              탄               간격    피해   사거리  탄창  예비탄          장전   예광  눕힌 높이  총구 (x, y, z)                충돌 상자
 			{ "Pistol",     L"model\\weapon\\Pistol\\Pistol_FP.glb",         L"model\\weapon\\Pistol\\Pistol_TP.glb",         FireMode::Single, AmmoKind::Bullet, 0.20f, 25.0f, 130.0f,  12, kInfiniteAmmo, 1.5f, 1, 0.0162f, { 0.0f, 0.0349f, 0.1590f }, kPistolBoxes,     BoxCount(kPistolBoxes) },
-			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 50.0f, 130.0f,  10,  40,           2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
-			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 15.0f, 130.0f, 100, 200,           4.5f, 1, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
+			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 4.0f,  130.0f,  10,  40,           2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
+			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 3.0f,  130.0f, 100, 200,           4.5f, 1, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
 		};
 
 		constexpr WeaponSpec kNoSpec = { "", L"", L"", FireMode::Single, AmmoKind::Bullet, 0.0f, 0.0f, 0.0f, 0, 0, 0.0f, 1, 0.0f, { 0.0f, 0.0f, 0.0f }, nullptr, 0 };

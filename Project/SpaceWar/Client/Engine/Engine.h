@@ -35,6 +35,7 @@
 #include "Shared/GameLogic/WeaponShowcase.h"    // 진열 자리(줍는 출처)
 #include "Shared/GameLogic/PlayerMovement.h"    // Shared::MoveWorld
 #include "Shared/GameLogic/ShotTrace.h"         // Shared::ShotHit — 2026-11-16 TraceVisibleShot
+#include "Client/Effects/ParticleSystem.h"      // 2026-11-17 피격 파티클
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -110,6 +111,29 @@ namespace swc {
 		void UpdateNetwork(float);
 		void RenderFrame();
 		void UpdateTitle(float);
+
+		// ── 자동 프레임 시간 측정 (2026-11-17, Engine.cpp kAutoFrameBudget — 평소에는 꺼짐) ──
+		//  예시 행성 1 ~ 5 를 차례로 들어가 CPU · GPU 구간 시간을 모아 exe 옆 파일로 쓰고 창을 닫는다.
+		void RequestDebugPlanet(size_t index);   // 숫자키 · 자동 측정이 같이 쓰는 «예시 행성 index 로 넘어가기»
+		void UpdateFrameBudget(float dt, double updateMs, double renderMs, double endFrameMs);
+		void ResetFrameBudgetStage();
+		void WriteFrameBudget() const;
+		int                       budgetStage = 0;          // 0 = 시작 전, 1 ~ 5 = 예시 행성 측정 중, 6 = 끝
+		double                    budgetStageTime = 0.0;    // 그 행성에 들어간 뒤 흐른 시간(s)
+		uint64_t                  budgetReportMark = 0;     // 마지막으로 본 GPU 보고 번호(GRenderer::GpuTimeReportCount)
+		bool                      budgetSkipFirstReport = true;   // 측정 시작 뒤 첫 GPU 보고는 예열과 겹쳐 버린다
+		uint32_t                  budgetFrames = 0;
+		double                    budgetDtSum = 0.0, budgetUpdateSum = 0.0, budgetRenderSum = 0.0, budgetEndSum = 0.0;   // ms 합
+		double                    budgetUpdateMax = 0.0, budgetRenderMax = 0.0, budgetEndMax = 0.0;                     // ms
+		std::vector<std::wstring> budgetGpuReports;         // 측정 구간에 나온 GPU 보고 줄
+		std::wstring              budgetText;               // 파일에 쓸 내용
+		double                    lastEndFrameMs = 0.0;     // 이번 프레임 renderer.EndFrame() 시간(ms) — RenderFrame 이 잰다
+		// 2026-11-17 «움직이면서도 한번 측정» — 행성마다 서 있기 뒤 움직이며 한 번 더
+		int                       budgetPhase = 0;          // 0 = 서 있기, 1 = 움직이며
+		bool                      budgetMoving = false;     // true 면 W + Shift 를 누른 채(InputManager::SetForcedKey) UpdatePlayer 가 카메라를 돌린다
+		double                    budgetDistance = 0.0;     // 측정 구간에 움직인 거리(m)
+		Vec3d                     budgetLastPos;            // 거리 재기용 앞 프레임 위치
+		uint32_t                  budgetRestreams = 0;      // 측정 구간에 오브젝트를 다시 고른 횟수(UpdateDebugPlanetObjects)
 
 		HWND hwnd = nullptr;
 
@@ -191,6 +215,10 @@ namespace swc {
 		std::vector<Tracer>     tracers;
 		std::vector<NodeHandle> freeTracerNodes;
 
+		// ── 피격 파티클 (2026-11-17, Client/Effects/ParticleSystem.h · 명세 21절) ──
+		//  UpdateFire 가 내 발이 처음 닿는 곳에 효과를 만들고, Run 이 매 프레임 움직이고(UpdateNetwork 뒤), RenderFrame 이 패킷에 담는다.
+		ParticleSystem          particles;
+
 		// ── 총 모델 (2026-11-14, Shared/GameObject/Weapon.h · Client/Weapon/WeaponModels.h) ──
 		//  총 종류 × 1인칭 · 3인칭을 게임 로드 때 한 번 올린다. 명세에는 21절 «작업 중 추가된 클래스» 에 있다.
 		//  진열(weaponShowcase) — 사용자 «씬 처음 허공에 1인칭 모델과 3인칭 모델 총 6개 띄우는거까지만»:
@@ -231,6 +259,10 @@ namespace swc {
 
 		// 임시 크로스헤어 (2026-11-14) — 코드로 만든 UI 텍스처. 화면 한가운데(조준선)에 그린다(Engine.cpp kCrosshair*).
 		TextureHandle           crosshairTexture = kInvalidTexture;
+		// NPC 명중 표시 (2026-11-16) — 크로스헤어와 같은 방식의 X(네 분면 대각선, Engine.cpp kHitMarker*). 크로스헤어 위에 겹쳐 그린다.
+		//  서버가 «내 발이 NPC 에 맞았다»(Network::TakeNpcHits)고 알리면 hitMarkerTimer 를 kHitMarkerSeconds 로 채운다.
+		TextureHandle           hitMarkerTexture = kInvalidTexture;
+		float                   hitMarkerTimer = 0.0f;   // 남은 표시 시간(s). 0 이면 그리지 않는다
 
 		FramePacket               packet;       // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫
