@@ -35,6 +35,7 @@
 #include "Shared/GameLogic/WeaponShowcase.h"    // 진열 자리(줍는 출처)
 #include "Shared/GameLogic/PlayerMovement.h"    // Shared::MoveWorld
 #include "Shared/GameLogic/ShotTrace.h"         // Shared::ShotHit — 2026-11-16 TraceVisibleShot
+#include "Client/Effects/ParticleSystem.h"      // 2026-11-17 피격 파티클
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -213,6 +214,10 @@ namespace swc {
 		MeshHandle              tracerMesh = kInvalidMesh;
 		std::vector<Tracer>     tracers;
 		std::vector<NodeHandle> freeTracerNodes;
+
+		// ── 피격 파티클 (2026-11-17, Client/Effects/ParticleSystem.h · 명세 21절) ──
+		//  UpdateFire 가 내 발이 처음 닿는 곳에 효과를 만들고, Run 이 매 프레임 움직이고(UpdateNetwork 뒤), RenderFrame 이 패킷에 담는다.
+		ParticleSystem          particles;
 
 		// ── 총 모델 (2026-11-14, Shared/GameObject/Weapon.h · Client/Weapon/WeaponModels.h) ──
 		//  총 종류 × 1인칭 · 3인칭을 게임 로드 때 한 번 올린다. 명세에는 21절 «작업 중 추가된 클래스» 에 있다.

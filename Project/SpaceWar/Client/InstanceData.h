@@ -48,11 +48,33 @@ namespace swc {
 		bool background = false;             // 배경 패스 뒤 깊이만 초기화한다.
 	};
 
+	// ── 파티클 사각형 하나 (2026-11-17 사용자 «파티클 전용 파이프라인», 명세 7절 Render World Particle[]) ──
+	//  ParticleSystem(Client/Effects)이 매 프레임 채우고, 렌더러 [7b] 파티클 패스가 카메라를 보는 사각형으로 펴 그린다.
+	//  ★ Particles.hlsl 의 ParticleSprite 와 같은 배치(48 B). 기존 인스턴스 경로(InstanceData · 그리기 묶음 · 본 TLAS)는 거치지 않는다.
+	enum ParticleFlags : uint32_t
+	{
+		kParticleAdditive = 1u << 0,   // 가산 블렌드(섬광 · 불꽃 — 스스로 빛남). 없으면 알파 블렌드(먼지 · 연기 · 피)
+		kParticleLit      = 1u << 1,   // 해 · 하늘 빛을 받는다(알파 묶음). 없으면 색 그대로(자체 발광)
+	};
+	struct ParticleSprite {
+		DirectX::XMFLOAT3 position{ };   // 월드 위치(m)
+		float             size = 0.0f;   // 사각형 한 변(m)
+		DirectX::XMFLOAT4 color{ };      // 선형 RGB(1 넘으면 블룸으로 번진다) · a = 불투명도
+		float             rotation = 0.0f;   // 화면 안 회전(라디안)
+		uint32_t          flags = 0;     // ParticleFlags
+		float             pad[2]{ };
+	};
+	static_assert(sizeof(ParticleSprite) == 48, "ParticleSprite 는 48바이트 (Particles.hlsl 와 같아야 한다)");
+
 	// 렌더 추출 ④ 의 결과 — 렌더러가 받는 유일한 입력 (수정방향 3.2, 멀티스레딩 명세 §6 ④)
 	//  광원·이미터·데칼 배열은 해당 항목(3.12 등)을 할 때 붙는다.
 	struct FramePacket {
 		RenderView view;
 		std::vector<InstanceData> instances;
+		// 2026-11-17 — 파티클 사각형. [0, particleAlphaCount) = 알파 묶음(먼 것부터 정렬됨), 그 뒤 = 가산 묶음.
+		//  메인 패스에만 채운다(배경 패스는 비운다). 메시 파편 배열은 4단계(P4)에서 붙는다.
+		std::vector<ParticleSprite> particles;
+		uint32_t particleAlphaCount = 0;
 		// 인스턴스의 «구성» 버전(수정방향 3.2 «버전 번호»). 노드 추가·메시 변경·가시성·반전 여부가
 		// 바뀔 때만 오른다. 렌더러는 이 값이 같으면 그리기 묶음을 다시 만들지 않는다.
 		//  상위 32비트 = 장면 번호, 하위 32비트 = 장면 안의 버전.

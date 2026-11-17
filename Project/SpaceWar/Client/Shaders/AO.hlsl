@@ -44,6 +44,9 @@ SamplerState                    gWrapSampler : register(s0);
 #ifndef AO_RAYQUERY
 #define AO_RAYQUERY 1
 #endif
+#if AO_RAYQUERY
+#include "ParticleRt.hlsli"   // 2026-11-17 P5 — 파티클 TLAS(반경 안의 연기 · 먼지가 주변광을 가리는 몫)
+#endif
 
 static const uint  kAoSteps         = 8;      // 화면 공간 추적 칸 수
 static const float kAoMaxHistory    = 24.0;   // 시간 누적 최대 프레임
@@ -155,7 +158,13 @@ void CSAoTrace(uint3 id : SV_DispatchThreadID)
 		}
 #endif
 	}
-	raw[pixel] = float2(verdict == kAoOccluded ? 0.0 : 1.0, usedRt ? 1.0 : 0.0);
+	float visible = verdict == kAoOccluded ? 0.0 : 1.0;
+#if AO_RAYQUERY
+	// 2026-11-17 P5 — 안 가려졌으면 같은 레이로 파티클 TLAS 를 한 번 더(반경 안) — 남는 빛만큼만 보인다
+	if (visible > 0.0 && gRtEnabled != 0)
+		visible *= ParticleTransmittance(origin, dir, gRadius);
+#endif
+	raw[pixel] = float2(visible, usedRt ? 1.0 : 0.0);
 }
 
 // ── ② 시간 누적 ──  이력 = (AO, 누적 수)

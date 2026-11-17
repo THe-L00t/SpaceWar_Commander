@@ -27,6 +27,7 @@
 #include "Probes.hlsli"
 #include "RtSurface.hlsli"
 #include "Sky.hlsli"
+#include "ParticleRt.hlsli"   // 2026-11-17 P5 — 파티클 TLAS(프로브 레이 사이의 연기 · 먼지 · 불꽃)
 
 // GRenderer.cpp 의 GiConstants 와 같은 배치 (400바이트 — 10-28 바퀴 번호 줄 192 → 208, 두 겹 → 304, 지면에 맞춘 축 → 400)
 cbuffer GiCB : register(b0)
@@ -174,6 +175,16 @@ void CSProbeTrace(uint ray : SV_GroupThreadID, uint3 group : SV_GroupID)
 	{
 		Texture2D<float4> sky = ResourceDescriptorHeap[gSkySrv];
 		result = float4(SampleSkyRadiance(sky, gSkySampler, D), gMaxDistance);
+	}
+
+	// 2026-11-17 P5 — 프로브와 맞은 곳(없으면 레이 끝) 사이의 파티클을 섞는다: 빛 = 파티클 빛 + 남는 몫 × 뒤의 빛.
+	//  빛을 받는 파티클(연기 · 먼지 · 피)은 해(반쯤 감싼 빛) + 레이 쪽을 보는 면의 하늘 조도. 뒷면(벽 · 땅 속 프로브, w < 0)은 그대로.
+	if (result.w > 0.0)
+	{
+		Texture2D<float4> skyIrradianceForParticles = ResourceDescriptorHeap[gSkyIrradianceSrv];
+		const float3 litScale = gSunIlluminance * (0.5 / kPi) + SampleSkyIrradiance(skyIrradianceForParticles, gSkySampler, -D);
+		const ParticleRayResult particles = TraceParticles(O, D, result.w, litScale);
+		result.rgb = particles.radiance + particles.transmittance * result.rgb;
 	}
 
 	RWTexture2D<float4> rayData = ResourceDescriptorHeap[gRayDataUav];

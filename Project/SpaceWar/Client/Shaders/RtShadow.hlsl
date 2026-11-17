@@ -19,6 +19,7 @@
 
 #include "GBuffer.hlsli"
 #include "RtCommon.hlsli"   // RtMaterial · RtInstance · TraceSunVisibility · AlphaMaskedOut
+#include "ParticleRt.hlsli" // 2026-11-17 P5 — 파티클 TLAS(연기 · 먼지 · 피가 해를 가리는 몫)
 
 // GRenderer.cpp 의 ShadowConstants 와 같은 배치 (128바이트)
 cbuffer ShadowCB : register(b0)
@@ -65,6 +66,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 	// 깊이에서 되살린 위치는 멀수록 오차가 커서 레이 시작점을 법선 쪽으로 거리에 맞춰 띄운다(RtCommon.hlsli RayOffsetBias).
 	// 안 띄우면 자기 표면에 맞아 줄무늬 그림자가 생긴다.
 	const float  bias       = RayOffsetBias(length(P - gEyePos));
-	const float3 visibility = TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gWrapSampler, P + N * bias, L, gMaxDistance);
+	float3 visibility = TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gWrapSampler, P + N * bias, L, gMaxDistance);
+	// 2026-11-17 P5 — 본 TLAS 로 보이는 곳만 파티클 TLAS 를 한 번 더 — 연기 · 먼지 밑이 옅게 어두워진다
+	if (any(visibility > 0.0))
+		visibility *= ParticleTransmittance(P + N * bias, L, gMaxDistance);
 	shadow[pixel] = float4(visibility, 1.0);
 }
