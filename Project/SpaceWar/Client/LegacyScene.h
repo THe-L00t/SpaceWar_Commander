@@ -34,6 +34,13 @@ namespace swc {
 		// 2026-10-28 지형 레이어 — 이미 올린 노드의 재질을 바꾼다(그리기 묶음이 바뀌므로 구성 버전을 올린다).
 		void SetMaterial(NodeHandle, MaterialHandle);
 		void SetVisible(NodeHandle, bool);
+		// 2026-11-16 — true 면 이 노드는 TLAS 에 넣지 않는다(Extract 가 kInstanceNoRayTracing 을 붙인다). 자식에게 물려주지 않는다.
+		//  그리기 묶음과 무관한 표시라 구성 버전을 올리지 않는다.
+		void SetRayTracingExcluded(NodeHandle, bool);
+		// 2026-11-17 예시 행성 해제 — root 와 그 아래 노드를 모두 «메시 없음 · 숨김» 으로 비운다(구성 버전을 올린다).
+		//  노드 칸은 지우지도 다시 쓰지도 않는다 — Update/Extract 가 «부모가 자식보다 앞 번호» 를 전제로 돌아서다.
+		//  그래서 비운 칸은 빈 노드로 남고, 매 프레임 건너뛰는 비용만 든다. 비운 노드 번호를 다른 곳에서 다시 쓰지 말 것.
+		void ClearSubtree(NodeHandle root);
 
 		void UpdateWorldTransforms();
 		// 렌더 추출 ④ — 보이는 메시 노드의 InstanceData 와 구성 버전을 채운다. 뷰는 호출자가 채운다.
@@ -54,6 +61,7 @@ namespace swc {
 		std::vector<uint8_t>             worldDirty;   // 이번 갱신에서 부모 변경을 자식에게 전달한다.
 		std::vector<uint8_t>             prevPending;  // world 가 바뀐 다음 프레임에 prevWorld 를 따라잡는다.
 		std::vector<uint32_t>            flags;        // InstanceFlags — world 가 바뀔 때만 다시 정한다.
+		std::vector<uint8_t>             rayTracingExcluded;   // 2026-11-16 — 1 이면 TLAS 에 넣지 않는다(SetRayTracingExcluded)
 
 		// FramePacket::layoutVersion = (sceneId << 32) | layoutVersion.
 		//  렌더러는 이 값이 바뀔 때만 그리기 묶음을 다시 만든다.

@@ -17,7 +17,10 @@ namespace swc {
 
 		void BeginFrame();                          // 엣지 스냅샷 + 마우스 델타 초기화
 
-		bool IsDown(int vk) const { return keys[vk & 0xFF]; }
+		bool IsDown(int vk) const { return keys[vk & 0xFF] || forcedKeys[vk & 0xFF]; }
+		// 2026-11-17 — 자동 프레임 시간 측정(Engine kAutoFrameBudget)이 «누르고 있는 키» 를 코드로 넣는다.
+		//  IsDown 에만 보인다(WasPressed · 마우스는 그대로). 끝나면 false 로 되돌린다.
+		void SetForcedKey(int vk, bool down) { forcedKeys[vk & 0xFF] = down; }
 		bool WasPressed(int vk) const { return keys[vk & 0xFF] && !prevKeys[vk & 0xFF]; }
 		bool MouseDown(int button) const { return mouseButtons[button & 3]; }
 
@@ -47,6 +50,7 @@ namespace swc {
 		HWND  hwnd = nullptr;
 		bool  keys[256] = {};
 		bool  prevKeys[256] = {};
+		bool  forcedKeys[256] = {};   // 2026-11-17 SetForcedKey — Clear() 가 지우지 않는다
 		bool  mouseButtons[4] = {};
 		bool  prevMouseButtons[4] = {};
 		float mouseDeltaX = 0.0f;

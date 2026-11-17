@@ -12,7 +12,8 @@
 //      └── StaticObject
 //
 //  ★ 지금은 구조뿐이다. 이동·판정·네트워크 동기화 로직은 없다.
-//    명세의 Collision Box / State / Weapon / Behavior Tree 는 아직 넣지 않았다.
+//    명세의 Collision Box / State / Behavior Tree 는 아직 넣지 않았다.
+//    Weapon 은 2026-11-14 에 넣었다 — Object 가 아니라 Player · OtherPlayer 가 드는 상태다(Weapon.h, 명세 21절).
 //  ★ Rotation (2026-11-02 명세 6.3 에 추가, 사용자 «오브젝트 명세에 회전도 넣어줘»)
 //    단위 쿼터니언 (x, y, z, w). 기본값 = 회전 없음. Direction 은 이 회전으로 앞쪽(+Z)을 돌린 방향과 같게 둔다.
 //    Direction 만 쓰는 곳(서버 NpcWorld)은 아직 Rotation 을 채우지 않는다.

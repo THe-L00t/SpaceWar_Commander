@@ -33,6 +33,7 @@
 #include "Sky.hlsli"
 #include "Probes.hlsli"      // 7단계 — [4c] GI 프로브 샘플
 #include "ReflectionTiles.hlsli"   // 11단계 — [3] 분류와 같은 «레이가 필요한가» 판정 · 타일 번호 규칙
+#include "ParticleRt.hlsli"        // 2026-11-17 P5 — 파티클 TLAS(반사 속 연기 · 먼지 · 불꽃)
 
 // GRenderer.cpp 의 ReflectionConstants 와 같은 배치 (416바이트 — 7단계에서 144 → 224, 10-28 GI 두 겹 → 320, 지면에 맞춘 축 → 416)
 cbuffer ReflectionCB : register(b0)
@@ -132,6 +133,15 @@ void RayGen()
 	// 2026-10-28 — FORCE_OPAQUE 를 뺐다: 알파 마스크 인스턴스는 AnyHit 이 빈 곳을 거른다.
 	TraceRay(gScene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload);
 
+	// 2026-11-17 P5 — 맞은 곳(미스면 레이 끝)까지 파티클 TLAS 를 RayQuery 로 한 번 더(BF V: 불투명 → 그 거리까지 파티클 → 섞기).
+	//  파티클은 절차적 기하라 히트 그룹 없이 RayGen 안에서 조회한다. 빛을 받는 파티클 = 해(반쯤 감싼 빛) + 레이 쪽을 보는 면의 하늘 조도.
+	{
+		Texture2D<float4> skyIrradianceForParticles = ResourceDescriptorHeap[gSkyIrradianceIndex];
+		const float3 litScale = gSunIlluminance * (0.5 / kPi) + SampleSkyIrradiance(skyIrradianceForParticles, gSkySampler, -dir);
+		const ParticleRayResult particles = TraceParticles(ray.Origin, dir, payload.hitT >= 0.0 ? payload.hitT : gMaxDistance, litScale);
+		payload.color = particles.radiance + particles.transmittance * payload.color;
+	}
+
 	// a = 맞은 거리 (5단계 — 미스는 레이 길이 상한으로)
 	output[pixel] = float4(payload.color, payload.hitT >= 0.0 ? payload.hitT : gMaxDistance);
 }
@@ -196,6 +206,7 @@ void ClosestHit(inout ReflectionPayload payload, in BuiltInTriangleIntersectionA
 	const float3 sun = (dot(N, L) > 0.0) ? TraceSunVisibility(gScene, gRtMaterials, gRtInstances, gSampler, P + N * 0.02, L, gMaxDistance)
 	                                     : float3(0.0, 0.0, 0.0);
 
-	payload.color = (lit.diffuse + lit.specular) * sun + lit.ambient + emissive;
+	// 2026-11-03 — 재질 AO 는 주변광에만(메인 라이팅과 같은 규칙)
+	payload.color = (lit.diffuse + lit.specular) * sun + lit.ambient * surface.ao + emissive;
 	payload.hitT  = RayTCurrent();
 }

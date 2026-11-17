@@ -31,12 +31,19 @@ namespace swc {
 			return mesh < meshMaterials.size() ? meshMaterials[mesh] : kInvalidMaterial;
 		}
 
+		// 2026-11-17 예시 행성 해제 — 이 모델이 만든 GPU 메시 · 텍스처 · 재질을 놓고(GRenderer::Release) 빈 모델로 돌아간다.
+		//  프레임 밖에서 부른다. 이 모델로 펼친 장면 노드는 호출자가 먼저 비운다(LegacyScene::ClearSubtree). 실패하면 false.
+		//  빈 모델(Initialize 전 · 실패)에 불러도 된다.
+		bool Release(GRenderer&);
+
 		const std::wstring& LastError() const { return lastError; }
 
 	private:
 		std::vector<ModelNodeData> nodes;
 		std::vector<MeshHandle> meshes;
 		std::vector<MaterialHandle> meshMaterials;
+		std::vector<TextureHandle> textures;    // 2026-11-17 — 이 모델이 만든 텍스처(Release 용)
+		std::vector<MaterialHandle> materials;  // 2026-11-17 — 이 모델이 만든 재질(Release 용, 0번 기본 재질은 없다)
 		DirectX::XMFLOAT4X4 visualLocal{};
 		std::wstring lastError;
 		bool initialized = false;

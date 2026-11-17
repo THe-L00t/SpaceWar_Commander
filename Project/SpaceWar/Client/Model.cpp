@@ -3,14 +3,20 @@
 // ★ client2 의 `Scene` 은 우리 쪽에서 `LegacyScene` 이다 (09-18 `df71fc9`).
 //   게임 소유 Scene 과 렌더 소유 Render World 로 나뉘기 전의 임시 클래스다.
 #include "LegacyScene.h"
+#include "Shared/GameLogic/PlayerMovement.h"   // 캐릭터 키 = 충돌 캡슐 키 (2026-11-14)
 #include <cmath>
 #include <utility>
 
 using namespace DirectX;
 
 namespace {
-	// 이동 좌표는 기존 2m 큐브의 중심을 유지한다. 모델의 발은 중심보다 1m 아래다.
-	constexpr float kModelHeight = 2.0f;
+	// 이동 좌표는 몸통 중심이다. 모델의 발은 중심보다 1m 아래다(kGroundOffset).
+	// ★ 캐릭터 키 = 충돌 캡슐 키 1.8 m (2026-11-14 사용자 «캐릭터 키 맞춰줘»)
+	//   전에는 2.0 m 로 늘려 그려서 판정 캡슐(PlayerMovement::kCapsuleHeight 1.8 m) · 리소스 체크리스트(키 기준 1.8 m)보다 컸고,
+	//   실제 크기(1:1)로 그리는 총이 손에 붙으면 10 % 작아 보였다. 캡슐 상수를 그대로 써서 둘이 다시 갈라지지 않게 한다.
+	//   이 자동 키 맞춤은 표시 변환 없이 부르는 Initialize(data, renderer) — 지금은 캐릭터(OBJ)만 쓴다.
+	//   맵 · 오브젝트 · 총은 표시 변환을 직접 주므로 영향이 없다.
+	constexpr float kModelHeight = Shared::PlayerMovement::kCapsuleHeight;
 	constexpr float kGroundOffset = 1.0f;
 	// ★ 정면 보정 0 (2026-10-08 — 통합 뒤 실행해서 확인했다)
 	//   client2 에서는 XM_PI 였다. 그쪽 ObjModelLoader 가 정점의 Z 를 뒤집어 올렸기 때문에
@@ -186,7 +192,28 @@ namespace swc {
 		nodes = data.nodes;
 		meshes = std::move(uploadedMeshes);
 		meshMaterials = std::move(uploadedMaterials);
+		// 2026-11-17 — 놓을 때(Release) 쓰려고 이 모델이 만든 텍스처 · 재질 번호를 남긴다(meshMaterials 에는 0번 기본 재질도 섞여 있다).
+		textures = std::move(textureHandles);
+		materials = std::move(materialHandles);
 		initialized = true;
+		return true;
+	}
+
+	// 2026-11-17 예시 행성 해제 — 이 모델이 만든 GPU 메시 · 텍스처 · 재질을 놓고 빈 모델로 돌아간다.
+	//  이 모델로 펼친 장면 노드는 호출자가 먼저 비워야 한다(LegacyScene::ClearSubtree).
+	bool Model::Release(GRenderer& renderer)
+	{
+		if (!renderer.Release(meshes, textures, materials))
+		{
+			lastError = L"모델 GPU 자원 놓기 실패: " + renderer.StatusText();
+			return false;
+		}
+		nodes.clear();
+		meshes.clear();
+		meshMaterials.clear();
+		textures.clear();
+		materials.clear();
+		initialized = false;
 		return true;
 	}
 

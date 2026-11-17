@@ -32,6 +32,16 @@ enum class PacketType : uint16_t {
     // ── 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») — Shared/World/WorldCatalog.h. ★ 끝에 붙인다 ──
     JoinWorld,      // 클라 -> 서버 : 이 맵으로 옮긴다(행성을 바꿀 때)
     WorldJoined,    // 서버 -> 당사자 : 그 맵에 넣었다(스폰 자리 · 방향) 또는 맵을 준비하지 못했다
+
+    // ── 총 줍기 · 떨구기 (2026-11-15, Shared/GameLogic/WeaponPickup.h) — ★ 끝에 붙인다 ──
+    WeaponPickup,        // 클라 -> 서버 : 이 총을 줍는다(공중 진열 자리 번호 또는 바닥 총 번호)
+    WeaponDrop,          // 클라 -> 서버 : 든 총을 떨군다
+    WeaponEquip,         // 서버 -> 같은 맵 : 이 플레이어가 든 총(빈손 = WeaponType::None)
+    GroundWeaponSpawn,   // 서버 -> 같은 맵 : 바닥 총 하나(떨어지기 시작 자세 · 누운 자세 · 떨어지는 시간)
+    GroundWeaponRemove,  // 서버 -> 같은 맵 : 이 바닥 총이 없어졌다(누가 주웠다 · 개수 상한)
+
+    // ── NPC 명중 표시 (2026-11-16) — ★ 끝에 붙인다 ──
+    NpcHit,              // 서버 -> 쏜 사람 : 네 발이 이 NPC 에 맞았다(쓰러뜨린 발 포함)
 };
 
 // 모든 패킷 공통 헤더
@@ -188,6 +198,68 @@ struct WorldJoinedPacket {
     float        facing[3];     // 몸 방향(접평면 단위 벡터) — ok 일 때만
 };
 
+// ── 총 줍기 · 떨구기 (2026-11-15) ────────────────────────────────
+//  ★ 서버 권위 — 클라는 «이것을 줍겠다 · 떨구겠다» 만 보내고, 든 총 · 바닥 총은 서버가 정해 같은 맵 전원에게 알린다.
+//    서버는 거리(Shared::kWeaponPickupRange + kWeaponPickupSlack)를 다시 재고, 이미 들고 있으면 그 총을 떨군 뒤 바꿔 든다.
+
+// WeaponPickupPacket::source
+inline constexpr uint8_t kPickupFromShowcase = 0;   // 공중 진열(게임 맵) — id = 진열 자리 번호(0 ~ 5). 주워도 진열은 그대로다
+inline constexpr uint8_t kPickupFromGround   = 1;   // 바닥 총 — id = GroundWeaponSpawnPacket::groundId
+
+// 클라 -> 서버 : 이 총을 줍는다.
+struct WeaponPickupPacket {
+    PacketHeader header;
+    uint8_t      source;        // kPickupFrom*
+    uint8_t      pad[3];
+    uint32_t     id;
+};
+
+// 클라 -> 서버 : 든 총을 떨군다(G 키). 손 자리에서 떨어져 바로 아래 지면에 눕는다.
+struct WeaponDropPacket {
+    PacketHeader header;
+    uint32_t     reserved;
+};
+
+// 서버 -> 같은 맵 : 이 플레이어가 든 총. 바뀔 때마다 · 그 맵에 새로 들어온 사람에게 한 번씩.
+struct WeaponEquipPacket {
+    PacketHeader header;
+    uint32_t     playerId;
+    uint8_t      weaponType;    // Shared::WeaponType (0xFF = 빈손)
+    uint8_t      pad[3];
+};
+
+// 서버 -> 같은 맵 : 바닥 총 하나. 자세 = 위치 + 총의 Y(위) · Z(총구) 축(X = Y × Z). 월드 좌표.
+//  떨군 순간에는 start(손) → rest(누움)를 fallSeconds 동안 옮겨 그린다. 그 맵에 새로 들어온 사람에게는 fallSeconds = 0 으로 보낸다.
+struct GroundWeaponSpawnPacket {
+    PacketHeader header;
+    uint32_t     groundId;      // 1 부터. 맵마다 따로 센다
+    uint8_t      weaponType;
+    uint8_t      pad[3];
+    float        startPos[3];
+    float        startAxisY[3];
+    float        startAxisZ[3];
+    float        restPos[3];
+    float        restAxisY[3];
+    float        restAxisZ[3];
+    float        fallSeconds;
+};
+
+// 서버 -> 같은 맵 : 이 바닥 총이 없어졌다.
+struct GroundWeaponRemovePacket {
+    PacketHeader header;
+    uint32_t     groundId;
+};
+
+// 서버 -> 쏜 사람 : 네 발이 이 NPC 에 맞았다 (2026-11-16 사용자 «플레이어가 쏜 총이 NPC를 맞추면 x표시로 크로스헤어 주변에 표시해줘»).
+//
+// ★ 맞았는지는 서버가 정한다 (명세 18절 원칙 4) — 클라는 이 패킷을 받아야 크로스헤어 둘레에 X 를 띄운다(Engine kHitMarker*).
+//   쏜 사람 한 명에게만 보낸다. 쓰러뜨린 발도 맞은 발이라 보낸다(쓰러짐은 따로 NpcDespawn 이 같은 맵 전원에게 간다).
+//   이 번호를 모르는 옛 클라는 크기만큼 건너뛴다(ProcessPackets default).
+struct NpcHitPacket {
+    PacketHeader header;
+    uint32_t     npcId;
+};
+
 // ── 크기 확인 ────────────────────────────────────────────────
 //  구조체를 그대로 바이트로 보내므로 크기가 어긋나면 좌표가 통째로 깨진다.
 //  런타임에 이상한 값이 나오는 것보다 컴파일이 실패하는 편이 낫다.
@@ -204,5 +276,11 @@ static_assert(sizeof(PlayerInputPacket)       == 24, "PlayerInputPacket 크기 �
 static_assert(sizeof(PlayerStatePacket)       == 52, "PlayerStatePacket 크기 변경됨");
 static_assert(sizeof(JoinWorldPacket)         ==  8, "JoinWorldPacket 크기 변경됨");
 static_assert(sizeof(WorldJoinedPacket)       == 36, "WorldJoinedPacket 크기 변경됨");
+static_assert(sizeof(WeaponPickupPacket)      == 12, "WeaponPickupPacket 크기 변경됨");
+static_assert(sizeof(WeaponDropPacket)        ==  8, "WeaponDropPacket 크기 변경됨");
+static_assert(sizeof(WeaponEquipPacket)       == 12, "WeaponEquipPacket 크기 변경됨");
+static_assert(sizeof(GroundWeaponSpawnPacket) == 88, "GroundWeaponSpawnPacket 크기 변경됨");
+static_assert(sizeof(GroundWeaponRemovePacket) == 8, "GroundWeaponRemovePacket 크기 변경됨");
+static_assert(sizeof(NpcHitPacket)            ==  8, "NpcHitPacket 크기 변경됨");
 
 } // namespace Shared

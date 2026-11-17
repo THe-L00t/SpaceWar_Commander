@@ -14,6 +14,10 @@
 #include "Shared/PlanetConst.h"
 #include "Shared/GameLogic/GameLogic.h"
 #include "Shared/GameLogic/PlayerMovement.h"
+#include "Shared/GameLogic/WeaponShowcase.h"
+#include "Shared/GameLogic/WeaponPickup.h"
+#include "Shared/GameLogic/ShotTrace.h"   // 한 발의 레이 — 몸 · 충돌체 · 지형(클라 겨눈 점과 같은 함수, 2026-11-15)
+#include "Shared/GameObject/Weapon.h"
 #include "Shared/Physics/CollisionWorld.h"
 #include "Shared/Physics/PhysicsCalculator.h"
 #include "Shared/Terrain/PlanetSurface.h"
@@ -35,6 +39,19 @@
 #define INPUT_RATE			60.0		//클라가 초당 보내는 입력 수 (= 1 / PlayerMovement::kTickSeconds)
 #define INPUT_BUDGET_MAX	10.0		//밀린 입력을 한 틱에 최대 이만큼까지 따라잡는다
 #define INPUT_QUEUE_MAX		30			//이보다 밀리면(0.5초) 오래된 것부터 버린다 — 지연이 끝없이 쌓이지 않게
+
+// ── 총 줍기 · 떨구기 · 총마다 사격 (2026-11-15, Shared/GameLogic/WeaponPickup.h) ──────────
+//  사용자: «주우면 애니메이션 시에 적절한 위치에 총을 고정시키고, 쏠 수 있도록 해줘. 줍기, 떨구기 둘 다 구현하면 되는거야.
+//          이때 공중에 있는것을 줍고, 떨구면 땅바닥에 떨어지도록. 공중에 있는 총은 사라지지 않게»
+//  · 든 총(세션) · 바닥 총 목록(맵마다)은 틱 스레드만 바꾼다. 워커는 요청만 남긴다(HandleWeaponRequests).
+//  · 공중 진열 6개(게임 맵, Shared/GameLogic/WeaponShowcase.h)는 주워도 그대로 — 같은 종류를 하나 더 받는다.
+//  · 사격은 든 총으로만 — 발 간격 · 피해 · 사거리 = Shared::SpecOf(든 총). 빈손 사격은 버린다.
+//  · 연사 제한 = 연사 예산(ms, OnPlayerFire) — 흐른 시간만큼 차고 한 발에 그 총의 간격만큼 쓴다. 평균은 표의 간격 그대로이고,
+//    몰려 온 발(네트워크 · 클라 프레임)은 kFireBurstShots 발까지 한꺼번에 받는다.
+//    (2026-11-15 «발 간격의 75 % 이상 떨어져야» 규칙을 바꿈 — 클라가 남은 시간을 이어 쏘면 간격이 프레임마다 들쭉날쭉해
+//     기관총 0.08 s 가 20 fps 에서 0.05 · 0.1 s 간격으로 섞여 와 3분의 1 이 버려졌다(시뮬레이션 분당 752 → 514발).
+//     반대로 예전 규칙은 조작된 클라에게 평균 1.33 배까지 허용했다.)
+constexpr double kFireBurstShots = 3.0;			//한꺼번에 받아 주는 발 수 — 클라 Engine.cpp kMaxShotsPerFrame 과 같게
 
 // ── 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») ────────────────────
 //  세션마다 맵 번호(0 = 게임 맵, 1 ~ 5 = 예시 행성, Shared/World/WorldCatalog.h)를 들고,
@@ -59,9 +76,10 @@ struct FireRequest
 	UINT32	nShooterId;
 	float	origin[3];
 	float	dir[3];
+	uint8_t	weaponType;		//쏜 순간 든 총(2026-11-15) — 피해 · 사거리를 이 총의 WeaponSpec 에서 읽는다
 };
 
-void QueueFire(UINT32 nShooterId, const float origin[3], const float dir[3]);
+void QueueFire(UINT32 nShooterId, const float origin[3], const float dir[3], uint8_t weaponType);
 
 enum class IO_TYPE { RECV, SEND };
 
@@ -94,7 +112,7 @@ class Session
 public:
 	Session(SOCKET hSocket, UINT32 nPlayerId)
 		: m_hSocket(hSocket), m_nPlayerId(nPlayerId), m_nRecvd(0),
-		  m_bHasPos(false), m_fHealth(Shared::kMaxHealth), m_nLastFireMs(0),
+		  m_bHasPos(false), m_fHealth(Shared::kMaxHealth), m_nLastFireMs(0), m_fFireBudgetMs(0.0),
 		  m_recvCtx(IO_TYPE::RECV)
 	{
 		::ZeroMemory(m_buffer, sizeof(m_buffer));
@@ -193,6 +211,52 @@ public:
 		out[1] = (float)m_move.facing.y;
 		out[2] = (float)m_move.facing.z;
 	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  총 (2026-11-15 줍기 · 떨구기, Shared/GameLogic/WeaponPickup.h)
+	//  ★ 든 총은 틱 스레드가 정한다. 워커는 요청만 남긴다(입력 · 맵 바꾸기와 같은 규칙, 잠금 m_csInput).
+	//    사격 검사(워커, OnPlayerFire)는 든 총의 사본 m_heldType(atomic)을 읽는다.
+
+	//워커 — WeaponPickup 을 받았다. 같은 틱에 여러 번 오면 마지막 것만.
+	void RequestPickup(uint8_t source, uint32_t id)
+	{
+		::EnterCriticalSection(&m_csInput);
+		m_pickupSource = source;
+		m_pickupId = id;
+		m_bHasPickup = true;
+		::LeaveCriticalSection(&m_csInput);
+	}
+
+	//워커 — WeaponDrop 을 받았다.
+	void RequestDrop()
+	{
+		::EnterCriticalSection(&m_csInput);
+		m_bHasDrop = true;
+		::LeaveCriticalSection(&m_csInput);
+	}
+
+	//틱 스레드 — 워커가 남긴 줍기 · 떨구기 요청을 가져간다.
+	void TakeWeaponRequests(bool &bPickup, uint8_t &source, uint32_t &id, bool &bDrop)
+	{
+		::EnterCriticalSection(&m_csInput);
+		bPickup = m_bHasPickup;
+		source = m_pickupSource;
+		id = m_pickupId;
+		bDrop = m_bHasDrop;
+		m_bHasPickup = false;
+		m_bHasDrop = false;
+		::LeaveCriticalSection(&m_csInput);
+	}
+
+	Shared::WeaponType HeldWeapon() const				{ return (Shared::WeaponType)m_heldType.load(); }
+	void SetHeldWeapon(Shared::WeaponType type)			{ m_heldType = (uint8_t)type; }		//틱 스레드만
+
+	//판정한 이동 상태 — 떨군 총의 손 자리를 구한다. 틱 스레드만.
+	const Shared::MoveState &Move() const { return m_move; }
+
+	//그 맵의 바닥 총 · 다른 사람이 든 총을 아직 안 보냈다 — 접속 직후 · 맵을 바꾼 직후. 틱 스레드가 보내고 지운다.
+	void MarkWeaponSnapshot()		{ m_bNeedsWeaponSnapshot = true; }
+	bool TakeWeaponSnapshot()		{ return m_bNeedsWeaponSnapshot.exchange(false); }
 
 	//되살아난다 — 시작 위치로 옮기고 밀린 입력을 버린다(틱 스레드, ResolveFire).
 	void Respawn(const Shared::MoveWorld &world, const float spawn[3])
@@ -411,6 +475,20 @@ private:
 				OnJoinWorld((const Shared::JoinWorldPacket *)pHead);
 			break;
 
+		//총 줍기 · 떨구기(2026-11-15) — 여기서 처리하지 않는다. 요청만 남기고 틱 스레드가 거리를 재고 정한다(HandleWeaponRequests).
+		case Shared::PacketType::WeaponPickup:
+			if (nSize == (int)sizeof(Shared::WeaponPickupPacket))
+			{
+				const Shared::WeaponPickupPacket *pPick = (const Shared::WeaponPickupPacket *)pHead;
+				RequestPickup(pPick->source, pPick->id);
+			}
+			break;
+
+		case Shared::PacketType::WeaponDrop:
+			if (nSize == (int)sizeof(Shared::WeaponDropPacket))
+				RequestDrop();
+			break;
+
 		default:
 			break;		//모르는 종류는 크기만큼 건너뛴다
 		}
@@ -421,16 +499,30 @@ private:
 	//
 	//  연사 제한은 워커에서 건다. 조작된 클라가 한 프레임에 수백 발을 보내도
 	//  큐가 부풀지 않는다. 이 값은 이 세션만 만지므로 락이 필요 없다.
+	//  ★ 2026-11-15 든 총으로만 쏜다 — 빈손이면 버린다. 발 간격은 그 총의 WeaponSpec::fireInterval.
+	//    연사 예산(ms): 지난 패킷 뒤 흐른 시간만큼 채우고(상한 kFireBurstShots × 간격), 한 발에 간격만큼 쓴다 — 모자라면 버린다.
+	//    평균 발 수는 표의 간격을 넘지 못하고, 몰려 온 발은 상한까지 받는다(main.cpp 머리의 kFireBurstShots 주석).
+	//    총을 바꿔도 예산은 ms 라 새 총의 상한(kFireBurstShots × 그 총 간격)을 넘지 못한다 — 바꾼 직후 몰아 쏘기도 그 발 수까지.
 	void OnPlayerFire(const Shared::PlayerFirePacket *pFire)
 	{
-		const ULONGLONG nNow = ::GetTickCount64();
-		const ULONGLONG nInterval = (ULONGLONG)(Shared::kFireInterval * 1000.0f);
-
-		if (m_nLastFireMs != 0 && nNow - m_nLastFireMs < nInterval)
+		const uint8_t nType = m_heldType.load();
+		if (!Shared::IsWeaponType((Shared::WeaponType)nType))
 			return;
 
+		const ULONGLONG nNow = ::GetTickCount64();
+		const double fIntervalMs = double(Shared::SpecOf((Shared::WeaponType)nType).fireInterval) * 1000.0;
+		const double fCapMs = fIntervalMs * kFireBurstShots;
+
+		if (m_nLastFireMs == 0)
+			m_fFireBudgetMs = fCapMs;   // 첫 발
+		else
+			m_fFireBudgetMs = (std::min)(fCapMs, m_fFireBudgetMs + double(nNow - m_nLastFireMs));
 		m_nLastFireMs = nNow;
-		QueueFire(m_nPlayerId, pFire->origin, pFire->direction);
+
+		if (m_fFireBudgetMs < fIntervalMs)
+			return;
+		m_fFireBudgetMs -= fIntervalMs;
+		QueueFire(m_nPlayerId, pFire->origin, pFire->direction, nType);
 	}
 
 	/////////////////////////////////////////////////////////////////////
@@ -516,7 +608,16 @@ private:
 	bool								m_bHasWorldRequest = false;			//〃
 
 	float		m_fHealth;			//남은 체력. 쓰는 쪽은 행동 스레드 하나
-	ULONGLONG	m_nLastFireMs;		//마지막 발사 시각 (연사 제한). 이 세션의 워커만 만진다
+	ULONGLONG	m_nLastFireMs;		//마지막 발사 패킷 시각 (연사 제한). 이 세션의 워커만 만진다
+	double		m_fFireBudgetMs;	//연사 예산(ms) — 흐른 시간만큼 차고(상한 kFireBurstShots × 간격) 한 발에 간격만큼 쓴다. 〃
+
+	// ── 총 (2026-11-15 줍기 · 떨구기) ──
+	std::atomic<uint8_t>	m_heldType{ (uint8_t)Shared::WeaponType::None };	//든 총 — 틱 스레드가 쓰고 워커(사격 검사)가 읽는다. 접속하면 빈손
+	std::atomic<bool>		m_bNeedsWeaponSnapshot{ true };		//그 맵 바닥 총 · 남이 든 총을 보내야 한다 — 접속 직후 true
+	bool					m_bHasPickup = false;				//워커가 받은 WeaponPickup — 잠금 안에서만
+	uint8_t					m_pickupSource = 0;					//〃
+	uint32_t				m_pickupId = 0;						//〃
+	bool					m_bHasDrop = false;					//워커가 받은 WeaponDrop — 잠금 안에서만
 
 	IO_CONTEXT	m_recvCtx;
 };
@@ -551,6 +652,18 @@ struct ServerWorld
 	Shared::CollisionWorld	collision;		//정적 오브젝트 충돌체 — 클라와 같은 묶음(예시 행성은 같은 배치 JSON 을 씌운다)
 	Shared::MoveWorld		move;			//이동이 보는 세계 — 클라 PlayerController::World() 와 같은 값이어야 같은 판정이 나온다
 	double					spawnUp[3] = { 0.0, 1.0, 0.0 };		//스폰 방향(행성 중심 기준 단위 벡터)
+
+	// ── 총 (2026-11-15 줍기 · 떨구기) — ★ 틱 스레드만 바꾸고 읽는다(시작할 때 진열 자리를 정한 뒤) ──
+	bool							hasShowcase = false;		//공중 진열이 있다 — 게임 맵만
+	Shared::WeaponShowcaseSlot		showcase[Shared::kWeaponShowcaseSlotCount];	//진열 자리(줍는 출처 — 주워도 그대로)
+	struct GroundWeapon
+	{
+		uint32_t			id;
+		Shared::WeaponType	type;
+		Shared::WeaponDrop	drop;			//손 → 누운 자세(새로 들어온 사람에게는 누운 자세만)
+	};
+	std::vector<GroundWeapon>		ground;						//바닥 총 — 떨군 순서(앞이 가장 오래됨)
+	uint32_t						nextGroundId = 1;
 };
 
 enum : LONG { WORLD_NOT_LOADED = 0, WORLD_LOADING = 1, WORLD_READY = 2, WORLD_FAILED = 3 };
@@ -645,6 +758,33 @@ bool LoadCollision()
 	printf("충돌체 %zu개(메시 %zu종 · 삼각형 %zu)를 읽었습니다.\n",
 		world.collision.InstanceCount(), world.collision.MeshCount(), world.collision.MeshTriangleCount());
 	return true;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  총 진열 6개의 충돌체 (2026-11-15) — 게임 맵(맵 0) 몫. LoadCollision 이 성공한 뒤 · 틱 스레드 전에 한 번.
+//
+//  ★ 사용자 «충돌체도 같이 적용은 해줘봐». 클라가 스폰 앞 허공에 띄운 총(Engine::BuildWeaponShowcase)과 같은 자리 · 같은 충돌체.
+//    이동 충돌은 서버 권위(B안)라 클라와 같이 넣어야 총 근처에서 되감기지 않는다.
+//  ★ 충돌체 = 총마다 상자 묶음(WeaponSpec::colliderBoxes — 1인칭 메시를 덮는 상자 3 ~ 6개). 파일을 읽지 않는다(코드 표).
+//    2026-11-15 사용자 «총에 부딪힐때 … 프레임이 10까지 떨어져» — 처음 넣은 3인칭 glb COL_(삼각형 5만)에서 바꿨다.
+//  ★ 자리 = Shared::LayoutWeaponShowcase(클라와 같은 식). 스폰 자리는 클라 Engine::GameMapSpawnPoint 와 같게
+//    «스폰 방향 · kGroundOffset» 으로 넘긴다(높이는 Spawn 이 지형에서 다시 잰다).
+//  ★ 2026-11-15 줍기 — 진열 자리를 world.showcase 에 남긴다(주울 때 거리를 잰다). 충돌체는 맵 충돌체가 있을 때만 넣는다.
+void SetupWeaponShowcase(ServerWorld &world)
+{
+	const Shared::Vec3d spawnPoint = Shared::kUsePlanarMap
+		? Shared::Vec3d(Shared::kMapSpawnX, 0.0, Shared::kMapSpawnZ)
+		: world.move.PositionAt(Shared::Vec3d(world.spawnUp[0], world.spawnUp[1], world.spawnUp[2]), Shared::kGroundOffset);
+	Shared::LayoutWeaponShowcase(world.move, spawnPoint, Shared::Vec3d(0.0, 0.0, 1.0), world.showcase);
+	world.hasShowcase = true;
+	if (!world.move.collision)
+	{
+		printf("총 진열 6개 자리를 정했습니다(충돌체 없음 — 맵 충돌체를 못 읽었다).\n");
+		return;
+	}
+	const size_t added = Shared::AddWeaponShowcaseColliders(world.collision, world.move, world.showcase);
+	world.collision.Finalize();
+	printf("총 진열 충돌체 %zu개를 넣었습니다(스폰 앞 %.0f m 허공 · 1인칭 메시를 덮는 상자 묶음).\n", added, Shared::kWeaponShowcaseDistance);
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -958,10 +1098,11 @@ DWORD WINAPI ThreadComplete(LPVOID pParam)
 //    모른다. 그래서 NPC 쪽에는 락이 없다.
 /////////////////////////////////////////////////////////////////////////
 //  발사 큐 — 워커가 넣고 행동 스레드가 통째로 가져간다.
-void QueueFire(UINT32 nShooterId, const float origin[3], const float dir[3])
+void QueueFire(UINT32 nShooterId, const float origin[3], const float dir[3], uint8_t weaponType)
 {
 	FireRequest req = {};
 	req.nShooterId = nShooterId;
+	req.weaponType = weaponType;
 	req.origin[0] = origin[0];
 	req.origin[1] = origin[1];
 	req.origin[2] = origin[2];
@@ -1051,10 +1192,21 @@ void BroadcastNpcDespawn(UINT32 nNpcId)
 	SendToWorld(Shared::kWorldGameMap, &pkt, (int)sizeof(pkt), 0);
 }
 
+//쏜 사람에게만 — «네 발이 이 NPC 에 맞았다»(2026-11-16 NPC 명중 표시). 클라는 이것을 받아 크로스헤어 둘레에 X 를 띄운다.
+void SendNpcHit(const SessionPtr &pShooter, UINT32 nNpcId)
+{
+	Shared::NpcHitPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::NpcHit;
+	pkt.npcId = nNpcId;
+
+	pShooter->Send(&pkt, (int)sizeof(pkt));
+}
+
 /////////////////////////////////////////////////////////////////////////
 //  한 발을 판정한다. ★ 행동 스레드에서만 부른다.
 //
-//  순서: 쏜 사람 -> 방향·원점 검사 -> 가장 가까운 대상 -> 지형 가림 -> 피해.
+//  순서: 쏜 사람 -> 방향·원점 검사 -> 한 발의 레이(Shared::TraceShot — 몸 · 충돌체 · 지형 중 먼저 닿는 것) -> 피해.
 //  클라는 «누가 맞았는지» 를 말하지 않는다 (명세 18절 원칙 4).
 //  ★ 쏜 사람의 맵 안에서만 판정한다(2026-11-01 맵 번호) — 대상 = 같은 맵 플레이어(+ 게임 맵이면 NPC), 가림 = 그 맵 지형.
 void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
@@ -1068,6 +1220,11 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	if (!pShooter || !pShooter->HasPos() || !pShooter->InWorld()) return;
 	const uint32_t nWorld = pShooter->World();
 	const ServerWorld &world = g_worlds[nWorld];
+
+	//쏜 총(2026-11-15) — 피해 · 사거리는 그 총의 표. 빈손이면 큐에 들어오지 않았다(OnPlayerFire).
+	const Shared::WeaponType weaponType = (Shared::WeaponType)req.weaponType;
+	if (!Shared::IsWeaponType(weaponType)) return;
+	const Shared::WeaponSpec &spec = Shared::SpecOf(weaponType);
 
 	//2) 방향. 길이가 0 이면 버린다.
 	const double dx = req.dir[0], dy = req.dir[1], dz = req.dir[2];
@@ -1095,12 +1252,13 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 		origin.z = serverPos[2];
 	}
 
-	//4) 대상 — 다른 플레이어와 NPC 중 가장 가까운 것 하나.
-	bool	bHit		= false;
-	float	fBest		= Shared::kFireRange;
-	UINT32	nHitPlayer	= 0;
-	UINT32	nHitNpc		= 0;
-
+	//4) 한 발의 레이 — Shared::TraceShot(클라 크로스헤어 겨눈 점과 같은 함수, 2026-11-15 사용자 «벽에 막히는건 당연히 막혀야지»).
+	//   대상 = 같은 맵의 다른 플레이어(+ 게임 맵이면 살아 있는 NPC) — 몸통 중심의 구(kHitRadius).
+	//   가림 = 그 맵의 충돌체(건물 · 바위 · 소품 · 나무 · 총 진열 상자)와 지형. 가장 먼저 닿는 것이 몸이면 명중, 아니면 막힘.
+	//   지형은 0.5 m 깊이까지 봐준다(예전 TerrainBlocks 의 여유와 같다 — 땅을 스치듯 지나는 발).
+	//   ★ 예전(~11-15): 가장 가까운 몸을 고른 뒤 지형만 봤다 — 건물 · 바위를 총알이 지나갔다(노션 「사격 시스템 설명」 4.2 의 1).
+	std::vector<Shared::ShotTarget> targets;
+	targets.reserve(list.size() + (nWorld == Shared::kWorldGameMap ? g_npcWorld.Count() : 0));
 	for (size_t i = 0; i < list.size(); ++i)
 	{
 		if (list[i]->PlayerId() == req.nShooterId) continue;
@@ -1108,49 +1266,50 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 
 		float target[3];
 		list[i]->LastPos(target);
-
-		const Shared::Vec3 center = { target[0], target[1], target[2] };
-
-		float fDist = 0.0f;
-		if (!Shared::PhysicsCalculator::RaySphere(origin, dir, center,
-			Shared::kHitRadius, fBest, fDist))
-			continue;
-
-		bHit = true;
-		fBest = fDist;
-		nHitPlayer = list[i]->PlayerId();
-		nHitNpc = 0;
+		targets.push_back({ Shared::Vec3d{ target[0], target[1], target[2] }, list[i]->PlayerId() });
 	}
+	const size_t nPlayerTargets = targets.size();   // 앞쪽 = 플레이어, 뒤쪽 = NPC
 
-	if (nWorld == Shared::kWorldGameMap)	//NPC 는 게임 맵에만 있다
+	if (nWorld == Shared::kWorldGameMap)	//NPC 는 게임 맵에만 있다 — 쓰러진 NPC 는 Snapshot 에서 빠진다
 	{
-		uint32_t nNpcId = 0;
-		float    fNpcDist = 0.0f;
-		if (g_npcWorld.Raycast(origin, dir, fBest, nNpcId, fNpcDist))
-		{
-			bHit = true;
-			fBest = fNpcDist;
-			nHitNpc = nNpcId;
-			nHitPlayer = 0;
-		}
+		std::vector<srv::NpcView> npcs;
+		g_npcWorld.Snapshot(npcs);
+		for (const srv::NpcView &npc : npcs)
+			targets.push_back({ Shared::Vec3d{ npc.pos.x, npc.pos.y, npc.pos.z }, npc.npcId });
 	}
 
-	if (!bHit) return;
+	Shared::ShotOptions options;
+	options.terrainTolerance = Shared::kShotServerTerrainTolerance;
+	const Shared::ShotHit hit = Shared::TraceShot(world.move,
+		Shared::Vec3d{ origin.x, origin.y, origin.z }, Shared::Vec3d{ dir.x, dir.y, dir.z }, spec.range,
+		targets.data(), targets.size(), options);
 
-	//5) 지형이 막고 있으면 맞지 않는다.
-	if (Shared::PhysicsCalculator::TerrainBlocks(&world.terrain, origin, dir, fBest))
+	//5) 몸보다 먼저 충돌체 · 지형에 닿으면 막힌다.
+	const float fBest = (float)hit.distance;
+	if (hit.kind == Shared::ShotHitKind::Collider)
+	{
+		printf("[사격] 플레이어 %u : 충돌체(건물 · 바위 등)에 막혔습니다 (%.1fm)\n", req.nShooterId, fBest);
+		return;
+	}
+	if (hit.kind == Shared::ShotHitKind::Terrain)
 	{
 		printf("[사격] 플레이어 %u : 지형에 막혔습니다 (%.1fm)\n", req.nShooterId, fBest);
 		return;
 	}
+	if (hit.kind != Shared::ShotHitKind::Body) return;   // 사거리 안에 아무것도 없다
+
+	const UINT32 nHitPlayer = hit.target < nPlayerTargets ? targets[hit.target].id : 0;
+	const UINT32 nHitNpc = hit.target < nPlayerTargets ? 0 : targets[hit.target].id;
 
 	//6) 피해.
 	if (nHitNpc != 0)
 	{
-		if (g_npcWorld.Damage(nHitNpc, Shared::kShotDamage))
+		//★ 2026-11-16 사용자 «플레이어가 쏜 총이 NPC를 맞추면 x표시로 크로스헤어 주변에 표시해줘» — 쏜 사람에게 알린다(쓰러뜨린 발도).
+		SendNpcHit(pShooter, nHitNpc);
+		if (g_npcWorld.Damage(nHitNpc, spec.damage))
 			printf("[명중] 플레이어 %u -> NPC %u 쓰러짐 (%.1fm)\n", req.nShooterId, nHitNpc, fBest);
 		else
-			printf("[명중] 플레이어 %u -> NPC %u (%.1fm)\n", req.nShooterId, nHitNpc, fBest);
+			printf("[명중] 플레이어 %u -> NPC %u (%.1fm) · %d틱 멈춤\n", req.nShooterId, nHitNpc, fBest, srv::kNpcHitStunTicks);
 		return;
 	}
 
@@ -1161,7 +1320,7 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	}
 	if (!pVictim) return;
 
-	const float fLeft = Shared::GameLogic::ApplyDamage(pVictim->Health(), Shared::kShotDamage);
+	const float fLeft = Shared::GameLogic::ApplyDamage(pVictim->Health(), spec.damage);
 	pVictim->SetHealth(fLeft);
 	BroadcastHealth(nWorld, nHitPlayer, req.nShooterId, fLeft);
 
@@ -1181,6 +1340,183 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 
 	printf("[무력화] 플레이어 %u 가 시작 위치로 돌아갑니다 (가해 %u)\n",
 		nHitPlayer, req.nShooterId);
+}
+
+/////////////////////////////////////////////////////////////////////////
+//  총 줍기 · 떨구기 (2026-11-15, Shared/GameLogic/WeaponPickup.h) — ★ 틱 스레드에서만 부른다.
+//
+//  든 총 = 세션(m_heldType), 바닥 총 = 맵마다 ServerWorld::ground. 바뀌면 같은 맵 전원에게
+//  WeaponEquip · GroundWeaponSpawn · GroundWeaponRemove 로 알린다. 그 맵에 새로 들어온 사람에게는 SendWeaponSnapshot.
+
+void FillPose(const Shared::WeaponPose &pose, float pos[3], float axisY[3], float axisZ[3])
+{
+	pos[0] = (float)pose.position.x;	pos[1] = (float)pose.position.y;	pos[2] = (float)pose.position.z;
+	axisY[0] = (float)pose.axisY.x;		axisY[1] = (float)pose.axisY.y;		axisY[2] = (float)pose.axisY.z;
+	axisZ[0] = (float)pose.axisZ.x;		axisZ[1] = (float)pose.axisZ.y;		axisZ[2] = (float)pose.axisZ.z;
+}
+
+Shared::WeaponEquipPacket MakeEquip(UINT32 nPlayerId, Shared::WeaponType type)
+{
+	Shared::WeaponEquipPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::WeaponEquip;
+	pkt.playerId = nPlayerId;
+	pkt.weaponType = (uint8_t)type;
+	return pkt;
+}
+
+//bLanded = 이미 누워 있다(새로 들어온 사람에게) — 시작 자세 = 누운 자세, 떨어지는 시간 0.
+Shared::GroundWeaponSpawnPacket MakeGroundSpawn(const ServerWorld::GroundWeapon &g, bool bLanded)
+{
+	Shared::GroundWeaponSpawnPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::GroundWeaponSpawn;
+	pkt.groundId = g.id;
+	pkt.weaponType = (uint8_t)g.type;
+	FillPose(bLanded ? g.drop.rest : g.drop.start, pkt.startPos, pkt.startAxisY, pkt.startAxisZ);
+	FillPose(g.drop.rest, pkt.restPos, pkt.restAxisY, pkt.restAxisZ);
+	pkt.fallSeconds = bLanded ? 0.0f : g.drop.fallSeconds;
+	return pkt;
+}
+
+void BroadcastGroundRemove(uint32_t nWorld, uint32_t nGroundId)
+{
+	Shared::GroundWeaponRemovePacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::GroundWeaponRemove;
+	pkt.groundId = nGroundId;
+	SendToWorld(nWorld, &pkt, (int)sizeof(pkt), 0);
+}
+
+//든 총을 손 자리에서 떨군다 — 바닥 총 하나를 만들고 같은 맵에 알린다. 상한을 넘으면 가장 오래된 바닥 총을 지운다.
+void DropHeldWeapon(const SessionPtr &pSession, uint32_t nWorld)
+{
+	const Shared::WeaponType held = pSession->HeldWeapon();
+	if (!Shared::IsWeaponType(held)) return;
+
+	ServerWorld &world = g_worlds[nWorld];
+	const Shared::MoveState &move = pSession->Move();
+
+	ServerWorld::GroundWeapon g;
+	g.id = world.nextGroundId++;
+	g.type = held;
+	g.drop = Shared::SettleDroppedWeapon(world.move, held, move.position, move.up, move.facing);
+	world.ground.push_back(g);
+
+	while (world.ground.size() > Shared::kMaxGroundWeapons)
+	{
+		BroadcastGroundRemove(nWorld, world.ground.front().id);
+		world.ground.erase(world.ground.begin());
+	}
+
+	const Shared::GroundWeaponSpawnPacket spawn = MakeGroundSpawn(g, false);
+	SendToWorld(nWorld, &spawn, (int)sizeof(spawn), 0);
+
+	pSession->SetHeldWeapon(Shared::WeaponType::None);
+	printf("[총] 플레이어 %u : %s 떨굼 (바닥 총 %u, 맵 %u, %.2fs 떨어짐)\n",
+		pSession->PlayerId(), Shared::SpecOf(held).name, g.id, nWorld, g.drop.fallSeconds);
+}
+
+//워커가 남긴 줍기 · 떨구기 요청을 처리한다. 같은 틱에 둘 다 왔으면 떨구기 → 줍기 순서.
+void HandleWeaponRequests(const SessionPtr &pSession)
+{
+	bool bPickup = false, bDrop = false;
+	uint8_t source = 0;
+	uint32_t id = 0;
+	pSession->TakeWeaponRequests(bPickup, source, id, bDrop);
+	if (!bPickup && !bDrop) return;
+	if (!pSession->InWorld() || !pSession->HasPos()) return;
+
+	const uint32_t nWorld = pSession->World();
+	ServerWorld &world = g_worlds[nWorld];
+	const UINT32 nPlayerId = pSession->PlayerId();
+
+	if (bDrop && Shared::IsWeaponType(pSession->HeldWeapon()))
+	{
+		DropHeldWeapon(pSession, nWorld);
+		const Shared::WeaponEquipPacket equip = MakeEquip(nPlayerId, Shared::WeaponType::None);
+		SendToWorld(nWorld, &equip, (int)sizeof(equip), 0);
+	}
+
+	if (!bPickup) return;
+
+	//줍는 총 — 진열(게임 맵) 또는 바닥 총
+	Shared::WeaponType type = Shared::WeaponType::None;
+	Shared::Vec3d where{};
+	size_t nGroundIndex = (size_t)-1;
+	if (source == Shared::kPickupFromShowcase)
+	{
+		if (!world.hasShowcase || id >= Shared::kWeaponShowcaseSlotCount) return;
+		type = world.showcase[id].type;
+		where = world.showcase[id].position;
+	}
+	else if (source == Shared::kPickupFromGround)
+	{
+		for (size_t i = 0; i < world.ground.size(); ++i)
+		{
+			if (world.ground[i].id != id) continue;
+			nGroundIndex = i;
+			type = world.ground[i].type;
+			where = world.ground[i].drop.rest.position;
+			break;
+		}
+		if (nGroundIndex == (size_t)-1) return;		//그 사이 누가 주웠다
+	}
+	if (!Shared::IsWeaponType(type)) return;
+
+	//거리 — 서버가 아는 위치에서 다시 잰다(클라 예측과 조금 다를 수 있어 여유를 둔다)
+	const Shared::Vec3d body = pSession->Move().position;
+	const double fDist = Shared::Length(body - where);
+	if (fDist > Shared::kWeaponPickupRange + Shared::kWeaponPickupSlack)
+	{
+		printf("[총] 플레이어 %u : %s 이(가) %.1fm 떨어져 있어 줍지 못합니다\n", nPlayerId, Shared::SpecOf(type).name, fDist);
+		return;
+	}
+
+	//이미 들고 있으면 그 총을 떨군 뒤 바꿔 든다(한 번에 한 자루 — 2026-11-14 사용자).
+	if (Shared::IsWeaponType(pSession->HeldWeapon()))
+		DropHeldWeapon(pSession, nWorld);
+
+	if (nGroundIndex != (size_t)-1)
+	{
+		//떨군 총이 상한 때문에 지워졌을 수 있다 — 번호로 다시 찾는다
+		for (size_t i = 0; i < world.ground.size(); ++i)
+		{
+			if (world.ground[i].id != id) continue;
+			world.ground.erase(world.ground.begin() + (ptrdiff_t)i);
+			BroadcastGroundRemove(nWorld, id);
+			break;
+		}
+	}
+
+	pSession->SetHeldWeapon(type);
+	const Shared::WeaponEquipPacket equip = MakeEquip(nPlayerId, type);
+	SendToWorld(nWorld, &equip, (int)sizeof(equip), 0);
+	printf("[총] 플레이어 %u : %s 주움 (%s, %.1fm)\n", nPlayerId, Shared::SpecOf(type).name,
+		source == Shared::kPickupFromShowcase ? "공중 진열" : "바닥", fDist);
+}
+
+//그 맵에 새로 들어온 사람에게 — 바닥 총 전부(누운 자세) · 다른 사람이 든 총 · 자기 총.
+void SendWeaponSnapshot(const SessionPtr &pSession, const std::vector<SessionPtr> &list)
+{
+	if (!pSession->InWorld()) return;
+	const uint32_t nWorld = pSession->World();
+	const ServerWorld &world = g_worlds[nWorld];
+
+	for (size_t i = 0; i < world.ground.size(); ++i)
+	{
+		const Shared::GroundWeaponSpawnPacket spawn = MakeGroundSpawn(world.ground[i], true);
+		pSession->Send(&spawn, (int)sizeof(spawn));
+	}
+
+	for (size_t i = 0; i < list.size(); ++i)
+	{
+		if (list[i]->World() != nWorld) continue;
+		const Shared::WeaponType held = list[i]->HeldWeapon();
+		if (list[i]->PlayerId() != pSession->PlayerId() && !Shared::IsWeaponType(held)) continue;
+		const Shared::WeaponEquipPacket equip = MakeEquip(list[i]->PlayerId(), held);
+		pSession->Send(&equip, (int)sizeof(equip));
+	}
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -1252,6 +1588,14 @@ void HandleWorldJoin(const SessionPtr &pSession)
 	health.health = pSession->Health();
 	pSession->Send(&health, (int)sizeof(health));
 
+	//총(2026-11-15) — 든 총은 맵을 바꿔도 들고 간다. 이 맵 사람들에게 알리고, 이 사람에게는 이 맵의 바닥 총 · 남이 든 총을 보낸다(틱 루프).
+	if (Shared::IsWeaponType(pSession->HeldWeapon()))
+	{
+		const Shared::WeaponEquipPacket equip = MakeEquip(pSession->PlayerId(), pSession->HeldWeapon());
+		SendToWorld(nTarget, &equip, (int)sizeof(equip), pSession->PlayerId());
+	}
+	pSession->MarkWeaponSnapshot();
+
 	printf("[맵] 플레이어 %u : 맵 %u(%s) 에 들어왔습니다\n", pSession->PlayerId(), nTarget, Shared::WorldName(nTarget));
 }
 
@@ -1300,6 +1644,16 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 			{
 				if (!list[i]->InWorld()) continue;
 				nInputsThisSecond += list[i]->Simulate(g_worlds[list[i]->World()].move, elapsed);
+			}
+
+			//0-2) 총 (2026-11-15) — 그 맵에 새로 들어온 사람에게 바닥 총 · 든 총을 보내고, 줍기 · 떨구기 요청을 처리한다.
+			//     ★ 이동 판정 뒤 — 떨군 총의 손 자리 · 줍기 거리를 이번 틱 위치로 잰다.
+			for (size_t i = 0; i < list.size(); ++i)
+			{
+				if (!list[i]->InWorld()) continue;
+				if (list[i]->TakeWeaponSnapshot())
+					SendWeaponSnapshot(list[i], list);
+				HandleWeaponRequests(list[i]);
 			}
 
 			for (size_t i = 0; i < list.size(); ++i)
@@ -1395,8 +1749,8 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 			nTicks = 0;
 			if (!views.empty())
 			{
-				printf("[NPC] %zu 마리 / 추격 %d 마리 (플레이어 %zu명)\n",
-					views.size(), g_npcWorld.ChasingCount(), players.size());
+				printf("[NPC] %zu 마리 / 추격 %d 마리 / 맞아서 멈춤 %d 마리 (플레이어 %zu명)\n",
+					views.size(), g_npcWorld.ChasingCount(), g_npcWorld.StunnedCount(), players.size());
 			}
 			//이동 판정 계측(2026-10-29) — 초당 처리한 입력 수(1명당 약 60이 정상) · 넘쳐 버린 입력 누계
 			//  2026-11-01 맵 번호 — 맵별 인원(맵 번호:인원, 맵 없음 = 바꾸는 중 · 실패)과 그 맵 충돌체 유무를 함께 찍는다.
@@ -1536,6 +1890,9 @@ int main()
 	//이동 판정 세계 (B안, 2026-10-29) — 충돌체는 없어도 켠다(지형만 막는다).
 	gameWorld.move.terrain = &gameWorld.terrain;
 	gameWorld.move.collision = LoadCollision() ? &gameWorld.collision : NULL;
+	//총 진열 6개(2026-11-15) — 클라와 같은 자리. 줍기 출처라 자리는 늘 정하고, 충돌체는 맵 충돌체가 있을 때만 넣는다
+	//(없으면 클라도 없이 예측한다).
+	SetupWeaponShowcase(gameWorld);
 	//NPC 스폰 자리도 같은 충돌체를 피한다(2026-10-29). 없으면 지형만 본다.
 	g_npcWorld.SetCollision(gameWorld.move.collision);
 	//게임 맵은 다 읽었다(2026-11-01 맵 번호). 예시 행성(1 ~ 5)은 누가 처음 들어오려 할 때 읽는다(RequestWorldLoad).

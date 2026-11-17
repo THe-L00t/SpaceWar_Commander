@@ -45,6 +45,7 @@ namespace Shared {
 		//    표본 지점의 «행성 중심에서의 거리» 를 «기준구 + 지형 높이» 와 비교하므로,
 		//    지형이 없어도 구 반대편은 막힌 것으로 나온다.
 		//  ★ terrain 이 null 이면 평평한 기준구로 검사한다.
+		//  ★ 2026-11-15 — 서버 사격 판정은 Shared::TraceShot(GameLogic/ShotTrace — 몸 · 충돌체 · 지형)을 쓴다. 지금 부르는 곳 없음.
 		static bool TerrainBlocks(const TerrainSampler* terrain,
 			const Vec3& origin, const Vec3& direction, float distance);
 	};

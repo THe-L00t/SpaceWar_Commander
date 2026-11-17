@@ -319,6 +319,50 @@ namespace Shared {
 			         d.x * m[2] + d.y * m[5] + d.z * m[8] };
 		}
 
+		// ── 레이 (2026-11-15) ──
+		//  선분 p(s) = o + s · d 가 상자 [lo, hi] 를 지나는 구간을 [s0, s1] 안으로 좁힌다. 안 지나면 false (슬랩 판정).
+		bool SegmentBox(const Vec3& o, const Vec3& d, const Vec3& lo, const Vec3& hi, float& s0, float& s1)
+		{
+			const float oc[3] = { o.x, o.y, o.z }, dc[3] = { d.x, d.y, d.z };
+			const float lc[3] = { lo.x, lo.y, lo.z }, hc[3] = { hi.x, hi.y, hi.z };
+			for (int axis = 0; axis < 3; ++axis)
+			{
+				if (std::fabs(dc[axis]) < 1.0e-12f)
+				{
+					if (oc[axis] < lc[axis] || oc[axis] > hc[axis]) return false;   // 그 축으로 안 움직이는데 밖이다
+					continue;
+				}
+				const float inv = 1.0f / dc[axis];
+				float a = (lc[axis] - oc[axis]) * inv;
+				float b = (hc[axis] - oc[axis]) * inv;
+				if (a > b) std::swap(a, b);
+				s0 = (std::max)(s0, a);
+				s1 = (std::min)(s1, b);
+				if (s0 > s1) return false;
+			}
+			return true;
+		}
+
+		// 선분 o + s · d (s ∈ (0, sMax)) 가 삼각형 (a, b, c) 를 지나는 비율 s. 양면(앞 · 뒤 상관없음). Möller–Trumbore.
+		bool SegmentTriangle(const Vec3& o, const Vec3& d, const Vec3& a, const Vec3& b, const Vec3& c, float sMax, float& outS)
+		{
+			const Vec3 e1 = Sub(b, a), e2 = Sub(c, a);
+			const Vec3 p = Cross(d, e2);
+			const float det = Dot(e1, p);
+			if (std::fabs(det) < 1.0e-12f) return false;   // 선분이 면과 나란하다
+			const float invDet = 1.0f / det;
+			const Vec3 t = Sub(o, a);
+			const float u = Dot(t, p) * invDet;
+			if (u < 0.0f || u > 1.0f) return false;
+			const Vec3 q = Cross(t, e1);
+			const float v = Dot(d, q) * invDet;
+			if (v < 0.0f || u + v > 1.0f) return false;
+			const float s = Dot(e2, q) * invDet;
+			if (s <= 0.0f || s >= sMax) return false;
+			outS = s;
+			return true;
+		}
+
 		// 용접 · 퇴화 삼각형 제거 · 경계 상자 · 디버그 선
 		void FinishMesh(CollisionMesh& mesh)
 		{
@@ -643,6 +687,56 @@ namespace Shared {
 		return added;
 	}
 
+	// 2026-11-15 — 상자 묶음 → 메시 하나. 꼭짓점 번호 c: bit0 = x(0 최소 · 1 최대), bit1 = y, bit2 = z.
+	//  삼각형 감기 방향은 판정에 쓰지 않는다(DeepestCapsuleContact 는 가장 가까운 점 · 먼 쪽으로 법선을 정한다) — 그래도 바깥을 보게 둔다.
+	uint32_t CollisionWorld::AddBoxCollider(const std::string& name, const CollisionBox* boxes, size_t count, CollisionClass cls)
+	{
+		if (!boxes || count == 0) return kNoMesh;
+		static constexpr uint32_t kFaces[12][3] = {
+			{ 0, 4, 6 }, { 0, 6, 2 },   // −X
+			{ 1, 3, 7 }, { 1, 7, 5 },   // +X
+			{ 0, 1, 5 }, { 0, 5, 4 },   // −Y
+			{ 2, 6, 7 }, { 2, 7, 3 },   // +Y
+			{ 0, 2, 3 }, { 0, 3, 1 },   // −Z
+			{ 4, 5, 7 }, { 4, 7, 6 },   // +Z
+		};
+
+		CollisionMesh mesh;
+		mesh.name = name;
+		mesh.cls = cls;
+		mesh.vertices.reserve(count * 8);
+		mesh.indices.reserve(count * 36);
+		for (size_t i = 0; i < count; ++i)
+		{
+			const CollisionBox& box = boxes[i];
+			const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+			for (uint32_t c = 0; c < 8; ++c)
+				mesh.vertices.push_back({ (c & 1) ? box.max.x : box.min.x,
+				                          (c & 2) ? box.max.y : box.min.y,
+				                          (c & 4) ? box.max.z : box.min.z });
+			for (const auto& face : kFaces)
+				for (const uint32_t corner : face)
+					mesh.indices.push_back(base + corner);
+		}
+		FinishMesh(mesh);   // 용접 · 퇴화 삼각형 제거(두께 0 상자) · 경계 · 디버그 선(상자 모서리) · BVH
+		if (mesh.indices.empty()) return kNoMesh;
+		meshes.push_back(std::move(mesh));
+		return static_cast<uint32_t>(meshes.size() - 1);
+	}
+
+	bool CollisionWorld::AddInstance(uint32_t mesh, const float xf[12])
+	{
+		if (mesh >= meshes.size() || !xf) return false;
+		CollisionInstance instance;
+		instance.mesh = mesh;
+		instance.cls = meshes[mesh].cls;
+		std::copy(xf, xf + 12, instance.xf);
+		ComputeInverse(instance);
+		InstanceBounds(meshes[mesh], instance);
+		instances.push_back(instance);
+		return true;
+	}
+
 	void CollisionWorld::Finalize()
 	{
 		grid.clear();
@@ -829,6 +923,66 @@ namespace Shared {
 		if (!found) return false;
 		out.normal = bestNormal;
 		out.depth = bestDepth;
+		return true;
+	}
+
+	// ── 레이 (2026-11-15 사용자 «레이 하나 쏘는거잖아 역으로, 그거 충돌체만 더 포함해서 처리하면 되는거 아니야?») ──
+	//  ① 인스턴스 경계 상자(맵 공간)로 거른다 — 인스턴스 수만큼 슬랩 판정(게임 맵 약 천 개, 한 발에 한 번이라 격자 없이).
+	//  ② 지나는 인스턴스는 선분 양 끝을 메시 공간으로 옮긴다(InverseTransform). 아핀 변환은 선분 위 비율을 바꾸지 않으므로
+	//     메시 공간에서 찾은 비율 s 가 그대로 맵 공간 비율이다 — 삼각형을 옮기지 않고 BVH 마디 상자 · 삼각형을 메시 공간에서 본다.
+	//  ③ 가장 가까운 것 하나. 상태를 바꾸지 않는다(DeepestCapsuleContact 와 같이 여러 스레드에서 불러도 된다).
+	bool CollisionWorld::Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, float& outDistance) const
+	{
+		if (instances.empty() || !(maxDistance > 0.0f)) return false;
+		const float lengthSq = Dot(direction, direction);
+		if (!(lengthSq > 1.0e-12f)) return false;
+		const Vec3 dir = Scale(direction, 1.0f / std::sqrt(lengthSq));
+		const Vec3 segment = Scale(dir, maxDistance);   // 맵 공간 선분 origin → origin + segment
+		const Vec3 end = Add(origin, segment);
+
+		float best = 1.0f;   // 지금까지 가장 가까운 비율(1 = 끝까지 아무것도 없음)
+		bool hit = false;
+		std::vector<uint32_t> stack;
+		for (const CollisionInstance& instance : instances)
+		{
+			float s0 = 0.0f, s1 = best;
+			if (!SegmentBox(origin, segment, instance.boundsMin, instance.boundsMax, s0, s1)) continue;
+			const CollisionMesh& mesh = meshes[instance.mesh];
+			if (mesh.bvh.empty()) continue;
+
+			const Vec3 mo = InverseTransform(instance, origin);
+			const Vec3 md = Sub(InverseTransform(instance, end), mo);   // 메시 공간 선분 — 비율 s 가 맵 공간과 같다
+
+			stack.clear();
+			stack.push_back(0);
+			while (!stack.empty())
+			{
+				const uint32_t nodeIndex = stack.back();
+				stack.pop_back();
+				const CollisionBvhNode& node = mesh.bvh[nodeIndex];
+				float n0 = 0.0f, n1 = best;
+				if (!SegmentBox(mo, md, node.boundsMin, node.boundsMax, n0, n1)) continue;
+				if (node.count == 0)
+				{
+					stack.push_back(node.right);
+					stack.push_back(nodeIndex + 1);
+					continue;
+				}
+				for (uint32_t k = node.first; k < node.first + node.count; ++k)
+				{
+					const uint32_t t = mesh.bvhTris[k];
+					float s = 0.0f;
+					if (SegmentTriangle(mo, md, mesh.vertices[mesh.indices[t * 3]], mesh.vertices[mesh.indices[t * 3 + 1]],
+						mesh.vertices[mesh.indices[t * 3 + 2]], best, s))
+					{
+						best = s;
+						hit = true;
+					}
+				}
+			}
+		}
+		if (!hit) return false;
+		outDistance = best * maxDistance;
 		return true;
 	}
 

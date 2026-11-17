@@ -327,6 +327,9 @@ namespace swc {
 				material.roughness = 1.0f;
 			if (material.textures[size_t(TextureSlot::Metallic)] != kInvalidModelIndex)
 				material.metallic = 1.0f;
+			// 재질 AO (2026-11-15) — AO 는 Roughness 슬롯 텍스처의 R 이므로, 그 텍스처를 못 얻었으면 끈다.
+			material.occlusionStrength = material.textures[size_t(TextureSlot::Roughness)] != kInvalidModelIndex
+				? sourceMaterial.occlusionStrength : 0.0f;
 
 			out.materials.push_back(std::move(material));
 		}

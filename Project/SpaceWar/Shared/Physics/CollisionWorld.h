@@ -28,8 +28,9 @@
 //  ★ 하는 일 — 읽기 · 인스턴스 만들기 · 주변 찾기(QuerySphere) · 디버그 선(edges) ·
 //    캡슐 겹침(DeepestCapsuleContact, 2026-10-29 — 플레이어 이동 Shared::PlayerMovement 가 쓴다).
 //    두 단계 구조: 인스턴스는 격자, 종류 메시는 삼각형 BVH(노션 「충돌 처리 ③」 8절 «구조»).
-//    레이(사격 가림)는 아직 없다. 지형은 여기 없다(PlanetSurface 몫).
+//    레이(Raycast, 2026-11-15 — 크로스헤어 겨눈 점. 서버 사격 가림에는 아직 안 쓴다). 지형은 여기 없다(PlanetSurface 몫).
 //  ★ 스레드 — LoadPack · AddPlacement · Finalize 는 로딩 스레드에서 한 번(멤버만 쓴다). 그 뒤는 읽기만 한다.
+//    2026-11-15 예외: 총 진열 충돌체(AddBoxCollider · AddInstance · Finalize)는 클라는 씬 구성(메인, 이동 예측 시작 전) · 서버는 시작할 때(틱 스레드 전) 넣는다.
 //  ★ DirectXMath 를 쓰지 않는다 — 서버도 같은 코드를 쓴다(ModelSource.h 머리 주석).
 // ============================================================
 
@@ -84,6 +85,13 @@ namespace Shared {
 		Vec3           boundsMax{};
 	};
 
+	// 메시 공간의 상자 하나 — 축에 맞춘 최소 · 최대 꼭짓점(m). AddBoxCollider 가 상자 묶음을 메시 하나로 만든다(2026-11-15 총 충돌체).
+	struct CollisionBox
+	{
+		Vec3 min{};
+		Vec3 max{};
+	};
+
 	// 캡슐이 충돌체와 가장 깊이 겹친 곳 — 맵 공간 단위 법선(충돌체 → 캡슐 쪽)과 겹친 깊이(m)
 	struct CapsuleContact
 	{
@@ -103,7 +111,21 @@ namespace Shared {
 		//  충돌체가 없는 종류(작은 식물)와 작은 돌은 넣지 않고 센다. 넣은 수를 돌려준다.
 		size_t AddPlacement(const std::vector<std::string>& typeNames, const std::vector<PlacedInstance>& instances);
 
-		// 공간 격자를 만든다. LoadPack(+ AddPlacement) 뒤 한 번 부른다.
+		// ── 2026-11-15 상자 충돌체 (총 진열 — Shared/GameLogic/WeaponShowcase.h) ──
+		static constexpr uint32_t kNoMesh = 0xFFFFFFFFu;
+
+		// 상자 묶음을 메시 하나로 넣는다 — 상자마다 꼭짓점 8 · 삼각형 12(메시 공간). 겹치는 상자도 그대로 둔다.
+		//  인스턴스는 만들지 않는다 — AddInstance 로 씌운다. 메시 번호를 돌려주고, 상자가 없으면 kNoMesh.
+		//  ★ LoadPack 뒤에 부른다(LoadPack 은 처음에 전부 지운다).
+		//  ★ 2026-11-15 사용자 «충돌체 수정해야겠다 … 육면체 그룹을 충돌체로 … 총에 부딪힐때 프레임이 10까지 떨어져» —
+		//    총 3인칭 glb 의 COL_(삼각형 5만)을 읽던 AddModelCollider 를 이것으로 바꿨다(총 하나 상자 3 ~ 6개 = 삼각형 36 ~ 72).
+		uint32_t AddBoxCollider(const std::string& name, const CollisionBox* boxes, size_t count, CollisionClass cls);
+
+		// 메시 하나를 맵 공간 변환 xf(CollisionInstance::xf 와 같은 행 벡터 3 × 4)로 씌운다. 메시 번호가 틀리면 false.
+		//  ★ 넣은 뒤 Finalize 를 다시 불러야 격자에 들어간다.
+		bool AddInstance(uint32_t mesh, const float xf[12]);
+
+		// 공간 격자를 만든다. LoadPack(+ AddPlacement · AddInstance) 뒤 부른다. 다시 부르면 처음부터 다시 만든다.
 		void Finalize();
 
 		bool   Loaded() const { return loaded; }
@@ -126,6 +148,10 @@ namespace Shared {
 		//  법선은 충돌체에서 캡슐 쪽 — 캡슐을 normal × depth 만큼 밀면 그 삼각형에서 빠진다(가장 깊은 것부터 여러 번 부른다).
 		//  상태를 바꾸지 않는다(여러 스레드에서 불러도 된다 — 서버는 틱 스레드 하나).
 		bool DeepestCapsuleContact(const Vec3& a, const Vec3& b, float radius, CapsuleContact& out) const;
+
+		// 맵 공간 레이(origin · direction — 길이는 상관없음)가 maxDistance 안에서 처음 맞는 충돌체 삼각형까지의 거리(m).
+		//  안 맞으면 false. 양면. 상태를 바꾸지 않는다. (2026-11-15 — 크로스헤어 겨눈 점 · Client Engine::AimDirection)
+		bool Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, float& outDistance) const;
 
 	private:
 		bool loaded = false;

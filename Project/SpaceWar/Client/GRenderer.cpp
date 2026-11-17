@@ -23,6 +23,11 @@ using namespace DirectX;
 
 namespace {
 
+	// ── [7b] 파티클 사각형을 어느 단계에서 펴나 (2026-11-17 사용자 «GS 에서 … 만드는게 나을지, 정점 세이더에서하는게 예산이 싸게 먹힐지») ──
+	//  false = 정점 셰이더(Particles.hlsl VSQuad — 파티클당 정점 6개, AMD GDC 2014 «Vertex Shader Tricks» 가 권하는 쪽),
+	//  true  = 지오메트리 셰이더(VSPoint + GSQuad — 점 하나 → 사각형). 바꿔 빌드한 뒤 자동 측정(Engine kAutoFrameBudget)의 «[7b] 파티클» 로 비교한다.
+	constexpr bool kParticleExpandInGs = false;
+
 	// 셰이더는 빌드 후 exe 옆 Shaders\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
 	std::wstring ShaderPath(const wchar_t* name)
 	{
@@ -312,7 +317,8 @@ namespace swc {
 		uint32_t   shadowEnabled;       // 2026-10-27 2단계 — 1 이면 그림자 마스크를 읽는다(이번 프레임에 [4a] 가 돌았다)
 		uint32_t   reflectionEnabled;   // 2026-10-27 4단계 — 1 이면 반사 텍스처를 읽는다(이번 프레임에 [4b] 가 돌았다)
 		uint32_t   aoEnabled;           // 2026-10-27 8단계 — 1 이면 AO 텍스처(t13)를 읽는다(이번 프레임에 [2] 가 돌았다)
-		uint32_t   pad3[2];
+		float      reflectionMaxRoughness;   // 2026-11-14 — RT 반사 문턱(Impl::kReflectionMaxRoughness). 예전 빈 자리 pad3[0]
+		float      reflectionFadeStart;      // 2026-11-14 — RT 몫을 줄이기 시작하는 거칠기(Impl::kReflectionFadeStart). 예전 pad3[1]
 		XMFLOAT3   sunIlluminance;      // 2026-10-27 6단계 — 땅에 닿는 태양 조도(RGB)
 		uint32_t   skyEnabled;          // 2026-10-27 6단계 — 1 이면 하늘 조도 텍스처(t9)를 주변광으로 읽는다
 		struct ProbeVolumeGpu
@@ -350,7 +356,11 @@ namespace swc {
 		float    transmission;  float ior;  float thickness;  float attenuationDistance;
 		XMFLOAT3 attenuationColor; float alphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님), 예전 pad2 자리
 		// 2026-10-29 — 물가 페이드 폭(m, 0 = 안 함). [7] 반투명 패스가 둘레의 땅(면 위로 올라온 표면) 비율로 옅게 한다(SetMaterialEdgeFade)
-		float    edgeFade;      float pad2[3];
+		float    edgeFade;
+		// 2026-11-15 — 재질 AO(glTF occlusionTexture.strength, 0 = 없음, 예전 pad2[0] 자리). AO = textures[2](Roughness)의 R.
+		//  RT 히트(반사 · GI · 반투명)가 맞은 점의 주변광에만 곱한다(RtSurface.hlsli FetchHitSurface — 래스터 GB0.a 와 같은 규칙)
+		float    occlusionStrength;
+		float    pad2[2];
 	};
 	static_assert(sizeof(RtMaterialGpu) == 144, "RtMaterial 은 144바이트 (9단계 128 → 10-29 물가 페이드 144)");
 	//  인스턴스 표: TLAS 인스턴스 순번(InstanceIndex)으로 찾는다. 프레임마다 다시 채운다.
@@ -440,6 +450,20 @@ namespace swc {
 	};
 	static_assert(sizeof(TransparentConstants) == 480, "TransparentCB 는 480바이트 (10-28 GI 두 겹 288 → 384, 축 → 480)");
 
+	// Particles.hlsl 의 ParticleCB 와 같은 순서 · 크기 (2026-11-17, [7b] 파티클)
+	struct ParticleConstants
+	{
+		XMFLOAT4X4 viewProj;             // 카메라 기준, 전치해서 올림(CameraRelativeViewProj)
+		XMFLOAT4X4 invViewProj;          // 카메라 기준 역행렬(CameraRelativeInverseViewProj)
+		XMFLOAT3   eyePos;          uint32_t depthSrv;            // ↓ 바인드리스 번호
+		XMFLOAT3   cameraRight;     uint32_t skyIrradianceSrv;
+		XMFLOAT3   cameraUp;        float    softDistance;        // 깊이 페이드 폭(m)
+		XMFLOAT3   sunDir;          uint32_t width;
+		XMFLOAT3   sunIlluminance;  uint32_t height;
+		XMFLOAT3   planetUp;        uint32_t pad0;
+	};
+	static_assert(sizeof(ParticleConstants) == 224, "ParticleCB 는 224바이트");
+
 	// ColorPyramid.hlsl 의 PyramidCB (2026-10-27 렌더 9단계) — 디스패치마다 256 B 칸 하나
 	struct PyramidConstants
 	{
@@ -526,7 +550,8 @@ namespace swc {
 	{
 		XMFLOAT4 baseColor;
 		XMFLOAT3 emissive; float roughness;
-		float metallic; uint32_t hasNormalMap; float alphaCutoff; float pad;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
+		float metallic; uint32_t hasNormalMap; float alphaCutoff;   // 2026-10-28 — 알파 마스크 기준(0 = 마스크 아님)
+		float occlusionStrength;   // 2026-11-15 — 재질 AO(glTF strength, 0 = 없음, 예전 pad 자리). AO = Roughness 슬롯(ORM)의 R
 	};
 	static_assert(sizeof(MaterialConstants) == 12 * sizeof(uint32_t));
 
@@ -693,6 +718,10 @@ namespace swc {
 			BindlessReflectionArgsUav = 81,                                     // DispatchRays 간접 인자 (raw — Width 에 원자 더하기)
 			// 2026-10-28 — [4a] 그림자를 바인드리스로 옮기면서
 			BindlessShadowMaskUav = 82,                                         // 그림자 마스크 UAV (RtShadow.hlsl 이 쓴다)
+			// 2026-11-17 P5 — 파티클 가속 구조. ★ ParticleRt.hlsli 의 kBindlessParticleTlas · kBindlessParticleSrv 와 같은 번호
+			//  프레임마다 이번 슬롯의 파티클 TLAS · 파티클 배열을 가리키게 다시 쓴다(PrepareParticleAccel). 못 쓰면 빈 뷰.
+			BindlessParticleTlas = 83,                                          // 파티클 TLAS (RaytracingAccelerationStructure)
+			BindlessParticleSrv = 84,                                           // 파티클 배열 (StructuredBuffer<ParticleSprite>)
 			// 앞 128칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64, 10단계에서 → 128).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
 			BindlessReserved = 128 };
@@ -727,6 +756,10 @@ namespace swc {
 		//  반사 텍스처: RtReflection.hlsl 이 바인드리스 UAV 로 쓰고, Lighting.hlsl 이 타깃 힙 SRV 로 읽는다.
 		static constexpr DXGI_FORMAT kReflectionFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;   // 반사 색은 1 을 넘을 수 있다
 		static constexpr float kReflectionMaxRoughness = 0.4f;   // 이 거칠기 이상은 반사 레이를 안 쏜다 — UE Lumen 기본값(«첫 판 범위» 와 같이 다시 정한다)
+		// 2026-11-14 — 라이팅에서 RT 반사 몫을 이 거칠기부터 줄여 kReflectionMaxRoughness 에서 0 으로(그 사이는 흐린 환경 반사와 섞는다).
+		//  문턱에서 반사가 켜짐 · 꺼짐으로 갈려 Meshy 총(거칠기 ≈ 0.43)이 얼룩지던 것을 고친다 — 노션 «총 텍스처 얼룩» 6절
+		static constexpr float kReflectionFadeStart = 0.3f;
+		static_assert(kReflectionFadeStart < kReflectionMaxRoughness, "RT 반사 줄이기 시작은 문턱보다 낮아야 한다");
 		ComPtr<ID3D12RootSignature> rtReflectionRootSig;   // 전역 루트 시그니처 (CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED)
 		ComPtr<ID3D12StateObject>   rtReflectionPso;       // RT 파이프라인 상태 객체 (RayGen · Miss · HitGroup)
 		ComPtr<ID3D12Resource>      rtShaderTable;         // UPLOAD — raygen 0 · miss 64 · hit group 128 바이트 자리
@@ -805,6 +838,8 @@ namespace swc {
 			//  루트 상수는 terrainConstants(20 DWORD, 4단계부터 constants 보다 크다), 텍스처 5칸에는 배열 4개 + 마스크가 들어 있다.
 			bool terrain = false;
 			TerrainConstants terrainConstants{};
+			// 2026-11-17 — GRenderer::Release 로 놓은 재질. 칸은 남고(번호 재사용 없음) 패킷에 있으면 0번 재질로 읽는다(MaterialOf).
+			bool released = false;
 		};
 
 		// 묶음 키(Batch::pso) — 0 ~ 7 은 «양면 1 · 반전 2 · 알파 마스크 4» 조합, 8 · 9 = 지형 레이어 판(9 = 반전).
@@ -819,6 +854,7 @@ namespace swc {
 		uint8_t*               rtMaterialData = nullptr;
 
 		ComPtr<ID3D12Device5>              device;
+		ComPtr<IDXGIAdapter3>              adapter3;   // 2026-11-17 — GPU 메모리 계측(QueryVideoMemory). 못 얻어도 진행한다
 		ComPtr<ID3D12CommandQueue>         commandQueue;
 		ComPtr<IDXGISwapChain3>            swapChain;
 		ComPtr<ID3D12DescriptorHeap>       rtvHeap;
@@ -854,7 +890,7 @@ namespace swc {
 		//  (5단계 후속 — GB4 모션 벡터도 이 배열에 넣었다. 처음엔 셰이더 레지스터 번호를 안 밀려고 따로 들었는데,
 		//   그러면 생성 · RTV · SRV · PSO 형식 · 배리어마다 GB4 만 따로 챙겨야 하고 이 «hlsli 표와 같다» 규칙도 깨졌다)
 		static constexpr DXGI_FORMAT kGBufferFormats[GbCount] = {
-			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 (a 안 씀)
+			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,   // GB0 알베도 · a 재질 AO (2026-11-03)
 			DXGI_FORMAT_R16G16_SNORM,          // GB1 월드 법선 — 팔면체 인코딩
 			DXGI_FORMAT_R8G8B8A8_UNORM,        // GB2 r 거칠기 · g 금속성
 			DXGI_FORMAT_R11G11B10_FLOAT,       // GB3 자체발광
@@ -1018,6 +1054,31 @@ namespace swc {
 		uint8_t*                    transparentCBData = nullptr;
 		struct TransparentDraw { uint32_t instance; MaterialHandle material; MeshHandle mesh; float distanceSq; };
 		std::vector<TransparentDraw> transparentDraws;   // 이번 프레임에 그릴 투과 물체(뒤에서 앞으로 정렬)
+		// ── [7b] 파티클 (2026-11-17, Particles.hlsl) — FramePacket::particles 를 프레임 슬롯마다 따로 올린다 ──
+		//  ★ 슬롯 2벌: 지금은 EndFrame 이 GPU 를 기다려 한 벌로도 안전하지만, CPU 가 GPU 를 기다리지 않게 바꾸면
+		//    GPU 가 앞 프레임 것을 읽는 동안 덮어쓰게 된다(인스턴스 · TLAS 설명자와 같은 규칙 — AccelStructure::kFrameSlots).
+		static constexpr UINT MaxParticles = 4096;          // ParticleSystem::kSpritePool 과 같다(넘는 몫은 그리지 않는다)
+		static constexpr UINT ParticleCBSize = 256;         // CBV 256 B 정렬
+		ComPtr<ID3D12Resource>      particleBuffer;         // UPLOAD, 슬롯 2벌 × MaxParticles × 48 B
+		uint8_t*                    particleData = nullptr;
+		ComPtr<ID3D12Resource>      particleCB;             // UPLOAD, 슬롯 2벌 × 256 B
+		uint8_t*                    particleCBData = nullptr;
+		ComPtr<ID3D12PipelineState> particleAlphaPso;       // 알파 묶음 — 미리 곱한 알파(ONE, INV_SRC_ALPHA)
+		ComPtr<ID3D12PipelineState> particleAddPso;         // 가산 묶음 — 더하기(ONE, ONE)
+		// ── P5 파티클 가속 구조 (2026-11-17 사용자 «반사와 GI AO 단계 진행해줘») — 본 TLAS 와 따로 ──
+		//  파티클 하나 = AABB 하나(BLAS 하나에 전부), 파티클 TLAS = 그 BLAS 인스턴스 하나. 매 프레임 본 TLAS 다음에 같은 리스트에서 만든다.
+		//  결과 BLAS · TLAS 는 프레임 슬롯 2벌(그래픽 큐가 앞 프레임 것을 읽는 동안 덮어쓰지 않게), scratch 는 하나(같은 큐에서 차례로).
+		//  [4a] 그림자 · [2] AO · [4c] GI · [4b] 반사가 바인드리스 칸(BindlessParticleTlas · Srv)으로 한 번 더 조회한다(ParticleRt.hlsli).
+		ComPtr<ID3D12Resource> particleAabbs;               // UPLOAD, 슬롯 2벌 × MaxParticles × 24 B
+		uint8_t*               particleAabbData = nullptr;
+		ComPtr<ID3D12Resource> particleInstanceDescs;       // UPLOAD, 슬롯 2벌 × 인스턴스 1개(64 B)
+		uint8_t*               particleInstanceData = nullptr;
+		ComPtr<ID3D12Resource> particleBlas[AccelStructure::kFrameSlots];
+		ComPtr<ID3D12Resource> particleTlas[AccelStructure::kFrameSlots];
+		ComPtr<ID3D12Resource> particleScratch;
+		bool                   particleRtReady = false;
+		UINT                   particleRtCount = 0;         // 이번 프레임 가속 구조에 넣은 파티클 수
+		UINT                   particleRtSlot = 0;
 		// ── [8] 후처리 (2026-10-27 렌더 10단계, PostProcess.hlsl · Tonemap.hlsl PSTonemap) ──
 		//  블룸(Jimenez 2014) → 자동 노출(휘도 히스토그램, UE 기본값) → ACES 근사 톤 곡선(설계 문서 6.7) → sRGB.
 		//  디버그 뷰(0 이 아님)와 바인드리스가 없는 장치는 예전 «0~1 자르기» 톤맵을 쓴다(값을 숫자 그대로 보려고).
@@ -1139,6 +1200,18 @@ namespace swc {
 		std::vector<TextureGpu> textures;
 		std::vector<MaterialGpu> materials;
 		std::array<TextureHandle, kMaterialTextureCount> fallbackTextures{};
+
+		// ── 놓은 자원 거르기 (2026-11-17, GRenderer::Release) ──
+		//  놓은 메시는 버퍼가 비어 있다 — 패킷에 남아 있어도 래스터 · TLAS · 반투명 모두 그리지 않는다.
+		//  놓은 재질(또는 범위 밖 번호)은 0번 기본 재질로 읽는다.
+		bool MeshUsable(MeshHandle mesh) const
+		{
+			return mesh < meshes.size() && meshes[mesh].buffer.Get() != nullptr;
+		}
+		MaterialHandle MaterialOf(MaterialHandle material) const
+		{
+			return material < materials.size() && !materials[material].released ? material : 0;
+		}
 		UINT materialDescriptorSize = 0;
 		bool frameOpen = false;
 
@@ -1197,6 +1270,8 @@ namespace swc {
 		double         gpuFrameSum = 0.0;
 		uint32_t       gpuTimedFrames = 0;
 		LARGE_INTEGER  gpuReportStart = {};
+		std::wstring   lastGpuReport;          // 2026-11-17 — 마지막 보고 한 줄(LastGpuTimeReport, 끝 줄바꿈 없음)
+		uint64_t       gpuReportCount = 0;     // 지금까지 낸 보고 수(GpuTimeReportCount)
 
 		void MarkGpuTime(const wchar_t* name)
 		{
@@ -1240,6 +1315,8 @@ namespace swc {
 				swprintf_s(line, L" | %s %.3f", e.first.c_str(), e.second / gpuTimedFrames);
 				report += line;
 			}
+			lastGpuReport = report;   // 2026-11-17 — Engine 자동 프레임 시간 측정이 읽는다
+			++gpuReportCount;
 			report += L"\n";
 			OutputDebugStringW(report.c_str());
 			gpuTimeSums.clear();
@@ -1410,6 +1487,101 @@ namespace swc {
 			}
 		}
 
+		// ── P5 파티클 가속 구조 (2026-11-17) ──
+		//  셰이더가 읽는 바인드리스 두 칸 — live 면 슬롯 slot 의 파티클 TLAS · 배열, 아니면 빈 뷰(레이가 아무것도 안 맞는다).
+		//  ★ 칸은 하나라 프레임마다 다시 쓴다 — 지금은 EndFrame 이 GPU 를 기다려 앞 프레임이 이 칸을 읽고 있지 않다.
+		//    CPU 가 GPU 를 기다리지 않게 바꾸면 슬롯마다 칸을 따로 두고 번호를 상수로 넘겨야 한다(GRenderer::Release 와 같은 주의).
+		void WriteParticleDescriptors(UINT slot, bool live)
+		{
+			if (!bindlessHeap) return;
+			D3D12_SHADER_RESOURCE_VIEW_DESC as = {};
+			as.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+			as.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			as.RaytracingAccelerationStructure.Location = (live && particleTlas[slot].Get() != nullptr)
+				? particleTlas[slot]->GetGPUVirtualAddress() : 0;
+			device->CreateShaderResourceView(nullptr, &as, BindlessCpu(BindlessParticleTlas));
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC sb = {};
+			sb.Format = DXGI_FORMAT_UNKNOWN;
+			sb.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+			sb.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			const bool bufferLive = live && particleBuffer.Get() != nullptr;
+			sb.Buffer.FirstElement = bufferLive ? UINT64(slot) * MaxParticles : 0;
+			sb.Buffer.NumElements = MaxParticles;
+			sb.Buffer.StructureByteStride = sizeof(ParticleSprite);
+			device->CreateShaderResourceView(bufferLive ? particleBuffer.Get() : nullptr, &sb, BindlessCpu(BindlessParticleSrv));
+		}
+
+		// 이번 프레임 파티클 → AABB · 인스턴스 하나 · 바인드리스 칸. 파티클 배열은 이미 이번 슬롯에 올라가 있다(Render 앞부분).
+		void PrepareParticleAccel(const std::vector<ParticleSprite>& particles, UINT count)
+		{
+			if (!particleRtReady) return;
+			const UINT slot = frameIndex % AccelStructure::kFrameSlots;
+			particleRtSlot = slot;
+			particleRtCount = count;
+			D3D12_RAYTRACING_AABB* const aabbs = reinterpret_cast<D3D12_RAYTRACING_AABB*>(
+				particleAabbData + size_t(slot) * MaxParticles * sizeof(D3D12_RAYTRACING_AABB));
+			for (UINT i = 0; i < count; ++i)
+			{
+				const ParticleSprite& p = particles[i];
+				const float r = 0.5f * p.size;   // 셰이더는 지름 size 인 구로 맞는다 — 상자는 그 구를 감싼다
+				aabbs[i] = { p.position.x - r, p.position.y - r, p.position.z - r, p.position.x + r, p.position.y + r, p.position.z + r };
+			}
+			D3D12_RAYTRACING_INSTANCE_DESC instance = {};
+			instance.Transform[0][0] = 1.0f;   // 월드 그대로(AABB 를 월드 좌표로 넣었다)
+			instance.Transform[1][1] = 1.0f;
+			instance.Transform[2][2] = 1.0f;
+			instance.InstanceID = 0;
+			instance.InstanceMask = 0xFF;
+			instance.InstanceContributionToHitGroupIndex = 0;
+			instance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+			instance.AccelerationStructure = particleBlas[slot]->GetGPUVirtualAddress();
+			memcpy(particleInstanceData + size_t(slot) * sizeof(instance), &instance, sizeof(instance));
+			WriteParticleDescriptors(slot, true);
+		}
+
+		// 파티클 BLAS(파티클이 있을 때만) → TLAS(없으면 인스턴스 0개 — 빈 TLAS) — 본 TLAS 빌드 뒤 같은 리스트에 기록.
+		//  scratch 를 둘이 같이 쓰므로 사이에 UAV 배리어, 끝에도 하나(그래픽 큐는 asFence 를 기다린 뒤 읽는다).
+		void RecordParticleAccel(ID3D12GraphicsCommandList4* cmd)
+		{
+			if (!particleRtReady || !cmd) return;
+			const UINT slot = particleRtSlot;
+			D3D12_RESOURCE_BARRIER uav = {};
+			uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			uav.UAV.pResource = nullptr;   // 모든 UAV 접근(scratch · BLAS)
+			if (particleRtCount > 0)
+			{
+				D3D12_RAYTRACING_GEOMETRY_DESC geo = {};
+				geo.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+				geo.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;   // 비불투명 — 셰이더가 구로 판정한다
+				geo.AABBs.AABBCount = particleRtCount;
+				geo.AABBs.AABBs.StartAddress = particleAabbs->GetGPUVirtualAddress() +
+					UINT64(slot) * MaxParticles * sizeof(D3D12_RAYTRACING_AABB);
+				geo.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);
+				D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blas = {};
+				blas.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+				blas.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+				blas.Inputs.NumDescs = 1;
+				blas.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+				blas.Inputs.pGeometryDescs = &geo;
+				blas.DestAccelerationStructureData = particleBlas[slot]->GetGPUVirtualAddress();
+				blas.ScratchAccelerationStructureData = particleScratch->GetGPUVirtualAddress();
+				cmd->BuildRaytracingAccelerationStructure(&blas, 0, nullptr);
+				cmd->ResourceBarrier(1, &uav);
+			}
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tlas = {};
+			tlas.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+			tlas.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+			tlas.Inputs.NumDescs = particleRtCount > 0 ? 1u : 0u;
+			tlas.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+			tlas.Inputs.InstanceDescs = particleInstanceDescs->GetGPUVirtualAddress() +
+				UINT64(slot) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+			tlas.DestAccelerationStructureData = particleTlas[slot]->GetGPUVirtualAddress();
+			tlas.ScratchAccelerationStructureData = particleScratch->GetGPUVirtualAddress();
+			cmd->BuildRaytracingAccelerationStructure(&tlas, 0, nullptr);
+			cmd->ResourceBarrier(1, &uav);
+		}
+
 		// ── [0] TLAS 빌드를 비동기 컴퓨트 큐로 보낸다 (2026-10-27 렌더 3단계) ──
 		//  인스턴스 디스크립터(UPLOAD)는 부르기 전에 이번 프레임 값으로 채워 둔다(ResetInstances · AddInstance).
 		//  실패하면 false — 부른 쪽이 직접 커맨드 리스트에서 빌드한다.
@@ -1427,6 +1599,7 @@ namespace swc {
 				FAILED(computeList->Reset(computeAllocator.Get(), nullptr)))
 				return false;
 			accel.BuildTlas(computeList.Get());   // 빌드 + UAV 배리어(같은 컴퓨트 리스트 안)
+			RecordParticleAccel(computeList.Get());   // 2026-11-17 P5 — 파티클 BLAS · TLAS 도 같은 리스트 · 같은 asFence
 			if (FAILED(computeList->Close()))
 				return false;
 			ID3D12CommandList* lists[] = { computeList.Get() };
@@ -1933,6 +2106,7 @@ namespace swc {
 			impl->status = L"D3D12 디바이스 생성 실패.";
 			return false;
 		}
+		pick.adapter.As(&impl->adapter3);   // 2026-11-17 — GPU 메모리 계측용(실패해도 렌더링과 무관)
 		// ★ 2026-10-27 2단계 — 임시 스위치 kEnableRaytracing 을 없앴다. 장치가 DXR 1.1 + SM 6.5 를 지원하면 RT 를 쓴다.
 		//   (지원하지 않으면 BLAS · TLAS 를 만들지 않고, [4a] RT 그림자를 건너뛰며, 라이팅은 그림자 없이 합성한다)
 		impl->rtSupported = pick.raytracing;
@@ -3656,6 +3830,172 @@ namespace swc {
 			}
 		}
 
+		// ── [7b] 파티클 파이프라인 (Particles.hlsl, 2026-11-17 사용자 «파티클 전용 파이프라인») ──
+		//  [7] 반투명의 루트 시그니처를 다시 쓴다(b0 CBV · b1 상수 4 · t0 ~ t3 루트 SRV · 샘플러 3, 모든 단계에서 보임 · 바인드리스 직접 색인).
+		//  펴기 = kParticleExpandInGs(위 익명 네임스페이스). PSO 둘 — 알파 묶음(미리 곱한 알파) · 가산 묶음(더하기). 깊이는 읽기만.
+		//  업로드 버퍼(파티클 배열 · 상수)는 프레임 슬롯 2벌. 하나라도 못 만들면 파티클만 끈다(그리기를 건너뛴다).
+		if (impl->transparentRootSig)
+		{
+			std::string log;
+			const std::wstring path = ShaderPath(L"Particles.hlsl");
+			const std::vector<uint8_t> vs = impl->shaderCompiler.CompileFromFile(path.c_str(),
+				kParticleExpandInGs ? L"VSPoint" : L"VSQuad", L"vs_6_6", nullptr, 0, log);
+			const std::vector<uint8_t> gs = (kParticleExpandInGs && !vs.empty())
+				? impl->shaderCompiler.CompileFromFile(path.c_str(), L"GSQuad", L"gs_6_6", nullptr, 0, log)
+				: std::vector<uint8_t>();
+			const std::vector<uint8_t> ps = vs.empty() ? std::vector<uint8_t>()
+				: impl->shaderCompiler.CompileFromFile(path.c_str(), L"PSParticle", L"ps_6_6", nullptr, 0, log);
+			bool ok = !vs.empty() && !ps.empty() && (!kParticleExpandInGs || !gs.empty());
+			if (!ok)
+				OutputDebugStringA(("[Particles] " + log + "\n").c_str());
+			if (ok)
+			{
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+				psoDesc.pRootSignature = impl->transparentRootSig.Get();
+				psoDesc.VS = { vs.data(), vs.size() };   // 입력 레이아웃 없음 — 정점 번호로 파티클 배열을 읽는다
+				if (kParticleExpandInGs)
+					psoDesc.GS = { gs.data(), gs.size() };
+				psoDesc.PS = { ps.data(), ps.size() };
+				psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+				psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // 사각형은 앞뒤가 없다
+				psoDesc.RasterizerState.DepthClipEnable = TRUE;
+				D3D12_RENDER_TARGET_BLEND_DESC& blend = psoDesc.BlendState.RenderTarget[0];
+				blend.BlendEnable = TRUE;
+				blend.SrcBlend = D3D12_BLEND_ONE;              // 셰이더가 rgb × a 를 내보낸다(미리 곱한 알파)
+				blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+				blend.BlendOp = D3D12_BLEND_OP_ADD;
+				blend.SrcBlendAlpha = D3D12_BLEND_ZERO;        // HDR 의 알파는 그대로 둔다
+				blend.DestBlendAlpha = D3D12_BLEND_ONE;
+				blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+				blend.LogicOp = D3D12_LOGIC_OP_NOOP;
+				blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+				psoDesc.DepthStencilState.DepthEnable = TRUE;   // 불투명 · 얼음 뒤의 파티클은 가린다
+				psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+				psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+				psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+				psoDesc.SampleMask = UINT_MAX;
+				psoDesc.PrimitiveTopologyType = kParticleExpandInGs ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT
+				                                                    : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+				psoDesc.NumRenderTargets = 1;
+				psoDesc.RTVFormats[0] = Impl::kHdrFormat;
+				psoDesc.SampleDesc.Count = 1;
+				ok = SUCCEEDED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->particleAlphaPso)));
+				blend.DestBlend = D3D12_BLEND_ONE;              // 가산 묶음 — 더하기
+				ok = ok && SUCCEEDED(impl->device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&impl->particleAddPso)));
+			}
+			if (ok)
+			{
+				D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				D3D12_RANGE noRead = { 0, 0 };
+				const D3D12_RESOURCE_DESC bufferDesc = BufferDesc(
+					UINT64(AccelStructure::kFrameSlots) * Impl::MaxParticles * sizeof(ParticleSprite));
+				const D3D12_RESOURCE_DESC cbDesc = BufferDesc(UINT64(AccelStructure::kFrameSlots) * Impl::ParticleCBSize);
+				ok = SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->particleBuffer))) &&
+					SUCCEEDED(impl->particleBuffer->Map(0, &noRead, reinterpret_cast<void**>(&impl->particleData))) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->particleCB))) &&
+					SUCCEEDED(impl->particleCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->particleCBData)));
+			}
+			if (!ok)
+			{
+				impl->particleAlphaPso.Reset();
+				impl->particleAddPso.Reset();
+				impl->particleBuffer.Reset();
+				impl->particleCB.Reset();
+				impl->particleData = nullptr;
+				impl->particleCBData = nullptr;
+				OutputDebugStringW(L"[GRenderer] [7b] 파티클 파이프라인 생성 실패 — 파티클을 그리지 않는다\n");
+			}
+			else
+			{
+				OutputDebugStringW(kParticleExpandInGs ? L"[GRenderer] [7b] 파티클 파이프라인 준비 (GS 로 펴기)\n"
+				                                       : L"[GRenderer] [7b] 파티클 파이프라인 준비 (정점 셰이더로 펴기)\n");
+			}
+		}
+
+		// ── P5 파티클 가속 구조 (2026-11-17 사용자 «반사와 GI AO 단계 진행해줘») ──
+		//  크기는 최대치(MaxParticles 개 AABB · 인스턴스 1개)로 한 번 잰다(빠른 빌드). 결과는 프레임 슬롯 2벌, scratch 는 BLAS · TLAS 중 큰 쪽 하나.
+		//  셰이더는 바인드리스 두 칸으로 읽으므로 RT 가 되는 장치면 늘 무언가를 넣어 둔다 — 못 만들면 빈 뷰(레이가 아무것도 안 맞음).
+		if (impl->rtSupported && impl->bindlessHeap)
+		{
+			bool ok = impl->particleBuffer.Get() != nullptr;   // 파티클 배열은 [7b] 가 만든 것을 같이 읽는다
+			if (ok)
+			{
+				D3D12_RAYTRACING_GEOMETRY_DESC geo = {};
+				geo.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+				geo.AABBs.AABBCount = Impl::MaxParticles;
+				geo.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);
+				D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blasInputs = {};
+				blasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+				blasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+				blasInputs.NumDescs = 1;
+				blasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+				blasInputs.pGeometryDescs = &geo;
+				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blasInfo = {};
+				impl->device->GetRaytracingAccelerationStructurePrebuildInfo(&blasInputs, &blasInfo);
+				D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs = {};
+				tlasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+				tlasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+				tlasInputs.NumDescs = 1;
+				tlasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO tlasInfo = {};
+				impl->device->GetRaytracingAccelerationStructurePrebuildInfo(&tlasInputs, &tlasInfo);
+
+				auto createAsBuffer = [&](UINT64 bytes, D3D12_RESOURCE_STATES state, ComPtr<ID3D12Resource>& out)
+				{
+					const UINT64 aligned = (bytes + D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1) &
+						~UINT64(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1);
+					D3D12_RESOURCE_DESC desc = BufferDesc((std::max)(aligned, UINT64(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT)));
+					desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+					D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+					return SUCCEEDED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state,
+						nullptr, IID_PPV_ARGS(&out)));
+				};
+				for (UINT s = 0; s < AccelStructure::kFrameSlots && ok; ++s)
+				{
+					ok = createAsBuffer(blasInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, impl->particleBlas[s]) &&
+						createAsBuffer(tlasInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, impl->particleTlas[s]);
+				}
+				ok = ok && createAsBuffer((std::max)(blasInfo.ScratchDataSizeInBytes, tlasInfo.ScratchDataSizeInBytes),
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, impl->particleScratch);
+
+				D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				D3D12_RANGE noRead = { 0, 0 };
+				const D3D12_RESOURCE_DESC aabbDesc = BufferDesc(
+					UINT64(AccelStructure::kFrameSlots) * Impl::MaxParticles * sizeof(D3D12_RAYTRACING_AABB));
+				const D3D12_RESOURCE_DESC instanceDesc = BufferDesc(
+					UINT64(AccelStructure::kFrameSlots) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
+				ok = ok &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &aabbDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->particleAabbs))) &&
+					SUCCEEDED(impl->particleAabbs->Map(0, &noRead, reinterpret_cast<void**>(&impl->particleAabbData))) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &instanceDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->particleInstanceDescs))) &&
+					SUCCEEDED(impl->particleInstanceDescs->Map(0, &noRead, reinterpret_cast<void**>(&impl->particleInstanceData)));
+			}
+			impl->particleRtReady = ok;
+			if (!ok)
+			{
+				for (UINT s = 0; s < AccelStructure::kFrameSlots; ++s)
+				{
+					impl->particleBlas[s].Reset();
+					impl->particleTlas[s].Reset();
+				}
+				impl->particleScratch.Reset();
+				impl->particleAabbs.Reset();
+				impl->particleInstanceDescs.Reset();
+				impl->particleAabbData = nullptr;
+				impl->particleInstanceData = nullptr;
+				OutputDebugStringW(L"[GRenderer] P5 파티클 가속 구조 생성 실패 — 그림자 · AO · GI · 반사에 파티클이 안 나온다\n");
+			}
+			else
+			{
+				OutputDebugStringW(L"[GRenderer] P5 파티클 가속 구조 준비 (AABB BLAS + TLAS, 슬롯 2벌) — 그림자 · AO · GI · 반사\n");
+			}
+			impl->WriteParticleDescriptors(0, false);   // 첫 프레임 전까지는 빈 뷰(PrepareParticleAccel 이 진짜 뷰로 바꾼다)
+		}
+
 		// ── [8] HDR → 백버퍼 파이프라인 (Tonemap.hlsl, 2026-10-27) ──
 		//   테이블 = targetHeap 슬롯 6 (SRV t0 HDR). 정점 버퍼 · 깊이 없음.
 		{
@@ -4428,6 +4768,10 @@ namespace swc {
 		// ── 알파 마스크 (2026-10-28) — glTF MASK: 알파 < alphaCutoff 면 없는 것. 기준이 0 이하면 다 남으므로 마스크로 다루지 않는다 ──
 		material.alphaMask = data.alphaMask && std::isfinite(data.alphaCutoff) && data.alphaCutoff > 0.0f;
 		material.constants.alphaCutoff = material.alphaMask ? data.alphaCutoff : 0.0f;
+		// ── 재질 AO (2026-11-15) — AO 는 Roughness 슬롯(ORM)의 R. 그 슬롯이 폴백(흰색)이면 끈다 ──
+		material.constants.occlusionStrength =
+			(textures[static_cast<size_t>(TextureSlot::Roughness)] != kInvalidTexture && std::isfinite(data.occlusionStrength))
+			? std::clamp(data.occlusionStrength, 0.0f, 1.0f) : 0.0f;
 		material.textures = impl->WriteMaterialTextures(impl->materials.size(), resolved);
 
 		// ── 투과 → 그림자 레이가 이 물체 하나를 지나고 남는 빛 (2026-10-27 렌더 2단계) ──
@@ -4477,6 +4821,7 @@ namespace swc {
 			row.attenuationDistance = std::isfinite(data.attenuationDistance) ? data.attenuationDistance : 0.0f;
 			row.attenuationColor = data.attenuationColor;
 			row.alphaCutoff = material.constants.alphaCutoff;   // 2026-10-28 — 레이 후보의 알파 판정(RtCommon.hlsli AlphaMaskedOut)
+			row.occlusionStrength = material.constants.occlusionStrength;   // 2026-11-15 — 재질 AO(래스터와 같은 값)
 			memcpy(impl->rtMaterialData + impl->materials.size() * sizeof(RtMaterialGpu), &row, sizeof(row));
 		}
 
@@ -4591,6 +4936,53 @@ namespace swc {
 		return true;
 	}
 
+	// ── GPU 자원 놓기 (2026-11-17 예시 행성 해제) — GRenderer.h 설명 참고 ──
+	//  메시: 버퍼 · BLAS 를 놓고 바인드리스 칸(정점 · 인덱스 raw SRV)은 빈 칸으로 남긴다.
+	//  텍스처: 자원을 놓는다. 재질 테이블 · 바인드리스 · UI 칸의 SRV 는 남지만 그 칸을 읽는 재질도 함께 놓으므로 읽히지 않는다.
+	//  재질: released 표시 — 패킷에 남은 번호는 MaterialOf 가 0번으로 바꾼다.
+	bool GRenderer::Release(const std::vector<MeshHandle>& meshes, const std::vector<TextureHandle>& textures,
+		const std::vector<MaterialHandle>& materials)
+	{
+		if (!impl->device || !impl->fenceEvent || impl->frameOpen)
+		{
+			impl->status = L"GPU 자원 놓기: 장치가 없거나 프레임 안에서 불렀습니다.";
+			return false;
+		}
+		if (meshes.empty() && textures.empty() && materials.empty()) return true;
+
+		// GPU 가 이 자원을 읽는 명령을 다 끝낸 뒤에 놓는다. 비동기 컴퓨트(TLAS 빌드)는 그래픽 큐가 이미 기다렸으므로
+		// 그래픽 큐 하나만 기다리면 된다(EndFrame 과 같은 규칙).
+		if (!impl->WaitForGpu()) return false;
+
+		for (const MeshHandle handle : meshes)
+		{
+			if (handle >= impl->meshes.size()) continue;
+			Impl::MeshGpu& mesh = impl->meshes[handle];
+			if (mesh.blasIndex != AccelStructure::kInvalidBlas)
+				impl->accel.ReleaseMesh(mesh.blasIndex);
+			mesh.blasIndex = AccelStructure::kInvalidBlas;
+			mesh.buffer.Reset();
+			mesh.vbv = {};
+			mesh.ibv = {};
+			mesh.indexCount = 0;
+		}
+		for (const TextureHandle handle : textures)
+		{
+			if (handle >= impl->textures.size()) continue;
+			bool fallback = false;
+			for (const TextureHandle kept : impl->fallbackTextures)
+				fallback = fallback || kept == handle;
+			if (fallback) continue;   // 재질이 비운 칸을 채우는 렌더러 기본 텍스처 — 놓지 않는다
+			impl->textures[handle].resource.Reset();
+		}
+		for (const MaterialHandle handle : materials)
+		{
+			if (handle == 0 || handle >= impl->materials.size()) continue;   // 0번 = 기본 재질 — 놓지 않는다
+			impl->materials[handle].released = true;
+		}
+		return true;
+	}
+
 	void GRenderer::BeginFrame()
 	{
 		impl->frameOpen = true;
@@ -4654,6 +5046,17 @@ namespace swc {
 		impl->MarkGpuTime(L"[6] 하늘");
 		impl->UpdateSunAndSky(view);
 
+		// ── 파티클 올리기 (2026-11-17) — 메인 패스에서 한 번. [7b] 래스터와 P5 파티클 가속 구조(레이)가 이번 슬롯의 같은 배열을 읽는다 ──
+		UINT particleCount = 0;
+		if (!view.background && impl->particleData)
+		{
+			particleCount = UINT((std::min)(packet.particles.size(), size_t(Impl::MaxParticles)));
+			const UINT slot = impl->frameIndex % AccelStructure::kFrameSlots;
+			if (particleCount > 0)
+				memcpy(impl->particleData + size_t(slot) * Impl::MaxParticles * sizeof(ParticleSprite),
+					packet.particles.data(), size_t(particleCount) * sizeof(ParticleSprite));
+		}
+
 		// ── TLAS 재빌드 (패킷 인스턴스 → TLAS 인스턴스) ──
 		if (rtActive)
 		{
@@ -4666,13 +5069,15 @@ namespace swc {
 			for (const InstanceData& it : items)
 			{
 				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
-				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				// 2026-11-16 — kInstanceNoRayTracing(예광탄)은 래스터에만 그리고 TLAS 에는 넣지 않는다.
+				// 2026-11-17 — 놓은 메시(GRenderer::Release)도 뺀다.
+				if (!impl->MeshUsable(it.mesh) || (it.flags & (kInstanceDegenerate | kInstanceNoRayTracing))) continue;
 				const Impl::MeshGpu& mesh = impl->meshes[it.mesh];
 				const uint32_t blasIndex = mesh.blasIndex;
 				if (blasIndex == AccelStructure::kInvalidBlas) continue;
 				// ★ 2026-10-27 렌더 2단계 — InstanceID = 재질 번호(그림자 셰이더가 재질 표를 찾는다),
 				//   투과 재질이면 FORCE_NON_OPAQUE 로 넣어 그림자 레이가 통과 후보로 본다.
-				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				const MaterialHandle material = impl->MaterialOf(it.material);
 				const uint32_t index = impl->accel.InstanceCount();
 				// 투과 · 알파 마스크(2026-10-28) 재질은 FORCE_NON_OPAQUE — 레이가 후보로 받아 남는 빛 · 빈 곳을 처리한다
 				impl->accel.AddInstance(blasIndex, it.world, material,
@@ -4686,10 +5091,15 @@ namespace swc {
 					memcpy(instanceRows + size_t(index) * sizeof(RtInstanceGpu), &row, sizeof(row));
 				}
 			}
+			// 2026-11-17 P5 — 파티클 AABB · 인스턴스 · 바인드리스 칸을 이번 슬롯으로(빌드는 아래 본 TLAS 와 같은 리스트)
+			impl->PrepareParticleAccel(packet.particles, particleCount);
 			// ★ 2026-10-27 렌더 3단계 — [0] 빌드는 비동기 컴퓨트 큐로. 직접 큐는 G-buffer 뒤(JoinAsyncTlasBuild)에서 기다린다.
 			//   컴퓨트 큐가 없거나 제출에 실패하면 예전처럼 이 직접 리스트에서 빌드한다.
 			if (!impl->asyncAs || !impl->SubmitTlasBuildAsync())
+			{
 				impl->accel.BuildTlas(commandList);
+				impl->RecordParticleAccel(commandList);   // 2026-11-17 P5 — 직접 리스트에서도 본 TLAS 다음에
+			}
 		}
 
 		// ── 프레임 상수 ──
@@ -4726,7 +5136,7 @@ namespace swc {
 
 			auto materialOf = [&](const InstanceData& it) -> MaterialHandle
 			{
-				return it.material < impl->materials.size() ? it.material : 0;
+				return impl->MaterialOf(it.material);   // 2026-11-17 — 놓은 재질도 0번으로
 			};
 			auto psoOf = [&](const InstanceData& it) -> uint32_t
 			{
@@ -4744,7 +5154,7 @@ namespace swc {
 			for (size_t i = 0; i < usable; ++i)
 			{
 				const InstanceData& it = items[i];
-				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
+				if (!impl->MeshUsable(it.mesh) || (it.flags & kInstanceDegenerate)) continue;   // 2026-11-17 놓은 메시도 뺀다
 				// ★ 9단계 — 투과 재질(얼음)은 메인 G-buffer 에서 뺀다. 라이팅 뒤 [7] 반투명 패스가 그린다.
 				//   (반투명 파이프라인이 없는 장치는 예전처럼 여기서 불투명으로 그린다)
 				if (!view.background && impl->transparentPso && impl->materials[materialOf(it)].transmissive) continue;
@@ -5249,6 +5659,8 @@ namespace swc {
 		lc.shadowEnabled = shadowPass ? 1u : 0u;
 		lc.reflectionEnabled = reflectionPass ? 1u : 0u;
 		lc.aoEnabled = aoPass ? 1u : 0u;            // 8단계
+		lc.reflectionMaxRoughness = Impl::kReflectionMaxRoughness;   // 2026-11-14 — RT 반사 몫 줄이기(0.3 → 0.4)
+		lc.reflectionFadeStart = Impl::kReflectionFadeStart;
 		lc.sunIlluminance = impl->sunIlluminance;   // 6단계
 		lc.skyEnabled = impl->skyValid ? 1u : 0u;   // 6단계 — 하늘 조도 텍스처가 만들어져 있으면 주변광으로 읽는다
 		lc.probeVolume = impl->probeVolume;         // 7단계 — [4c] GI 프로브 (enabled 0 이면 하늘 조도)
@@ -5276,8 +5688,8 @@ namespace swc {
 			for (size_t i = 0; i < drawable; ++i)
 			{
 				const InstanceData& it = items[i];
-				if (it.mesh >= impl->meshes.size() || (it.flags & kInstanceDegenerate)) continue;
-				const MaterialHandle material = it.material < impl->materials.size() ? it.material : 0;
+				if (!impl->MeshUsable(it.mesh) || (it.flags & kInstanceDegenerate)) continue;   // 2026-11-17 놓은 메시도 뺀다
+				const MaterialHandle material = impl->MaterialOf(it.material);
 				if (!impl->materials[material].transmissive) continue;
 				const XMVECTOR position = XMVectorSet(it.world._41, it.world._42, it.world._43, 1.0f);
 				impl->transparentDraws.push_back({ uint32_t(i), material, it.mesh,
@@ -5379,6 +5791,64 @@ namespace swc {
 				commandList->DrawIndexedInstanced(m.indexCount, 1, 0, 0, 0);
 				++impl->stats.drawCalls;
 			}
+		}
+
+		// ── [7b] 파티클 사각형 (2026-11-17, Particles.hlsl) — [7] 반투명 뒤 · [8] 후처리 앞, 같은 그래픽 큐에서 직렬로 ──
+		//  ① 패킷의 파티클 배열 · 상수를 이번 프레임 슬롯 업로드 버퍼에 쓴다(CPU 가 이 슬롯의 GPU 작업이 끝난 뒤에만 쓰도록 슬롯을 나눴다)
+		//  ② HDR 에 그린다 — 읽기 전용 DSV(깊이 테스트만) + 같은 깊이를 SRV 로 읽어 경계를 흐리게(PSParticle)
+		//  ③ 알파 묶음(먼 것부터 — ParticleSystem::Extract 가 정렬) → 가산 묶음. 디버그 뷰에서는 [7] 처럼 건너뛴다.
+		impl->MarkGpuTime(L"[7b] 파티클");
+		if (impl->particleAlphaPso && impl->particleAddPso && impl->particleData && impl->debugMode == 0 && !packet.particles.empty())
+		{
+			const UINT count = particleCount;   // 배열은 Render 앞부분에서 이번 슬롯에 올렸다(P5 레이와 같은 배열)
+			const UINT alphaCount = (std::min)(UINT(packet.particleAlphaCount), count);
+			const UINT slot = impl->frameIndex % AccelStructure::kFrameSlots;
+
+			// 카메라 오른쪽 · 위 — viewProj(행 벡터 × 행렬)의 1 · 2 열이 «오른쪽 × 투영 배율» · «위 × 투영 배율» 이다.
+			const XMFLOAT4X4& vp = view.viewProj;
+			const XMVECTOR right = XMVector3Normalize(XMVectorSet(vp._11, vp._21, vp._31, 0.0f));
+			const XMVECTOR up = XMVector3Normalize(XMVectorSet(vp._12, vp._22, vp._32, 0.0f));
+			ParticleConstants pc = {};
+			pc.viewProj = CameraRelativeViewProj(view.viewProj, view.eyePosition);
+			pc.invViewProj = CameraRelativeInverseViewProj(view.viewProj, view.eyePosition);
+			pc.eyePos = view.eyePosition;
+			pc.depthSrv = Impl::BindlessDepth;
+			XMStoreFloat3(&pc.cameraRight, right);
+			pc.skyIrradianceSrv = Impl::BindlessSkyIrradianceSrv;
+			XMStoreFloat3(&pc.cameraUp, up);
+			pc.softDistance = 0.3f;
+			pc.sunDir = impl->sunDir;
+			pc.width = impl->width;
+			pc.sunIlluminance = impl->sunIlluminance;
+			pc.height = impl->height;
+			pc.planetUp = view.up;
+			memcpy(impl->particleCBData + size_t(slot) * Impl::ParticleCBSize, &pc, sizeof(pc));
+
+			impl->TransitionTargets({
+				{ &impl->hdr,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+				{ &impl->depth, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+				                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } });
+			const D3D12_CPU_DESCRIPTOR_HANDLE particleDsv = impl->ReadOnlyDsv();
+			commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &particleDsv);
+			// 바인드리스 힙을 루트 시그니처보다 먼저(SM 6.6 사양)
+			ID3D12DescriptorHeap* particleHeaps[] = { impl->bindlessHeap.Get() };
+			commandList->SetDescriptorHeaps(1, particleHeaps);
+			commandList->SetGraphicsRootSignature(impl->transparentRootSig.Get());
+			commandList->SetGraphicsRootConstantBufferView(0, impl->particleCB->GetGPUVirtualAddress() + UINT64(slot) * Impl::ParticleCBSize);
+			commandList->SetGraphicsRootShaderResourceView(2, impl->particleBuffer->GetGPUVirtualAddress() +
+				UINT64(slot) * Impl::MaxParticles * sizeof(ParticleSprite));
+			commandList->IASetPrimitiveTopology(kParticleExpandInGs ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			auto drawParticles = [&](ID3D12PipelineState* pso, UINT first, UINT particles)
+			{
+				if (particles == 0) return;
+				const uint32_t drawConstants[4] = { first, particles, 0, 0 };
+				commandList->SetGraphicsRoot32BitConstants(1, 4, drawConstants, 0);
+				commandList->SetPipelineState(pso);
+				commandList->DrawInstanced(kParticleExpandInGs ? particles : particles * 6, 1, 0, 0);
+				++impl->stats.drawCalls;
+			};
+			drawParticles(impl->particleAlphaPso.Get(), 0, alphaCount);
+			drawParticles(impl->particleAddPso.Get(), alphaCount, count - alphaCount);
 		}
 
 		// 뒤에 붙을 래스터 패스(반투명 등)가 이어 그릴 수 있게 HDR · 깊이를 다시 그리기 상태로 묶어 둔다.
@@ -5576,4 +6046,23 @@ namespace swc {
 	uint32_t GRenderer::TlasInstanceCount()   const { return impl->accel.InstanceCount(); }
 	uint32_t GRenderer::TlasMaxInstances()    const { return impl->accel.MaxInstances(); }
 	uint32_t GRenderer::TlasDroppedInstances()const { return impl->accel.DroppedInstances(); }
+
+	// 2026-11-17 — 자동 프레임 시간 측정(Engine kAutoFrameBudget)
+	const std::wstring& GRenderer::LastGpuTimeReport() const { return impl->lastGpuReport; }
+	uint64_t GRenderer::GpuTimeReportCount() const { return impl->gpuReportCount; }
+
+	// 2026-11-17 — GPU 메모리(이 프로세스 몫). 자동 프레임 시간 측정이 행성마다 찍는다.
+	bool GRenderer::QueryVideoMemory(uint64_t& localUsage, uint64_t& localBudget, uint64_t& nonLocalUsage) const
+	{
+		if (!impl->adapter3) return false;
+		DXGI_QUERY_VIDEO_MEMORY_INFO local = {};
+		DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal = {};
+		if (FAILED(impl->adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
+			FAILED(impl->adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocal)))
+			return false;
+		localUsage = local.CurrentUsage;
+		localBudget = local.Budget;
+		nonLocalUsage = nonLocal.CurrentUsage;
+		return true;
+	}
 }

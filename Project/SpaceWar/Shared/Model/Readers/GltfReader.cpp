@@ -1360,6 +1360,24 @@ namespace Shared {
 				if (!assignTexture(material, SourceTextureSlot::Metallic, pbr["metallicRoughnessTexture"])) return false;
 				if (!assignTexture(material, SourceTextureSlot::Normal, source["normalTexture"])) return false;
 				if (!assignTexture(material, SourceTextureSlot::Emissive, source["emissiveTexture"])) return false;
+
+				// ── 재질 AO (2026-11-15) — glTF occlusionTexture ──
+				//  AO 이미지가 metallicRoughness 와 같은 이미지(ORM 묶음)이고 같은 UV 일 때만 켠다 — 셰이더가 Roughness 슬롯의 R 을 읽는다.
+				//  따로 된 AO 이미지는 렌더러에 슬롯이 없어 읽지 않는다(ModelSource.h SourceMaterial::occlusionStrength).
+				const JsonValue& occlusion = source["occlusionTexture"];
+				const JsonValue& metalRough = pbr["metallicRoughnessTexture"];
+				if (!occlusion.IsNull() && occlusion.Has("index") && !metalRough.IsNull() && metalRough.Has("index"))
+				{
+					const uint32_t occlusionImage = imageOfTexture(occlusion["index"].AsUint());
+					const uint32_t metalRoughImage = imageOfTexture(metalRough["index"].AsUint());
+					const bool sameUv = occlusion["texCoord"].AsUint(0) == metalRough["texCoord"].AsUint(0);
+					if (occlusionImage != kInvalidIndex && occlusionImage == metalRoughImage && sameUv)
+					{
+						const double strength = occlusion["strength"].AsNumber(1.0);
+						material.occlusionStrength = std::isfinite(strength)
+							? std::clamp(static_cast<float>(strength), 0.0f, 1.0f) : 1.0f;
+					}
+				}
 			}
 
 			// 메시가 가리키는 재질 번호가 범위를 넘었으면 재질 없음으로 돌린다.

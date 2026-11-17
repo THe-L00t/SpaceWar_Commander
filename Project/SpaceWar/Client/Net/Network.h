@@ -10,6 +10,7 @@
 #include <cstdint>
 #include "Shared/Protocol.h"   // PlayerStatePacket 을 값으로 들고 있는다(2026-10-29) — 이 헤더는 <cstdint> 만 쓴다
 #include "Shared/World/WorldCatalog.h"   // 맵 번호(2026-11-01) — 상수만 있는 헤더
+#include "Shared/GameObject/Weapon.h"    // 든 총 종류(2026-11-15 줍기 · 떨구기)
 
 namespace Shared {
 	struct WelcomePacket;
@@ -21,6 +22,10 @@ namespace Shared {
 	struct NpcDespawnPacket;
 	struct WorldJoinedPacket;
 	struct MoveCommand;
+	struct WeaponEquipPacket;
+	struct GroundWeaponSpawnPacket;
+	struct GroundWeaponRemovePacket;
+	struct NpcHitPacket;
 }
 
 // ============================================================
@@ -56,6 +61,19 @@ namespace swc {
 	{
 		uint32_t playerId;
 		float    pos[3];
+	};
+
+	// 바닥 총 소식 하나 (2026-11-15 줍기 · 떨구기) — Engine 이 꺼내 WeaponScene 에 반영한다.
+	//  Spawn = 새 바닥 총(start → rest 를 fallSeconds 동안), Remove = 없어짐, Clear = 맵이 바뀌어 다 지운다.
+	struct GroundWeaponEvent
+	{
+		enum class Kind : uint8_t { Spawn, Remove, Clear };
+		Kind     kind = Kind::Spawn;
+		uint32_t groundId = 0;
+		Shared::WeaponType type = Shared::WeaponType::None;
+		float    startPos[3] = {}, startAxisY[3] = {}, startAxisZ[3] = {};
+		float    restPos[3] = {}, restAxisY[3] = {}, restAxisZ[3] = {};
+		float    fallSeconds = 0.0f;
 	};
 
 	// 서버가 굴리는 NPC 한 마리의, 지금 이 순간 그려야 할 위치.
@@ -114,6 +132,15 @@ namespace swc {
 		//   «어디서 어디로» 만 보낸다. 누가 맞았는지는 말하지 않는다.
 		void SendFire(const float origin[3], const float direction[3]);
 
+		// ── 총 줍기 · 떨구기 (2026-11-15) ── 판정(거리 · 바꿔 들기)은 서버가 한다. 요청만 보낸다.
+		void SendPickup(uint8_t source, uint32_t id);   // source = Shared::kPickupFrom*
+		void SendDrop();
+		// 서버가 알려준 든 총(빈손 = None). 나 = MyWeapon, 남 = WeaponOf(번호).
+		Shared::WeaponType MyWeapon() const { return myWeapon; }
+		Shared::WeaponType WeaponOf(uint32_t playerId) const;
+		// 쌓인 바닥 총 소식을 꺼낸다(받은 순서). 꺼내면 지워진다.
+		void TakeGroundEvents(std::vector<GroundWeaponEvent>& out);
+
 		// 서버가 보낸 것을 받아 해석한다. 매 프레임 호출한다.
 		void Poll();
 
@@ -140,6 +167,13 @@ namespace swc {
 
 		// 마지막으로 맞은 순간부터 흐른 시간을 재려고 둔 피격 횟수 (표시용).
 		unsigned HitCount() const { return nHits; }
+
+		// 2026-11-16 NPC 명중 표시 — 서버가 «내 발이 NPC 에 맞았다» 고 알린 수(지난번 꺼낸 뒤). 꺼내면 0 이 된다.
+		//  맞았는지는 서버가 정한다(명세 18절 원칙 4). Engine 이 이것으로 크로스헤어 둘레 X 를 띄운다.
+		unsigned TakeNpcHits();
+		// 2026-11-17 — 위 TakeNpcHits 가 마지막으로 꺼낸 명중의 NPC 번호들(받은 순서). 피를 서버 확인 뒤에 띄울 때 쓴다
+		//  (ParticleSystem::ConfirmNpcHits — Engine kBloodWaitsForServer 가 켜졌을 때만. 지금은 꺼짐).
+		const std::vector<uint32_t>& LastNpcHitIds() const { return npcHitIdsTaken; }
 
 		// 확인용 통계
 		unsigned SentCount() const { return nSent; }
@@ -177,7 +211,11 @@ namespace swc {
 		void OnNpcDespawn(const Shared::NpcDespawnPacket*);
 		void OnPlayerState(const Shared::PlayerStatePacket*);
 		void OnWorldJoined(const Shared::WorldJoinedPacket*);
-		void TrySendJoinWorld();       // 못 보낸 JoinWorld 를 다시 보낸다(송신 버퍼가 찼을 때)
+		void OnWeaponEquip(const Shared::WeaponEquipPacket*);
+		void OnGroundWeaponSpawn(const Shared::GroundWeaponSpawnPacket*);
+		void OnGroundWeaponRemove(const Shared::GroundWeaponRemovePacket*);
+		void OnNpcHit(const Shared::NpcHitPacket*);   // 2026-11-16 — 내 발의 NPC 명중
+		void TrySendJoinWorld();      // 못 보낸 JoinWorld 를 다시 보낸다(송신 버퍼가 찼을 때)
 		void ClearWorldState();        // 원격 · NPC 목록 · 받아 둔 판정 · 리스폰을 비운다(맵을 바꿀 때)
 
 		SOCKET sock = INVALID_SOCKET;
@@ -196,6 +234,10 @@ namespace swc {
 		// ── 전투 ────────────────────────────────────────────
 		float    myHealth = -1.0f;      // 서버가 알려준 내 체력. 음수 = 아직 모름
 		unsigned nHits = 0;             // 내가 맞은 횟수 (표시용)
+		unsigned npcHitsPending = 0;    // 아직 안 꺼낸 내 발의 NPC 명중 수 (2026-11-16 — TakeNpcHits)
+		static constexpr size_t kMaxNpcHitIds = 256;   // 2026-11-17 — 꺼내기 전까지 남길 번호 수 상한
+		std::vector<uint32_t> npcHitIdsPending;        // 2026-11-17 — 아직 안 꺼낸 명중의 NPC 번호
+		std::vector<uint32_t> npcHitIdsTaken;          // 2026-11-17 — 마지막으로 꺼낸 번호(LastNpcHitIds)
 		bool     hasRespawn = false;    // 되살아날 자리를 받았는가
 		float    respawnPos[3] = { 0.0f, 0.0f, 0.0f };
 
@@ -213,6 +255,11 @@ namespace swc {
 		WorldJoin joinResult;
 
 		std::unordered_map<uint32_t, Remote> remotes;
+
+		// ── 총 (2026-11-15) ──
+		Shared::WeaponType myWeapon = Shared::WeaponType::None;     // 서버가 알려준 내 총 — 맵을 바꿔도 들고 간다
+		std::unordered_map<uint32_t, Shared::WeaponType> equips;    // 같은 맵 남이 든 총
+		std::vector<GroundWeaponEvent> groundEvents;                // Engine 이 꺼내 갈 바닥 총 소식
 
 		// ★ NPC 도 같은 구조로 다룬다
 		//   서버가 행동을 계산해 좌표만 보내주므로, 클라 입장에서는
