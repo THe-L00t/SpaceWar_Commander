@@ -508,3 +508,7 @@
     </None>
   </ItemGroup>
 </Project>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+</Project>
