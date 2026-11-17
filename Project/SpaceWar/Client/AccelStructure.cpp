@@ -195,6 +195,17 @@ namespace swc {
 		b.scratchBytes = 0;
 	}
 
+	void AccelStructure::ReleaseMesh(uint32_t blasIndex)
+	{
+		if (blasIndex >= blas.size()) return;
+		Blas& b = blas[blasIndex];
+		b.result.Reset();
+		b.scratch.Reset();
+		b.compacted.Reset();
+		b.resultBytes = 0;
+		b.scratchBytes = 0;
+	}
+
 	uint64_t AccelStructure::BlasResultBytes() const
 	{
 		uint64_t total = 0;
@@ -225,7 +236,8 @@ namespace swc {
 	void AccelStructure::AddInstance(uint32_t blasIndex, const XMFLOAT4X4& world,
 		uint32_t instanceId, bool forceNonOpaque)
 	{
-		if (blasIndex >= blas.size() || !instanceData)
+		// 놓은 BLAS(ReleaseMesh, 2026-11-17)는 결과가 없다 — 넣지 않는다.
+		if (blasIndex >= blas.size() || !instanceData || !blas[blasIndex].result)
 			return;
 		if (instanceCount >= maxInstances)
 		{

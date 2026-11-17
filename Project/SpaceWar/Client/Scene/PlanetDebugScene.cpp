@@ -10,6 +10,7 @@
 #include <iterator>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <DirectXMath.h>
@@ -314,6 +315,59 @@ namespace swc {
 		return true;
 	}
 
+	// ── 행성 내리기 (2026-11-17, 사용자 «이전에 있던 행성만 남기고, 더 오래된 행성은 해제») ──
+	//  GPU: 맵 모델 · 오브젝트 종류 모델 · 지형 레이어 텍스처 5장 · 재질을 놓는다(GRenderer::Release — GPU 를 기다린 뒤).
+	//  장면: 루트 아래 노드를 비운다(LegacyScene::ClearSubtree — 칸은 빈 노드로 남는다).
+	//  CPU: 접지면 · 충돌체 · 배치(StaticObject) · 고르기 상태를 비우고 Loaded() 를 false 로 — 다시 고르면 처음처럼 읽는다.
+	//  GPU 놓기가 하나라도 실패해도 장면 · CPU 는 비운다(다시 읽을 수 있게). 그때는 false — 못 놓은 GPU 자원은 남는다.
+	bool PlanetDebugScene::Release(GRenderer& renderer, LegacyScene& scene)
+	{
+		bool released = true;
+		if (!model.Release(renderer))
+			released = false;
+		for (ObjectType& type : objectTypes)
+			if (!type.model.Release(renderer))
+				released = false;
+		std::vector<MaterialHandle> layerMaterials;
+		if (terrainMaterial != kInvalidMaterial)
+			layerMaterials.push_back(terrainMaterial);
+		if (!renderer.Release({}, terrainTextures, layerMaterials))
+			released = false;
+
+		if (root != kInvalidNode)
+			scene.ClearSubtree(root);
+
+		// 빈 벡터와 맞바꿔 용량까지 돌려준다(clear 는 용량을 남긴다 — 배치 · 접지면은 행성당 수십 ~ 100 MiB).
+		auto freeVector = [](auto& values) { std::remove_reference_t<decltype(values)>().swap(values); };
+		ground = Shared::PlanetSurface{};
+		collision = Shared::CollisionWorld{};
+		root = kInvalidNode;
+		spawnUp = Vec3d{ 0.0, 1.0, 0.0 };
+		loaded = false;
+		freeVector(terrainNodes);
+		terrainLayered = false;
+		freeVector(terrainTextures);
+		terrainMaterial = kInvalidMaterial;
+		center = Vec3d{ 0.0, 0.0, 0.0 };
+		terrainMaterialName.clear();
+		terrainLayerNames = {};
+		freeVector(overlayNodes);
+		layeredOverlays = 0;
+		fadedLakes = 0;
+		freeVector(objectTypes);
+		freeVector(staticObjects);
+		skippedInstances = 0;
+		freeVector(liveList);
+		freeVector(selectStamp);
+		stamp = 0;
+		freeVector(scratch);
+		lastStreamEye = Vec3d{};
+		streamed = false;
+		selectedMeshes = 0;
+		farHemisphereSkipped = 0;
+		return released;
+	}
+
 	// ── 배치 JSON 읽기 (로딩 스레드) ─────────────────────────────
 	//  2026-11-01 — 본문을 Shared/World/Placement.cpp 로 옮겼다(서버도 같은 배치로 충돌체를 씌운다 — 맵 번호).
 	bool PlanetDebugScene::ReadPlacement(const std::wstring& path, PlanetPlacement& out)
@@ -564,6 +618,7 @@ namespace swc {
 				error = L"지형 레이어 텍스처 업로드 실패: " + renderer.StatusText();
 				return false;
 			}
+			terrainTextures.push_back(handles[i]);   // 2026-11-17 — 행성을 내릴 때(Release) 같이 놓는다
 		}
 
 		TerrainMaterialData material;
@@ -590,6 +645,7 @@ namespace swc {
 			error = renderer.StatusText();
 			return false;
 		}
+		terrainMaterial = handle;   // 2026-11-17 — 행성을 내릴 때(Release) 같이 놓는다
 		for (const NodeHandle node : terrainNodes)
 			scene.SetMaterial(node, handle);
 		terrainLayered = true;
