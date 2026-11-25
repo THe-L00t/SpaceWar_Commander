@@ -37,20 +37,30 @@ namespace Shared {
 		const wchar_t* placement;           // 배치 JSON — 예시 행성만. 게임 맵은 nullptr(오브젝트가 맵 glb 안에 있다)
 		const wchar_t* collision;           // 정적 오브젝트 충돌체 묶음 glb (Resource_Work/_tools/collision/col_build.py)
 		const wchar_t* collisionManifest;   // 그 설명 JSON
+		// 이 맵 NPC 의 모델 glb (2026-11-19, 사용자 «NPC모델은 행성에 소속 시켜서 행성 로드할때만 로드하고 … 행성 해제 하는 경우는
+		//  그래픽 메모리에서 빼줘») — 클라만 읽는다(서버는 좌표만). 게임 맵은 nullptr = 캐릭터 모델을 같이 쓴다(전과 같다).
+		//  예시 행성 = resource 58c74e1 의 몬스터(행성 생태 짝: Verdant = Rootstalker · Neon = Neuro · Ruin = Rubble · Volcanic = Cinder · Glacier = Frost).
+		//  ★ Client.vcxproj CopyModelAssets 가 assets\model\monster\**\*.glb 를 복사한다.
+		const wchar_t* npcModel;
 	};
 
 	inline constexpr WorldInfo kWorlds[kWorldCount] = {
-		{ "GameMap",  kPlanetModelAsset, nullptr, kPlanetCollisionAsset, kPlanetCollisionManifestAsset },
+		{ "GameMap",  kPlanetModelAsset, nullptr, kPlanetCollisionAsset, kPlanetCollisionManifestAsset, nullptr },
 		{ "Verdant",  L"model\\map\\Verdant_Planet\\Verdant_Planet.glb",   L"model\\map\\Verdant_Planet\\Verdant_Planet_Placement.json",
-		              L"model\\map\\Verdant_Planet\\Verdant_Planet_Collision.glb",   L"model\\map\\Verdant_Planet\\Verdant_Planet_Collision.json" },
+		              L"model\\map\\Verdant_Planet\\Verdant_Planet_Collision.glb",   L"model\\map\\Verdant_Planet\\Verdant_Planet_Collision.json",
+		              L"model\\monster\\Nature_Rootstalker\\Nature_Rootstalker.glb" },
 		{ "Neon",     L"model\\map\\Neon_Planet\\Neon_Planet.glb",         L"model\\map\\Neon_Planet\\Neon_Planet_Placement.json",
-		              L"model\\map\\Neon_Planet\\Neon_Planet_Collision.glb",         L"model\\map\\Neon_Planet\\Neon_Planet_Collision.json" },
+		              L"model\\map\\Neon_Planet\\Neon_Planet_Collision.glb",         L"model\\map\\Neon_Planet\\Neon_Planet_Collision.json",
+		              L"model\\monster\\Neuro_Ripper\\Neuro_Ripper.glb" },
 		{ "Ruin",     L"model\\map\\Ruin_Planet\\Ruin_Planet.glb",         L"model\\map\\Ruin_Planet\\Ruin_Planet_Placement.json",
-		              L"model\\map\\Ruin_Planet\\Ruin_Planet_Collision.glb",         L"model\\map\\Ruin_Planet\\Ruin_Planet_Collision.json" },
+		              L"model\\map\\Ruin_Planet\\Ruin_Planet_Collision.glb",         L"model\\map\\Ruin_Planet\\Ruin_Planet_Collision.json",
+		              L"model\\monster\\Rubble_Mauler\\Rubble_Mauler.glb" },
 		{ "Volcanic", L"model\\map\\Volcanic_Planet\\Volcanic_Planet.glb", L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Placement.json",
-		              L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Collision.glb", L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Collision.json" },
+		              L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Collision.glb", L"model\\map\\Volcanic_Planet\\Volcanic_Planet_Collision.json",
+		              L"model\\monster\\Cinder_Ram\\Cinder_Ram.glb" },
 		{ "Glacier",  L"model\\map\\Glacier_Planet\\Glacier_Planet.glb",   L"model\\map\\Glacier_Planet\\Glacier_Planet_Placement.json",
-		              L"model\\map\\Glacier_Planet\\Glacier_Planet_Collision.glb",   L"model\\map\\Glacier_Planet\\Glacier_Planet_Collision.json" },
+		              L"model\\map\\Glacier_Planet\\Glacier_Planet_Collision.glb",   L"model\\map\\Glacier_Planet\\Glacier_Planet_Collision.json",
+		              L"model\\monster\\Frost_Grappler\\Frost_Grappler.glb" },
 	};
 
 	// 예시 행성 디버그 씬 번호(0 ~ 4) → 맵 번호(1 ~ 5). 범위 밖이면 kNoWorld.

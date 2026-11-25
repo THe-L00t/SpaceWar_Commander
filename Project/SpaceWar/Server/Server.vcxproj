@@ -120,6 +120,23 @@
       <WorldAsset Include="$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Placement.json;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.glb;$(ProjectDir)..\..\assets\model\map\Glacier_Planet\Glacier_Planet_Collision.json">
         <TargetFolder>map\Glacier_Planet</TargetFolder>
       </WorldAsset>
+      <!-- 예시 행성 NPC(몬스터) glb (2026-11-25, Shared::kWorlds npcModel) — 서버는 COL_ 부위 메시(몸 충돌체)만 남긴다
+           (CollisionWorld::LoadBodyPack). 클라와 같은 파일. 없으면 그 맵 NPC 는 캐릭터 캡슐로 맞는다. -->
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\monster\Nature_Rootstalker\Nature_Rootstalker.glb">
+        <TargetFolder>monster\Nature_Rootstalker</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\monster\Neuro_Ripper\Neuro_Ripper.glb">
+        <TargetFolder>monster\Neuro_Ripper</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\monster\Rubble_Mauler\Rubble_Mauler.glb">
+        <TargetFolder>monster\Rubble_Mauler</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\monster\Cinder_Ram\Cinder_Ram.glb">
+        <TargetFolder>monster\Cinder_Ram</TargetFolder>
+      </WorldAsset>
+      <WorldAsset Include="$(ProjectDir)..\..\assets\model\monster\Frost_Grappler\Frost_Grappler.glb">
+        <TargetFolder>monster\Frost_Grappler</TargetFolder>
+      </WorldAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\map\future_ruins_planet_separated.glb')" Text="assets/model/map에 future_ruins_planet_separated.glb 맵 파일이 필요합니다." />
     <Copy SourceFiles="@(PlanetSurfaceAsset)" DestinationFolder="$(OutDir)assets\model\map\" SkipUnchangedFiles="true" />

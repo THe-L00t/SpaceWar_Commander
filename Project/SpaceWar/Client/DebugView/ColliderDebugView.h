@@ -25,6 +25,12 @@
 //    정적 충돌체 선 뒤에 매 프레임 붙인다 — ClearCapsules() 로 지난 프레임 캡슐을 떼고 AddCapsule() 로 붙인다.
 //    모양 = Shared::PlayerMovement 캡슐(반지름 kCapsuleRadius · 키 kCapsuleHeight, 발 = 몸통 중심 − kGroundOffset).
 //    서버 NPC 이동(Server/AI/NpcWorld)도 같은 캡슐로 막힌다. 색: 내 플레이어 흰색 · 다른 플레이어 보라 · NPC 분홍.
+//
+//  ★ 몸 충돌체 (2026-11-25, 사용자 «충돌체는 캡슐로 표기되는지» · «스태틱 오브젝트 충돌체 읽어서 적용시키듯»)
+//    몬스터 NPC 는 캡슐이 아니라 몸 충돌체(COL_ 부위 메시 — Shared::CollisionWorld::LoadBodyPack)를 그린다 — AddBody.
+//    선 = 정적 충돌체와 같은 CollisionMesh::edges, 자리 = 사격 판정과 같은 Shared::BodyPoseTransform(그린 것 = 판정한 것).
+//    몸 충돌체가 없는 NPC(게임 맵 · 못 읽음)와 플레이어는 그 몸의 충돌체인 캡슐을 그린다.
+//    ★ NPC 이동(서버 NpcWorld)은 아직 이동 캡슐로 막힌다 — 몬스터 몸 충돌체는 피격에만 쓴다(이동 충돌은 따로 정할 일).
 // ============================================================
 
 namespace swc {
@@ -40,6 +46,9 @@ namespace swc {
 		static constexpr int    kCapsuleSegments = 16;
 		static constexpr size_t kCapsuleVertices = size_t(2 * (4 * kCapsuleSegments + 4));   // 선 68개
 		static constexpr size_t kCapsuleReserve = kCapsuleVertices * 512;   // 정적 충돌체 선이 캡슐 몫(512개)을 남긴다
+		// 2026-11-25 — 몸 충돌체 몫. 몬스터 하나 선 정점 약 5,000 ~ 7,900(COL_ 삼각형 1,644 ~ 2,620) → 약 50 마리
+		static constexpr size_t kBodyReserve = 400000;
+		static constexpr size_t kDynamicReserve = kCapsuleReserve + kBodyReserve;   // 정적 충돌체 선이 남기는 몫
 
 		static constexpr uint32_t kBuildingColor = DebugColor(64, 224, 255);
 		static constexpr uint32_t kPropColor = DebugColor(255, 214, 64);
@@ -47,7 +56,7 @@ namespace swc {
 		static constexpr uint32_t kTreeColor = DebugColor(96, 255, 112);
 		static constexpr uint32_t kPlayerColor = DebugColor(255, 255, 255);        // 내 플레이어
 		static constexpr uint32_t kRemotePlayerColor = DebugColor(176, 128, 255);  // 다른 플레이어
-		static constexpr uint32_t kNpcColor = DebugColor(255, 72, 176);            // NPC
+		static constexpr uint32_t kNpcColor = DebugColor(255, 72, 176);            // NPC(캡슐 · 몸 충돌체 같은 색)
 
 		// eye = 맵 공간 위치(월드 − 행성 중심). world 가 없거나 비었으면 선을 비운다.
 		void Update(const Shared::CollisionWorld* world, const Vec3d& eye, bool force);
@@ -57,10 +66,13 @@ namespace swc {
 		void ClearCapsules();
 		// mapPosition = 몸통 중심(맵 공간), up = 그 자리 위쪽(단위). 상한을 넘으면 그리지 않고 Truncated 를 세운다.
 		void AddCapsule(const Vec3d& mapPosition, const Vec3d& up, uint32_t color);
+		// 2026-11-25 — 몸 충돌체 묶음의 모든 부위 메시 모서리를 자세 xf(메시 공간 → 맵 공간, Shared::BodyPoseTransform)로. ClearCapsules 가 같이 뗀다.
+		void AddBody(const Shared::CollisionWorld& body, const float xf[12], uint32_t color);
 
 		const std::vector<DebugLineVertex>& Vertices() const { return vertices; }
 		size_t InstanceCount() const { return instanceCount; }   // 이번에 모은 충돌체 수
 		size_t CapsuleCount() const { return capsuleCount; }     // 이번 프레임 캡슐 수
+		size_t BodyCount() const { return bodyCount; }           // 이번 프레임 몸 충돌체 수(2026-11-25)
 		size_t LineCount() const { return vertices.size() / 2; }
 		bool   Truncated() const { return truncated; }            // 선이 상한을 넘어 먼 것을 뺐다
 
@@ -73,6 +85,7 @@ namespace swc {
 		size_t                        staticVertexCount = 0;      // vertices 앞쪽 = 정적 충돌체 선, 뒤쪽 = 캡슐
 		size_t                        instanceCount = 0;
 		size_t                        capsuleCount = 0;
+		size_t                        bodyCount = 0;
 		bool                          truncated = false;
 	};
 

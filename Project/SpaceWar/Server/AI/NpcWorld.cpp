@@ -316,34 +316,6 @@ namespace srv {
 	}
 
 	/////////////////////////////////////////////////////////////////////
-	//  레이에 가장 먼저 맞는 살아 있는 NPC.
-	bool NpcWorld::Raycast(const Shared::Vec3& origin, const Shared::Vec3& direction,
-		float maxDistance, uint32_t& outNpcId, float& outDistance) const
-	{
-		bool  found = false;
-		float nearest = maxDistance;
-
-		for (size_t i = 0; i < entries.size(); ++i)
-		{
-			if (!entries[i].alive) continue;
-
-			float dist = 0.0f;
-			if (!Shared::PhysicsCalculator::RaySphere(origin, direction,
-				entries[i].npc.position, Shared::kHitRadius, nearest, dist))
-				continue;
-
-			if (found && dist >= nearest) continue;
-
-			found = true;
-			nearest = dist;
-			outNpcId = entries[i].npcId;
-			outDistance = dist;
-		}
-
-		return found;
-	}
-
-	/////////////////////////////////////////////////////////////////////
 	//  피해. 이번 피격으로 쓰러졌으면 true.
 	//
 	//  ★ 사라지는 것은 «목록에서 빼는 것» 이 아니라 alive 를 내리는 것이다

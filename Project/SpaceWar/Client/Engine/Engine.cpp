@@ -1232,6 +1232,8 @@ namespace swc {
 			constexpr double kMiB = 1024.0 * 1024.0;
 			uint64_t usedBefore = 0, usedAfter = 0, budget = 0, nonLocal = 0;
 			const bool measuredBefore = renderer.QueryVideoMemory(usedBefore, budget, nonLocal);
+			// 2026-11-19 — 그 행성 NPC 모델로 펼친 노드를 먼저 비운다(Release 가 그 모델을 GPU 에서 놓는다).
+			ReleaseNpcNodes(Shared::WorldOfDebugPlanet(old));
 			const bool released = sceneManager.DebugPlanet(old).Release(renderer, scene);
 			colliderView.Clear();   // 와이어 표시는 마지막 충돌체를 주소로 기억한다 — 같은 자리에 다시 읽히므로 비운다
 			const bool measuredAfter = renderer.QueryVideoMemory(usedAfter, budget, nonLocal);
@@ -1288,6 +1290,57 @@ namespace swc {
 				return true;
 			},
 			std::move(options));
+
+		// ── NPC 모델 (2026-11-19, 사용자 «NPC모델은 행성에 소속 시켜서 행성 로드할때만 로드하고 … 행성 해제 하는 경우는 그래픽 메모리에서 빼줘») ──
+		//  이 행성 NPC 의 몬스터 glb(Shared::kWorlds npcModel)를 맵과 같은 단계에서 읽고, 메인에서 GPU 에 올린 뒤 RAM 사본을 버린다.
+		//  행성을 내리면 PlanetDebugScene::Release 가 같이 놓는다. 못 읽어도 행성은 띄운다 — NPC 는 캐릭터 모델로 그린다(로그만).
+		if (const wchar_t* npcAsset = PlanetDebugScene::NpcAsset(index); npcAsset[0] != L'\0')
+		{
+			const std::wstring npcAssetName = npcAsset;
+			resources.RequestModelFile(batch, AssetPath(npcAsset),
+				[this, index, npcAssetName](const ModelFileResources& loaded)
+				{
+					const ModelData* data = resources.Get(loaded.model);
+					if (!data)
+					{
+						Log(L"[디버그 행성] NPC 모델을 못 읽어 캐릭터 모델로 그린다 — %s: %s", npcAssetName.c_str(), resources.LastError().c_str());
+						return true;
+					}
+					std::wstring error;
+					if (!sceneManager.DebugPlanet(index).SetNpcModel(*data, renderer, error))
+						Log(L"[디버그 행성] NPC 모델을 못 올려 캐릭터 모델로 그린다 — %s: %s", npcAssetName.c_str(), error.c_str());
+					else
+						Log(L"[디버그 행성] %s NPC 모델 — %s", PlanetDebugScene::Name(index), npcAssetName.c_str());
+					// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다(실패해도 버린다).
+					resources.ReleaseModel(loaded.model);
+					return true;
+				});
+
+			// ── NPC 몸 충돌체 (2026-11-25, 사용자 «이전에 스태틱 오브젝트 충돌체 읽어서 적용시키듯» · «서버는 npc위치에 충돌체 정보만 씌워서») ──
+			//  같은 몬스터 glb 의 COL_ 부위 메시만 정적 충돌체처럼 읽는다(로딩 스레드 · CollisionWorld::LoadBodyPack — 서버 LoadExampleWorld 와 같은 길).
+			//  화면 모델 읽기(위 RequestModelFile)는 COL_ 메시를 뗀다(GltfReader hideAuthoringHelpers) — 그래서 따로 읽는다.
+			//  쓰는 곳: 겨눈 점(TraceVisibleShot → Shared::TraceShot) · C 키 와이어(ColliderDebugView::AddBody). 못 읽으면 캐릭터 캡슐(로그만).
+			auto npcBody = std::make_shared<CollisionLoadSlot>();
+			const std::wstring npcBodyPath = AssetPath(npcAsset);
+			batch.Add(L"NPC 몸 충돌체",
+				[npcBody, npcBodyPath]()
+				{
+					return npcBody->world.LoadBodyPack(npcBodyPath.c_str(), npcBody->error);
+				},
+				[this, index, npcBody](bool ok)
+				{
+					if (!ok)
+					{
+						Log(L"[디버그 행성] %s NPC 몸 충돌체를 못 읽어 캐릭터 캡슐로 맞는다 — %s",
+							PlanetDebugScene::Name(index), npcBody->error.c_str());
+						return true;
+					}
+					Log(L"[디버그 행성] %s NPC 몸 충돌체 — %zu부위 · 삼각형 %zu",
+						PlanetDebugScene::Name(index), npcBody->world.MeshCount(), npcBody->world.MeshTriangleCount());
+					sceneManager.DebugPlanet(index).SetNpcBody(std::move(npcBody->world));
+					return true;
+				});
+		}
 
 		// ── 배치 JSON → 오브젝트 모델 (2026-10-28) ──
 		//  JSON 은 로딩 스레드에서 읽고(PlanetDebugScene::ReadPlacement), 메인에서 씬에 넘긴다.
@@ -1731,8 +1784,8 @@ namespace swc {
 		remoteNodes.clear();
 		for (const auto& entry : npcNodes)
 		{
-			scene.SetLocalTransform(entry.second, parked);
-			freeNpcNodes.push_back(entry.second);
+			scene.SetLocalTransform(entry.second.node, parked);
+			freeNpcNodes[entry.second.owner].push_back(entry.second.node);   // 2026-11-19 — 그 모델 주인의 빈 목록으로
 		}
 		npcNodes.clear();
 
@@ -1740,6 +1793,58 @@ namespace swc {
 		//  오프라인 바닥 총은 맵마다 따로 두지 않는다 — 맵을 바꾸면 사라진다.
 		weaponScene.ClearRemotes();
 		weaponScene.ClearGround();
+	}
+
+	// ── NPC 모델 주인 (2026-11-19, 사용자 «NPC모델은 행성에 소속 시켜서 행성 로드할때만 로드하고 다른 행성으로 이동하면서
+	//    행성 해제 하는 경우는 그래픽 메모리에서 빼줘») ──
+	//  주인 = 맵 번호. 게임 맵(0)은 캐릭터 모델, 예시 행성은 그 행성의 NPC 모델(로드 묶음이 올렸으면). 못 올렸으면 0(캐릭터 모델)로 그린다.
+	uint32_t Engine::NpcModelOwner() const
+	{
+		if (activeDebugPlanet == kNoDebugPlanet) return Shared::kWorldGameMap;
+		const uint32_t world = Shared::WorldOfDebugPlanet(activeDebugPlanet);
+		if (world >= Shared::kWorldCount) return Shared::kWorldGameMap;
+		return sceneManager.DebugPlanet(activeDebugPlanet).NpcModel() ? world : Shared::kWorldGameMap;
+	}
+
+	const Model& Engine::NpcModelOf(uint32_t owner) const
+	{
+		if (owner != Shared::kWorldGameMap && owner < Shared::kWorldCount)
+		{
+			const Model* planetNpc = sceneManager.DebugPlanet(owner - 1).NpcModel();
+			if (planetNpc) return *planetNpc;
+		}
+		return characterModel;
+	}
+
+	const Shared::CollisionWorld* Engine::NpcBodyCollision() const
+	{
+		const uint32_t owner = NpcModelOwner();   // 몬스터 모델로 그릴 때만(캐릭터 모델로 그리면 캐릭터 캡슐)
+		if (owner == Shared::kWorldGameMap || owner >= Shared::kWorldCount) return nullptr;
+		const Shared::CollisionWorld& body = sceneManager.DebugPlanet(owner - 1).NpcBody();
+		return body.BodyPack() ? &body : nullptr;
+	}
+
+	// 그 주인의 NPC 노드를 장면에서 비운다 — 행성을 내리기 «전에»(그 모델의 GPU 메시를 가리키는 노드를 먼저 없앤다).
+	//  ClearSubtree 한 노드는 빈 칸으로 남고 다시 쓰지 않는다(LegacyScene.h). 다음에 그 행성에 오면 새로 펼친다.
+	void Engine::ReleaseNpcNodes(uint32_t owner)
+	{
+		if (owner >= Shared::kWorldCount || owner == Shared::kWorldGameMap) return;   // 캐릭터 모델은 내리지 않는다
+		size_t cleared = 0;
+		for (const NodeHandle node : freeNpcNodes[owner])
+		{
+			scene.ClearSubtree(node);
+			++cleared;
+		}
+		std::vector<NodeHandle>().swap(freeNpcNodes[owner]);
+		for (auto it = npcNodes.begin(); it != npcNodes.end(); )   // 보이는 행성은 내리지 않으므로 보통 없다
+		{
+			if (it->second.owner != owner) { ++it; continue; }
+			scene.ClearSubtree(it->second.node);
+			++cleared;
+			it = npcNodes.erase(it);
+		}
+		if (cleared > 0)
+			Log(L"[디버그 행성] NPC 노드 %zu개를 비웠다(맵 %u NPC 모델을 내리기 전)", cleared, owner);
 	}
 
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
@@ -1823,14 +1928,14 @@ namespace swc {
 		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
 		// 서버가 지금 맵에 넣어 준 뒤에만 보낸다(2026-11-01 맵 번호) — 들어가는 중 · 서버에 맵이 없으면 판정할 곳이 없다.
 		const bool send = network.Connected() && network.JoinedWorld() == CurrentWorld();
-		// 예광탄 — 그 총의 tracerEvery 발마다 하나(2026-11-15 부터 세 총 모두 매 발)
+		// 예광탄 — 그 총의 tracerEvery 발마다 하나, 0 이면 없음(2026-11-15 세 총 모두 매 발 → 2026-11-20 라이플만, 권총 · 기관총 0)
 		//  ★ 2026-11-16 사용자 «예광탄은 여전히 언덕을 뚫고 생기는데 이것도 수정해줘» — 예전에는 늘 120 m 막대라
 		//    겨눈 점이 언덕 · 벽이어도 그 너머까지 그려졌다. 이제 총구에서 이 발의 선(총구 → 겨눈 점)이 처음 닿는 곳까지만 —
 		//    서버 판정과 같은 함수(TraceShot)로 같은 원점 · 방향을 본다. 몸이면 몸통 중심 가까이까지. 한 프레임의 발은 원점 · 방향이 같아 한 번만 잰다.
-		const uint32_t every = spec.tracerEvery > 0 ? spec.tracerEvery : 1;
+		const uint32_t every = spec.tracerEvery;
 		const Shared::ShotHit along = TraceVisibleShot(muzzle, aim,
 			(std::min)(double(spec.range), double(kTracerStart) + double(kTracerLength)), 0.0);
-		const double tracerEnd = along.kind == Shared::ShotHitKind::Body ? along.closest : along.distance;
+		const double tracerEnd = along.distance;   // 2026-11-25 — 몸이면 충돌체에 닿은 점(예전 구 대역 때는 몸통 중심에 가장 가까운 점)
 		const float tracerLength = float((std::min)(double(kTracerLength), tracerEnd - double(kTracerStart)));
 
 		// ── 피격 파티클 (2026-11-17) — 예광탄과 같은 선이 처음 닿는 곳. 내 발은 서버를 기다리지 않고 이 프레임에 만든다 ──
@@ -1862,7 +1967,7 @@ namespace swc {
 				fireCooldown = spec.fireInterval;
 			if (send)
 				network.SendFire(origin, dir);
-			if (shotsFired++ % every == 0)
+			if (every > 0 && shotsFired++ % every == 0)
 				SpawnTracer(muzzle, aim, tracerLength);
 			if (impact)
 			{
@@ -1882,8 +1987,8 @@ namespace swc {
 	//  ① 카메라 눈에서 조준선(화면 가운데)으로 선을 긋는다. 카메라와 캐릭터 사이(어깨 뒤)는 보지 않는다 —
 	//     조준선이 총구 옆을 지나는 거리(tStart)부터 «tStart + 사거리» 까지.
 	//  ② 그 선이 처음 닿는 것 — Shared::TraceShot(서버 ResolveFire 와 같은 함수, 2026-11-15 사용자 «벽에 막히는건 당연히 막혀야지»):
-	//     몸(다른 플레이어 · NPC — 서버와 같은 구, 화면에 그린 자리) · 충돌체(건물 · 바위 · 소품 · 나무 · 총 진열) · 지형.
-	//     몸이면 그 몸통 중심에 가장 가까워지는 점을, 충돌체 · 지형이면 닿은 점을 겨눈다.
+	//     몸(다른 플레이어 · NPC — 화면에 그린 자리, 서버와 같은 몸 충돌체 — 2026-11-25) · 충돌체(건물 · 바위 · 소품 · 나무 · 총 진열) · 지형.
+	//     닿은 점을 겨눈다(2026-11-25 전에는 몸이면 «몸통 중심에 가장 가까워지는 점» — 구 대역 때 값, 지웠다).
 	//  ③ 아무것도 없으면 사거리 끝 점. 총구 → 겨눈 점이 너무 가깝거나 총구 뒤쪽이면 조준선 방향 그대로.
 	//  ★ 전부 CPU(메인 스레드, 쏘는 발마다 한 번). 서버도 총구에서 같은 함수로 판정하므로 벽을 겨누면 벽에 막힌다.
 	Vec3d Engine::AimDirection(const Vec3d& muzzle, double range) const
@@ -1897,7 +2002,7 @@ namespace swc {
 
 		// 땅을 겨누면 실제 지면을 겨눈다(지형 허용 0 — 서버 판정만 0.5 m 봐준다)
 		const Shared::ShotHit hit = TraceVisibleShot(eye, look, tStart + (std::max)(range, 1.0), tStart);
-		const double aimT = hit.kind == Shared::ShotHitKind::Body ? hit.closest : hit.distance;
+		const double aimT = hit.distance;   // 2026-11-25 — 닿은 점(몸이면 그 충돌체에 닿은 점)을 겨눈다
 
 		// 총구 → 겨눈 점
 		const Vec3d toAim = (eye + look * aimT) - muzzle;
@@ -1912,14 +2017,16 @@ namespace swc {
 	{
 		// 몸 — 다른 플레이어 · NPC 의 그려진 자리(UpdateNetwork 가 채운 지난 프레임 값).
 		//  연결이 끊기면 목록을 더 안 채워 옛 값이 남으므로 연결돼 있을 때만 넣는다.
+		//  2026-11-25 — 그 몸의 충돌체: NPC = 몬스터 몸 충돌체(NpcBodyCollision — 서버 ServerWorld::npcBody 와 같은 COL_), 플레이어 = 이동 캡슐.
 		std::vector<Shared::ShotTarget> targets;
 		if (network.Connected())
 		{
 			targets.reserve(remoteViews.size() + npcViews.size());
 			for (const RemoteView& v : remoteViews)
 				targets.push_back({ Vec3d{ double(v.pos[0]), double(v.pos[1]), double(v.pos[2]) }, v.playerId });
+			const Shared::CollisionWorld* npcBody = NpcBodyCollision();
 			for (const NpcView& v : npcViews)
-				targets.push_back({ Vec3d{ double(v.pos[0]), double(v.pos[1]), double(v.pos[2]) }, v.npcId });
+				targets.push_back({ Vec3d{ double(v.pos[0]), double(v.pos[1]), double(v.pos[2]) }, v.npcId, npcBody });
 		}
 
 		// 충돌체 · 지형은 이동이 보는 세계와 같다(지금 맵 — 게임 맵 · 예시 행성)
@@ -2126,11 +2233,14 @@ namespace swc {
 
 		// ── NPC 노드 갱신 ───────────────────────────────
 		//  행동 계산은 전부 서버가 한다. 클라는 좌표를 받아 그리기만 하므로
-		//  위 원격 플레이어 갱신과 같은 절차다. 다른 것은 메시 색뿐이다.
+		//  위 원격 플레이어 갱신과 같은 절차다.
+		//  ★ 2026-11-19 — 모델은 지금 맵의 것(NpcModelOwner): 게임 맵 = 캐릭터 모델, 예시 행성 = 그 행성의 NPC 모델(몬스터).
+		//    맵을 바꾸면 ParkNetworkNodes 가 옛 노드를 그 주인의 빈 목록으로 돌리므로, 한 프레임 안에서는 주인이 하나다.
 		network.Npcs(npcViews);
+		const uint32_t npcOwner = NpcModelOwner();
 
 		// 이번 프레임 목록에 없는 NPC 의 노드를 회수한다.
-		for (std::unordered_map<uint32_t, NodeHandle>::iterator it = npcNodes.begin();
+		for (std::unordered_map<uint32_t, NpcNode>::iterator it = npcNodes.begin();
 			it != npcNodes.end(); )
 		{
 			bool alive = false;
@@ -2139,10 +2249,10 @@ namespace swc {
 				if (npcViews[i].npcId == it->first) { alive = true; break; }
 			}
 
-			if (alive) { ++it; continue; }
+			if (alive && it->second.owner == npcOwner) { ++it; continue; }
 
-			scene.SetLocalTransform(it->second, parkedTransform);
-			freeNpcNodes.push_back(it->second);
+			scene.SetLocalTransform(it->second.node, parkedTransform);
+			freeNpcNodes[it->second.owner].push_back(it->second.node);
 			it = npcNodes.erase(it);
 		}
 
@@ -2150,28 +2260,30 @@ namespace swc {
 		{
 			const NpcView& v = npcViews[i];
 
-			std::unordered_map<uint32_t, NodeHandle>::iterator found =
+			std::unordered_map<uint32_t, NpcNode>::iterator found =
 				npcNodes.find(v.npcId);
 
 			if (found == npcNodes.end())
 			{
-				NodeHandle handle;
-				if (!freeNpcNodes.empty())
+				NpcNode entry;
+				entry.owner = npcOwner;
+				std::vector<NodeHandle>& pool = freeNpcNodes[npcOwner];
+				if (!pool.empty())
 				{
-					handle = freeNpcNodes.back();
-					freeNpcNodes.pop_back();
+					entry.node = pool.back();
+					pool.pop_back();
 				}
 				else
 				{
-					// NPC 도 같은 모델·재질을 쓴다(client2 이식 방침). 눈으로 가리는 것은
-					// 머리 위 HP BAR 로 한다 — 교수님 09-15 ToDo.
-					handle = characterModel.Instantiate(scene);
+					// 게임 맵은 캐릭터 모델을 같이 쓴다(client2 이식 방침 — 눈으로 가리는 것은 머리 위 HP BAR, 교수님 09-15 ToDo).
+					// 예시 행성은 그 행성의 몬스터 모델(2026-11-19).
+					entry.node = NpcModelOf(npcOwner).Instantiate(scene);
 				}
-				found = npcNodes.emplace(v.npcId, handle).first;
+				found = npcNodes.emplace(v.npcId, entry).first;
 			}
 
 			// 고도까지 서버가 지형으로 정해 보낸다. 받은 좌표를 그대로 그린다.
-			scene.SetLocalTransform(found->second,
+			scene.SetLocalTransform(found->second.node,
 				CharacterTransform(planet, v.pos));
 		}
 	}
@@ -2237,10 +2349,21 @@ namespace swc {
 					const Vec3d p{ v.pos[0], v.pos[1], v.pos[2] };
 					colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kRemotePlayerColor);
 				}
+				// NPC — 몬스터 몸 충돌체(COL_)가 있으면 그것을 사격 판정과 같은 자세로(2026-11-25 사용자 «충돌체는 캡슐로 표기되는지»),
+				//  없으면(게임 맵 · 못 읽음) 그 몸의 충돌체인 캡슐. 몸 충돌체는 정적 충돌체처럼 kRadius 안의 것만 그린다(선이 많다).
+				const Shared::CollisionWorld* npcBody = NpcBodyCollision();
 				for (const NpcView& v : npcViews)
 				{
 					const Vec3d p{ v.pos[0], v.pos[1], v.pos[2] };
-					colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kNpcColor);
+					if (!npcBody)
+					{
+						colliderView.AddCapsule(p - planet.center, planet.Up(p), ColliderDebugView::kNpcColor);
+						continue;
+					}
+					if (Length(p - controller.Position()) > double(ColliderDebugView::kRadius)) continue;
+					float xf[12];
+					Shared::BodyPoseTransform(p, planet.Up(p), planet.center, xf);
+					colliderView.AddBody(*npcBody, xf, ColliderDebugView::kNpcColor);
 				}
 			}
 			renderer.DrawDebugLines(packet.view,
@@ -2360,11 +2483,12 @@ namespace swc {
 		if (showColliders)
 		{
 			const Shared::CollisionWorld* world = ActiveCollision();
+			// 2026-11-25 — «몸» = 몬스터 몸 충돌체(COL_)로 그린 NPC 수
 			if (world && world->Loaded())
-				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 캡슐 %zu · 선 %zu%s", colliderView.InstanceCount(),
-					colliderView.CapsuleCount(), colliderView.LineCount(), colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
+				swprintf_s(colliderText, L"  |  충돌체(C) %zu개 · 캡슐 %zu · 몸 %zu · 선 %zu%s", colliderView.InstanceCount(),
+					colliderView.CapsuleCount(), colliderView.BodyCount(), colliderView.LineCount(), colliderView.Truncated() ? L" ★먼 것 잘림" : L"");
 			else
-				swprintf_s(colliderText, L"  |  충돌체(C) 없음 · 캡슐 %zu", colliderView.CapsuleCount());
+				swprintf_s(colliderText, L"  |  충돌체(C) 없음 · 캡슐 %zu · 몸 %zu", colliderView.CapsuleCount(), colliderView.BodyCount());
 		}
 
 		// 총 (2026-11-15) — 든 총 · 줍기 안내(E) · 떨구기 안내(G) · 바닥 총 수

@@ -38,6 +38,7 @@
 #include "Client/Effects/ParticleSystem.h"      // 2026-11-17 피격 파티클
 #include "Client/Effects/Flipbook.h"            // 2026-11-23 파티클 플립북
 #include "Client/Effects/ParticleTexture.h"     // 2026-11-24 파티클 낱장 텍스처
+#include "Shared/World/WorldCatalog.h"          // 2026-11-19 — NPC 모델 주인 = 맵 번호(kWorldCount)
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -200,8 +201,23 @@ namespace swc {
 		// 원격 플레이어 · NPC 노드 → Scene 의 OtherPlayer · NPC (6.10)
 		std::unordered_map<uint32_t, NodeHandle> remoteNodes;
 		std::vector<NodeHandle>                  freeRemoteNodes;
-		std::unordered_map<uint32_t, NodeHandle> npcNodes;
-		std::vector<NodeHandle>                  freeNpcNodes;
+		// NPC 노드 (2026-11-19, 사용자 «NPC모델은 행성에 소속 시켜서 … 행성 해제 하는 경우는 그래픽 메모리에서 빼줘»)
+		//  모델 주인 = 맵 번호(Shared::kWorlds) — 0 = 게임 맵(캐릭터 모델), 1 ~ 5 = 예시 행성 i - 1 의 NPC 모델(PlanetDebugScene::NpcModel).
+		//  주인마다 빈 노드 목록을 따로 둔다 — 노드는 그 모델의 GPU 메시를 가리키므로 다른 모델 자리에 다시 쓰지 않는다.
+		//  행성을 내리기 전에 그 주인의 노드를 장면에서 비운다(ReleaseNpcNodes) — 그 뒤 행성이 모델을 GPU 에서 놓는다.
+		struct NpcNode
+		{
+			NodeHandle node = kInvalidNode;
+			uint32_t   owner = 0;   // 모델 주인(맵 번호)
+		};
+		std::unordered_map<uint32_t, NpcNode> npcNodes;
+		std::vector<NodeHandle>               freeNpcNodes[Shared::kWorldCount];
+		uint32_t     NpcModelOwner() const;              // 지금 맵의 NPC 모델 주인(행성 NPC 모델이 없으면 0 = 캐릭터 모델)
+		const Model& NpcModelOf(uint32_t owner) const;
+		// 2026-11-25 — 지금 맵 NPC 의 몸 충돌체(몬스터 COL_). 몬스터 모델로 그리고 있고 충돌체도 읽었을 때만 — 아니면 nullptr(캐릭터 캡슐).
+		//  겨눈 점(TraceVisibleShot)과 C 키 와이어가 같은 것을 쓴다(그린 것 = 판정한 것).
+		const Shared::CollisionWorld* NpcBodyCollision() const;
+		void         ReleaseNpcNodes(uint32_t owner);     // 그 주인의 NPC 노드를 장면에서 비운다(LegacyScene::ClearSubtree — 다시 쓰지 않는다)
 
 		// ── 사격 효과 (임시) ────────────────────────────────
 		//  얇고 긴 상자를 발사선에 잠깐 놓는 것뿐이다. 명세에는 이펙트 자리가 없다 —

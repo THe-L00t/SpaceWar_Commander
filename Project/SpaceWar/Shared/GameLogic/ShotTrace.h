@@ -14,7 +14,10 @@
 //    · 클라 Engine::AimDirection — 카메라 눈에서 조준선(화면 가운데)으로. 처음 닿는 곳 = 겨눈 점(크로스헤어 맞추기)
 //    · 서버 ResolveFire          — 총구에서 겨눈 방향으로. 처음 닿는 것이 몸이면 명중, 충돌체 · 지형이면 막힘
 //  ★ 닿는 것 세 가지 — 가장 가까운 것 하나를 돌려준다.
-//    · 몸     : 몸통 중심의 구(반지름 Shared::kHitRadius — GameLogic.h). 명세 6.3 Collision Box 가 생기기 전까지의 히트박스.
+//    · 몸     : 그 몸의 충돌체(2026-11-25). 몬스터 = glb 의 COL_ 부위 메시(CollisionWorld::LoadBodyPack)를 몸 자세로 씌운 것
+//               (RaycastPosed — 정적 충돌체와 같은 BVH 판정), 캐릭터(플레이어 · 게임 맵 NPC — 충돌체 파일 없음) = 이동 캡슐(RayCapsule).
+//               자세 = BodyPose(몸통 중심 · 그 자리 위) — 클라 CharacterTransform 과 같은 축, 발 = 몸통 중심 − kGroundOffset.
+//               ★ 2026-11-25 사용자 «예전부터 구로 판정하라 한적 없고 충돌체 이용하라 했는데» — 09-26 부터 쓰던 몸통 중심 구(1.2 m)를 지웠다.
 //    · 충돌체 : CollisionWorld::Raycast — 건물 · 바위 · 소품 · 나무 · 총 진열 상자(지금 맵의 정적 충돌체)
 //    · 지형   : MoveWorld 의 지면(게임 맵 · 예시 행성 모두 — 이동 판정이 보는 땅과 같다)
 //  ★ 상태를 바꾸지 않는다 — 부르는 쪽 스레드에서 그대로 부른다(클라 메인 · 서버 틱). CPU 계산이다.
@@ -23,13 +26,23 @@
 namespace Shared {
 
 	struct MoveWorld;
+	class CollisionWorld;
 
-	// 몸 하나 — 몸통 중심(월드 좌표). id 는 부르는 쪽 번호(플레이어 · NPC 번호 등) — 이 함수는 보지 않고 돌려주기만 한다.
+	// 몸 하나 — 몸통 중심(월드 좌표) · 그 몸의 충돌체. id 는 부르는 쪽 번호(플레이어 · NPC 번호 등) — 이 함수는 보지 않고 돌려주기만 한다.
+	//  body = 몸 충돌체 묶음(CollisionWorld::LoadBodyPack — 몬스터). nullptr 이면 캐릭터 몸 = 이동 캡슐.
+	//  가리키는 묶음은 부르는 동안 살아 있어야 한다(맵이 들고 있다 — 서버 ServerWorld::npcBody · 클라 PlanetDebugScene::NpcBody).
 	struct ShotTarget
 	{
-		Vec3d    center{};
-		uint32_t id = 0;
+		Vec3d                 center{};
+		uint32_t              id = 0;
+		const CollisionWorld* body = nullptr;
 	};
+
+	// 몸 자세 — 몸 충돌체 메시 공간(glTF · 원점 발밑) → 맵 공간 행 벡터 3 × 4(CollisionInstance::xf 규약).
+	//  행 = 오른쪽(위 × 앞) · 위 · 앞(월드 +Z 를 그 자리 수평면에 눕힌 것), 이동 = 몸통 중심 − 위 × kGroundOffset − mapCenter.
+	//  클라 CharacterTransform(Engine.cpp) × PlanetDebugScene::SetNpcModel 의 발 내림과 같은 식 — 화면에 그린 몬스터와 겹친다.
+	//  (2026-11-25 — C 키 와이어(ColliderDebugView::AddBody)도 이 값으로 그린다)
+	void BodyPoseTransform(const Vec3d& center, const Vec3d& up, const Vec3d& mapCenter, float outXf[12]);
 
 	enum class ShotHitKind : uint8_t
 	{
@@ -42,9 +55,13 @@ namespace Shared {
 	struct ShotHit
 	{
 		ShotHitKind kind = ShotHitKind::None;
-		double distance = 0.0;   // 원점에서 닿은 곳까지(m). Body 면 그 구에 들어가는 거리. None 이면 maxDistance
+		double distance = 0.0;   // 원점에서 닿은 곳까지(m). Body 면 그 몸의 충돌체에 닿은 점. None 이면 maxDistance
 		size_t target = 0;       // Body 일 때 targets 번호
-		double closest = 0.0;    // Body 일 때 — 레이가 그 몸통 중심에 가장 가까워지는 거리(클라가 이 점을 겨눈다)
+		// Body 일 때 맞은 부위 — 몸 묶음의 메시 번호(body->Mesh(part).name = COL_ 뒤 이름 · head · chest …). 캐릭터 캡슐이면 kNoPart.
+		static constexpr uint32_t kNoPart = 0xFFFFFFFFu;
+		uint32_t part = kNoPart;
+		//  2026-11-25 — 예전 closest(«레이가 몸통 중심에 가장 가까워지는 거리» — 구 대역 때 클라가 겨누던 점)는 지웠다.
+		//   이제 충돌체에 실제로 닿은 점(distance)을 겨눈다.
 	};
 
 	struct ShotOptions

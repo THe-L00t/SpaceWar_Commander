@@ -106,6 +106,8 @@ namespace swc {
 		// 충돌체 묶음 · 설명 JSON — 맵 glb 이름에 «_Collision» 을 붙인 것(Shared::kWorlds).
 		static std::wstring CollisionAsset(size_t index);
 		static std::wstring CollisionManifestAsset(size_t index);
+		// 이 행성 NPC 의 모델 glb(Shared::kWorlds npcModel, 2026-11-19). 없으면 L"" — 그때 NPC 는 캐릭터 모델을 같이 쓴다.
+		static const wchar_t* NpcAsset(size_t index);
 
 		// 로딩 스레드에서 부른다(멤버를 건드리지 않는다). 실패하면 out.error 에 원인.
 		static bool ReadPlacement(const std::wstring& path, PlanetPlacement& out);
@@ -121,7 +123,23 @@ namespace swc {
 		//  이 행성의 GPU 자원(맵 · 오브젝트 · 지형 레이어)을 놓고, 장면 노드를 비우고, CPU 쪽(접지면 · 충돌체 · 배치)도 비운다.
 		//  끝나면 Loaded() = false — 다시 고르면 처음처럼 로드 묶음으로 읽는다. 지금 보이는 행성에는 부르지 않는다(Engine 이 고른다).
 		//  GPU 놓기에 실패하면 false(장면 · CPU 는 그래도 비운다).
+		//  ★ 2026-11-19 — NPC 모델(SetNpcModel)도 여기서 GPU 에서 놓는다. 그 모델로 펼친 NPC 노드는 이 행성 루트 밖(Engine 의 NPC 노드)이라
+		//    Engine 이 먼저 비운다(Engine::ReleaseNpcNodes) — Model::Release 의 «펼친 노드는 호출자가 먼저 비운다» 규칙.
 		bool Release(GRenderer& renderer, LegacyScene& scene);
+
+		// ── NPC 모델 (2026-11-19, 사용자 «NPC모델은 행성에 소속 시켜서 행성 로드할때만 로드하고 다른 행성으로 이동하면서
+		//    행성 해제 하는 경우는 그래픽 메모리에서 빼줘») — 메인 스레드 ──
+		//  행성 로드 묶음(Engine::BuildDebugPlanetLoad)이 NpcAsset 을 읽어 GPU 에 올리고, Release 가 놓는다.
+		//  포장 glb(원점 발밑 · 실제 키 · 정면 +Z)를 늘리지 않고 발을 이동 좌표(몸통 중심)보다 kGroundOffset 아래에 둔다.
+		bool SetNpcModel(const ModelData& data, GRenderer& renderer, std::wstring& error);
+		// 올린 NPC 모델. 없으면(파일 없음 · 실패 · 내림) nullptr — Engine 은 그때 캐릭터 모델로 그린다.
+		const Model* NpcModel() const { return npcModelLoaded ? &npcModel : nullptr; }
+
+		// ── NPC 몸 충돌체 (2026-11-25) — 같은 몬스터 glb 의 COL_ 부위 메시(Shared::CollisionWorld::LoadBodyPack) ──
+		//  로딩 스레드가 읽은 것을 메인이 넘겨받는다(SetCollision 과 같은 길). 못 읽었으면 비어 있다(BodyPack() false).
+		//  인스턴스는 없다 — 겨눌 때 · C 키로 그릴 때 NPC 자리(BodyPoseTransform)를 씌운다. Release 가 비운다.
+		void SetNpcBody(Shared::CollisionWorld&& body) { npcBody = std::move(body); }
+		const Shared::CollisionWorld& NpcBody() const { return npcBody; }
 
 		// ── 배치 오브젝트 (메인 스레드) ──
 		void SetPlacement(PlanetPlacement&& placement);
@@ -175,8 +193,11 @@ namespace swc {
 		};
 
 		Model                 model;
+		Model                 npcModel;                // 2026-11-19 — 이 행성 NPC 의 모델(SetNpcModel · Release)
+		bool                  npcModelLoaded = false;
 		Shared::PlanetSurface ground;
 		Shared::CollisionWorld collision;              // 배치 오브젝트 충돌체(2026-10-29)
+		Shared::CollisionWorld npcBody;                // NPC 몸 충돌체(2026-11-25 — SetNpcBody)
 		NodeHandle            root = kInvalidNode;
 		Vec3d                 spawnUp{ 0.0, 1.0, 0.0 };
 		bool                  loaded = false;

@@ -32,11 +32,20 @@
 //  ★ 스레드 — LoadPack · AddPlacement · Finalize 는 로딩 스레드에서 한 번(멤버만 쓴다). 그 뒤는 읽기만 한다.
 //    2026-11-15 예외: 총 진열 충돌체(AddBoxCollider · AddInstance · Finalize)는 클라는 씬 구성(메인, 이동 예측 시작 전) · 서버는 시작할 때(틱 스레드 전) 넣는다.
 //  ★ DirectXMath 를 쓰지 않는다 — 서버도 같은 코드를 쓴다(ModelSource.h 머리 주석).
+//
+//  ★ 몸 충돌체 묶음 (2026-11-25, 사용자 «서버는 npc위치에 충돌체 정보만 씌워서 충돌계산만 할 수 있도록» ·
+//    «이전에 스태틱 오브젝트 충돌체 읽어서 적용시키듯 하면 되는거 아니야?»)
+//    · LoadBodyPack — 몬스터 glb 의 «COL_<부위>» 노드 메시만 읽는다(정적 묶음 LoadPack ② 와 같은 읽기 · 같은 용접 · BVH · 모서리 선).
+//      화면 메시 · 재질 · 텍스처는 버린다(위치만 읽는 geometryOnly). 설명 JSON 은 없다 — 종류는 모두 CollisionClass::Body.
+//    · 인스턴스를 만들지 않는다 — NPC 는 매 틱 움직이므로, 쏠 때 그 NPC 자세(xf)를 넘겨 RaycastPosed 로 본다.
+//      정적 Raycast 와 같은 BVH · 삼각형 판정(RayMesh)을 쓴다. 격자 · Finalize 가 필요 없다.
+//    · 메시 공간 = glTF 그대로(원점 발밑 · 위 +Y · 정면 +Z · m) — 화면의 NPC 모델과 같은 공간(PlanetDebugScene::SetNpcModel).
 // ============================================================
 
 namespace Shared {
 
-	enum class CollisionClass : uint8_t { Prop = 0, Rock, Building, Tree, Count };
+	// Body = 몸 충돌체 묶음(LoadBodyPack) — 2026-11-25. 정적 오브젝트는 Prop · Rock · Building · Tree.
+	enum class CollisionClass : uint8_t { Prop = 0, Rock, Building, Tree, Body, Count };
 
 	// 배치 JSON 인스턴스 한 개 — 클라의 PlanetPlacement::Instance 와 뜻 · 배치가 같다.
 	//  위치는 맵 공간(오브젝트 원점 = 바닥 가운데), 회전은 쿼터니언 x y z w, 배율은 균일.
@@ -153,9 +162,23 @@ namespace Shared {
 		//  안 맞으면 false. 양면. 상태를 바꾸지 않는다. (2026-11-15 — 크로스헤어 겨눈 점 · Client Engine::AimDirection)
 		bool Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, float& outDistance) const;
 
+		// ── 몸 충돌체 묶음 (2026-11-25 — 머리 주석) ──
+		// glb 의 COL_ 노드 메시를 부위 메시로 읽는다(노드 변환은 정점에 굽는다). 이전 내용은 지운다. COL_ 이 없으면 실패.
+		bool LoadBodyPack(const wchar_t* glbPath, std::wstring& error);
+		bool BodyPack() const { return body; }
+
+		// 묶음 전체(모든 부위 메시)를 자세 xf(메시 공간 → 맵 공간, CollisionInstance::xf 와 같은 행 벡터 3 × 4)로 씌우고 레이를 쏜다.
+		//  처음 맞는 부위까지의 거리(m) · 그 부위 메시 번호(Mesh(n).name = COL_ 뒤 이름). 안 맞으면 false.
+		//  상태를 바꾸지 않는다(서버 틱 · 클라 메인에서 그대로 부른다).
+		bool RaycastPosed(const float xf[12], const Vec3& origin, const Vec3& direction, float maxDistance,
+			float& outDistance, uint32_t& outMesh) const;
+
 	private:
 		bool loaded = false;
 		bool placed = false;
+		bool body = false;                                  // LoadBodyPack 으로 읽었다(2026-11-25)
+		Vec3 bodyBoundsMin{};                               // 몸 묶음 전체 경계 상자(메시 공간) — RaycastPosed 가 먼저 거른다
+		Vec3 bodyBoundsMax{};
 		std::vector<CollisionMesh>                meshes;
 		std::unordered_map<std::string, uint32_t> meshOfName;   // kind "types": 종류 이름 → 메시
 		std::vector<CollisionInstance>            instances;

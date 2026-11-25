@@ -518,6 +518,42 @@ namespace Shared {
 			return (uint64_t(x + kCellBias) << 42) | (uint64_t(y + kCellBias) << 21) | uint64_t(z + kCellBias);
 		}
 
+		// 메시 공간 선분 mo + s · md (s ∈ (0, best)) 가 메시 삼각형과 처음 만나는 비율 — BVH 를 따라간다.
+		//  만나면 best 를 줄이고 true. Raycast(정적) · RaycastPosed(몸, 2026-11-25)가 같이 쓴다.
+		bool RayMesh(const CollisionMesh& mesh, const Vec3& mo, const Vec3& md, float& best, std::vector<uint32_t>& stack)
+		{
+			if (mesh.bvh.empty()) return false;
+			bool hit = false;
+			stack.clear();
+			stack.push_back(0);
+			while (!stack.empty())
+			{
+				const uint32_t nodeIndex = stack.back();
+				stack.pop_back();
+				const CollisionBvhNode& node = mesh.bvh[nodeIndex];
+				float n0 = 0.0f, n1 = best;
+				if (!SegmentBox(mo, md, node.boundsMin, node.boundsMax, n0, n1)) continue;
+				if (node.count == 0)
+				{
+					stack.push_back(node.right);
+					stack.push_back(nodeIndex + 1);
+					continue;
+				}
+				for (uint32_t k = node.first; k < node.first + node.count; ++k)
+				{
+					const uint32_t t = mesh.bvhTris[k];
+					float s = 0.0f;
+					if (SegmentTriangle(mo, md, mesh.vertices[mesh.indices[t * 3]], mesh.vertices[mesh.indices[t * 3 + 1]],
+						mesh.vertices[mesh.indices[t * 3 + 2]], best, s))
+					{
+						best = s;
+						hit = true;
+					}
+				}
+			}
+			return hit;
+		}
+
 	} // namespace
 
 	bool CollisionWorld::LoadPack(const wchar_t* packPath, const wchar_t* manifestPath, std::wstring& error)
@@ -952,33 +988,98 @@ namespace Shared {
 
 			const Vec3 mo = InverseTransform(instance, origin);
 			const Vec3 md = Sub(InverseTransform(instance, end), mo);   // 메시 공간 선분 — 비율 s 가 맵 공간과 같다
+			if (RayMesh(mesh, mo, md, best, stack))   // 2026-11-25 — BVH 따라가기를 RayMesh 로 뺐다(몸 묶음과 같이 쓴다)
+				hit = true;
+		}
+		if (!hit) return false;
+		outDistance = best * maxDistance;
+		return true;
+	}
 
-			stack.clear();
-			stack.push_back(0);
-			while (!stack.empty())
+	/////////////////////////////////////////////////////////////////////
+	//  몸 충돌체 묶음 (2026-11-25 — 머리 주석). 정적 묶음 LoadPack ② 의 «종류 메시» 와 같은 읽기:
+	//   위치만(geometryOnly) · 보조 노드 숨기기 끔(COL_ 이 메시를 갖게) · 노드 변환을 정점에 굽기 · 용접 · BVH · 모서리 선.
+	//   다른 점 — 설명 JSON 이 없고(종류 = Body), 인스턴스를 만들지 않는다(자세는 RaycastPosed 가 받는다).
+	bool CollisionWorld::LoadBodyPack(const wchar_t* glbPath, std::wstring& error)
+	{
+		*this = CollisionWorld{};
+		error.clear();
+
+		ReadOptions options;
+		options.geometryOnly = true;
+		options.generateCollision = false;
+		options.generateTangents = false;
+		options.readAnimation = false;
+		options.hideAuthoringHelpers = false;
+		ModelSource source;
+		if (!glbPath || !ModelReader().Load(glbPath, source, error, options))
+		{
+			if (error.empty()) error = L"몸 충돌체 경로가 비어 있습니다.";
+			return false;
+		}
+
+		std::vector<Mat4> world(source.nodes.size());
+		for (size_t i = 0; i < source.nodes.size(); ++i)
+		{
+			const SourceNode& node = source.nodes[i];
+			world[i] = node.parent == kInvalidIndex || node.parent >= i ? node.local : Multiply(node.local, world[node.parent]);
+		}
+		bool first = true;
+		for (size_t i = 0; i < source.nodes.size(); ++i)
+		{
+			const SourceNode& node = source.nodes[i];
+			if (node.meshes.empty() || node.name.rfind("COL_", 0) != 0) continue;
+			CollisionMesh mesh;
+			mesh.name = node.name.substr(4);
+			mesh.cls = CollisionClass::Body;
+			for (const uint32_t m : node.meshes)
+				if (m < source.meshes.size()) Append(mesh, source.meshes[m], world[i]);
+			FinishMesh(mesh);
+			if (mesh.indices.empty()) continue;
+			bodyBoundsMin = first ? mesh.boundsMin : MinOf(bodyBoundsMin, mesh.boundsMin);
+			bodyBoundsMax = first ? mesh.boundsMax : MaxOf(bodyBoundsMax, mesh.boundsMax);
+			first = false;
+			meshes.push_back(std::move(mesh));
+		}
+		if (meshes.empty())
+		{
+			error = L"몸 충돌체(COL_ 노드)가 없습니다: " + std::wstring(glbPath);
+			return false;
+		}
+		loaded = true;
+		body = true;
+		return true;
+	}
+
+	//  자세 xf 로 묶음 전체를 씌운 레이 — 선분 양 끝을 메시 공간으로 옮겨(InverseTransform) 묶음 경계 상자로 거른 뒤,
+	//  부위 메시마다 정적 Raycast 와 같은 BVH 판정(RayMesh). 아핀 변환이라 메시 공간 비율이 그대로 맵 공간 비율이다.
+	bool CollisionWorld::RaycastPosed(const float xf[12], const Vec3& origin, const Vec3& direction, float maxDistance,
+		float& outDistance, uint32_t& outMesh) const
+	{
+		if (!body || meshes.empty() || !(maxDistance > 0.0f)) return false;
+		const float lengthSq = Dot(direction, direction);
+		if (!(lengthSq > 1.0e-12f)) return false;
+		const Vec3 dir = Scale(direction, 1.0f / std::sqrt(lengthSq));
+		const Vec3 end = Add(origin, Scale(dir, maxDistance));
+
+		CollisionInstance pose;
+		std::copy(xf, xf + 12, pose.xf);
+		ComputeInverse(pose);
+		const Vec3 mo = InverseTransform(pose, origin);
+		const Vec3 md = Sub(InverseTransform(pose, end), mo);
+
+		float s0 = 0.0f, s1 = 1.0f;
+		if (!SegmentBox(mo, md, bodyBoundsMin, bodyBoundsMax, s0, s1)) return false;   // 몸 근처도 안 지난다
+
+		float best = 1.0f;
+		bool hit = false;
+		std::vector<uint32_t> stack;
+		for (uint32_t m = 0; m < uint32_t(meshes.size()); ++m)
+		{
+			if (RayMesh(meshes[m], mo, md, best, stack))
 			{
-				const uint32_t nodeIndex = stack.back();
-				stack.pop_back();
-				const CollisionBvhNode& node = mesh.bvh[nodeIndex];
-				float n0 = 0.0f, n1 = best;
-				if (!SegmentBox(mo, md, node.boundsMin, node.boundsMax, n0, n1)) continue;
-				if (node.count == 0)
-				{
-					stack.push_back(node.right);
-					stack.push_back(nodeIndex + 1);
-					continue;
-				}
-				for (uint32_t k = node.first; k < node.first + node.count; ++k)
-				{
-					const uint32_t t = mesh.bvhTris[k];
-					float s = 0.0f;
-					if (SegmentTriangle(mo, md, mesh.vertices[mesh.indices[t * 3]], mesh.vertices[mesh.indices[t * 3 + 1]],
-						mesh.vertices[mesh.indices[t * 3 + 2]], best, s))
-					{
-						best = s;
-						hit = true;
-					}
-				}
+				hit = true;
+				outMesh = m;
 			}
 		}
 		if (!hit) return false;

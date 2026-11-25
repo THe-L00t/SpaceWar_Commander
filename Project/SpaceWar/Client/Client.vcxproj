@@ -349,6 +349,11 @@ xcopy /Y /D /I "$(ProjectDir)..\..\assets\ui\*.png" "$(OutDir)assets\ui\"</Comma
       <ObjectAsset Include="$(ProjectDir)..\..\assets\model\weapon\**\*.glb">
         <Category>weapon</Category>
       </ObjectAsset>
+      <!-- 몬스터 NPC 모델 (2026-11-19, resource 58c74e1) — 예시 행성마다 하나(Shared/World/WorldCatalog.h kWorlds npcModel).
+           텍스처는 glb 안에 내장(옆의 png 는 원본이라 복사하지 않는다). glb 안 COL_ 충돌체 노드는 GltfReader 가 화면에서 뺀다. -->
+      <ObjectAsset Include="$(ProjectDir)..\..\assets\model\monster\**\*.glb">
+        <Category>monster</Category>
+      </ObjectAsset>
     </ItemGroup>
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.obj')" Text="assets/model/character에 Arc Sentinel OBJ 파일이 필요합니다. Git LFS 실제 파일을 확인하세요." />
     <Error Condition="!Exists('$(ProjectDir)..\..\assets\model\character\Meshy_AI_01_Arc_Sentinel_1005152429_texture.mtl')" Text="캐릭터 모델의 MTL 파일이 필요합니다." />

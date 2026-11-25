@@ -71,7 +71,7 @@ namespace Shared {
 		uint16_t       magazineSize;       // 탄창
 		uint16_t       reserveAmmo;        // 처음 들 때 예비탄 (kInfiniteAmmo = 무한)
 		float          reloadSeconds;      // 장전 시간 (s)
-		uint8_t        tracerEvery;        // 예광탄 — N 발마다 하나(1 = 매 발)
+		uint8_t        tracerEvery;        // 예광탄 — N 발마다 하나(1 = 매 발, 0 = 없음)
 		float          restHeight;         // 옆으로 눕혔을 때 원점(손잡이)에서 바닥까지 (m) — 3인칭 COL_ 의 X 반폭(실측)
 		float          muzzle[3];          // 총구 — 총 glb 의 Muzzle 노드 자리(m, 총 축). 발사 원점 · 예광탄 시작 (2026-11-15)
 		// 충돌 상자 묶음 (2026-11-15 사용자 «1인칭 메쉬 기준으로 각 총기를 최소크기와 최소 개수로 총을 포함할 수 있는 육면체 그룹») —

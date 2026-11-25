@@ -3,6 +3,7 @@
 //   Shared.vcxproj 에는 추가 include 디렉터리가 없다. 클라·서버처럼 "Shared/..." 로 쓰면
 //   Shared 자신을 빌드할 때 파일을 못 찾는다 (TerrainSampler.h 도 "../HeightmapData.h" 를 쓴다).
 #include "../Vec3.h"
+#include "../Vec3d.h"
 
 // ============================================================
 //  Shared/Physics/PhysicsCalculator.h — 아키텍처 명세서 13절
@@ -37,6 +38,13 @@ namespace Shared {
 		//  레이 뒤쪽(음수 거리)은 맞은 것으로 치지 않는다.
 		static bool RaySphere(const Vec3& origin, const Vec3& direction,
 			const Vec3& center, float radius, float maxDistance, float& outDistance);
+
+		// ── 레이 대 캡슐 (2026-11-25) ──────────────────────────
+		//  캐릭터 몸(플레이어 · 게임 맵 NPC)의 충돌체 = 이동 캡슐(PlayerMovement kCapsuleRadius · kCapsuleHeight)과 레이.
+		//  a · b = 두 끝 구의 중심, direction = 단위. [tMin, tMax] 안에서 처음 들어가는 거리 — 원점이 캡슐 안이면 tMin.
+		//  캡슐 = 막힌 원기둥 ∪ 두 끝 구 — 볼록이라 레이가 안에 있는 구간이 하나다(세 구간을 합친다).
+		static bool RayCapsule(const Vec3d& origin, const Vec3d& direction, const Vec3d& a, const Vec3d& b,
+			double radius, double tMin, double tMax, double& outDistance);
 
 		// ── 레이 대 지형 ────────────────────────────────────
 		//  원점에서 distance 만큼 가는 동안 땅에 막히는가.

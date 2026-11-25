@@ -15,7 +15,8 @@
 //  ★ 전투 수치는 여기 한 곳에만 둔다 (2026-09-24)
 //    서버가 판정에 쓰고, 클라는 이 파일을 포함하지 않는다. 클라가 아는 체력은
 //    서버가 보내준 값뿐이다 — 규칙을 양쪽에 복사해 두면 반드시 갈라진다.
-//    ★ 2026-11-15 — 클라는 여전히 이 파일을 포함하지 않는다. 한 발의 레이(몸 구 kHitRadius · 충돌체 · 지형)는
+//    ★ 2026-11-25 — 몸은 그 몸의 충돌체(몬스터 COL_ · 캐릭터 이동 캡슐, ShotTrace.h)로 판정한다. 히트박스 반지름 kHitRadius(1.2 m 구)는 지웠다.
+//    ★ 2026-11-15 — 클라는 여전히 이 파일을 포함하지 않는다. 한 발의 레이(몸 · 충돌체 · 지형)는
 //      Shared/GameLogic/ShotTrace(TraceShot)가 계산하고, 클라 겨눈 점(Engine::AimDirection)과 서버 판정(ResolveFire)이 그 함수를 같이 부른다.
 // ============================================================
 
@@ -30,7 +31,6 @@ namespace Shared {
 	inline constexpr float kMaxHealth = 100.0f;    // 시작·회복 체력
 	inline constexpr float kShotDamage = 25.0f;    // 한 발 (4발이면 쓰러진다)
 	inline constexpr float kFireRange = 300.0f;    // 사거리 (m). 지평선 125m 보다 넉넉히
-	inline constexpr float kHitRadius = 1.2f;      // 히트박스 반지름 (m)
 	inline constexpr float kFireInterval = 0.2f;   // 연사 제한 (s)
 	inline constexpr float kNpcRespawnDelay = 10.0f;   // NPC 재등장까지 (s)
 
@@ -38,9 +38,8 @@ namespace Shared {
 	// 3인칭이라 총구가 몸통 중심과 완전히 같지는 않으므로 여유를 둔다.
 	inline constexpr float kMuzzleTolerance = 3.0f;
 
-	// ★ 히트박스는 명세 6.3 의 Collision Box 자리다
-	//   아직 Collision Box 가 없어 반지름 하나로 대신한다. 더미 큐브가 2m 라
-	//   외접 반지름은 1.73m 지만, 맞추기 쉬우면 판정이 헐거워지므로 1.2m 로 둔다.
+	// ★ 몸 히트박스 = 그 몸의 충돌체(명세 6.3 Collision Box 자리) — 2026-11-25 부터 몬스터 COL_ 부위 · 캐릭터 이동 캡슐.
+	//   (09-26 ~ 11-25 는 «반지름 1.2 m 구» 대역이었다 — 사용자 지시가 아니었다. 사용자 «충돌체 이용하라 했는데»)
 	class GameLogic
 	{
 	public:

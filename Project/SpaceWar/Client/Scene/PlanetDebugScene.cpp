@@ -201,6 +201,37 @@ namespace swc {
 		return world ? std::wstring(world->collisionManifest) : std::wstring();
 	}
 
+	// NPC 모델 (2026-11-19) — «model\monster\X\X.glb»(Shared::kWorlds npcModel). 없으면 L"".
+	const wchar_t* PlanetDebugScene::NpcAsset(size_t index)
+	{
+		const Shared::WorldInfo* world = WorldOf(index);
+		return world && world->npcModel ? world->npcModel : L"";
+	}
+
+	bool PlanetDebugScene::SetNpcModel(const ModelData& data, GRenderer& renderer, std::wstring& error)
+	{
+		if (npcModelLoaded)
+		{
+			error = L"이미 올린 NPC 모델입니다.";
+			return false;
+		}
+		// 포장 glb(resource 58c74e1, Release_1118) = 원점 발밑 · 키 시험값(m) · 정면 glTF +Z — 자동 키 맞춤(Model::Initialize(data, renderer))을 쓰지 않는다.
+		//  NPC 좌표는 몸통 중심(서버가 지면 + kGroundOffset 에 세운다)이라 발을 그만큼 아래에 둔다. 정면은 엔진 앞쪽(+Z)과 같다.
+		//  COL_ 충돌체 노드는 GltfReader 가 화면 메시에서 뺀다(IsAuthoringHelperNode).
+		//  ★ 2026-11-25 — 그 COL_ 메시는 로드 묶음이 따로 읽어 몸 충돌체로 쓴다(SetNpcBody · Shared::CollisionWorld::LoadBodyPack).
+		//    충돌체 메시 공간 = 이 모델의 glTF 공간 그대로라, 아래 «발 내림» 과 같은 자세(Shared::BodyPoseTransform)를 씌우면 화면과 겹친다.
+		XMFLOAT4X4 visual;
+		XMStoreFloat4x4(&visual, XMMatrixTranslation(0.0f, -float(Shared::kGroundOffset), 0.0f));
+		if (!npcModel.Initialize(data, renderer, visual))
+		{
+			error = npcModel.LastError();
+			npcModel.Release(renderer);   // 반쯤 만든 GPU 자원이 있으면 놓는다(빈 모델에 불러도 된다)
+			return false;
+		}
+		npcModelLoaded = true;
+		return true;
+	}
+
 	bool PlanetDebugScene::Build(const ModelData& data, Shared::PlanetSurface&& parsedGround, GRenderer& renderer,
 		LegacyScene& scene, const Vec3d& planetCenter, std::wstring& error)
 	{
@@ -325,6 +356,10 @@ namespace swc {
 		bool released = true;
 		if (!model.Release(renderer))
 			released = false;
+		// NPC 모델(2026-11-19) — 그 노드는 Engine::ReleaseNpcNodes 가 먼저 비웠다.
+		if (!npcModel.Release(renderer))
+			released = false;
+		npcModelLoaded = false;
 		for (ObjectType& type : objectTypes)
 			if (!type.model.Release(renderer))
 				released = false;
@@ -341,6 +376,7 @@ namespace swc {
 		auto freeVector = [](auto& values) { std::remove_reference_t<decltype(values)>().swap(values); };
 		ground = Shared::PlanetSurface{};
 		collision = Shared::CollisionWorld{};
+		npcBody = Shared::CollisionWorld{};   // 2026-11-25 NPC 몸 충돌체
 		root = kInvalidNode;
 		spawnUp = Vec3d{ 0.0, 1.0, 0.0 };
 		loaded = false;

@@ -1,6 +1,9 @@
 #include "PhysicsCalculator.h"
 
+#include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <utility>
 
 #include "../PlanetConst.h"
 #include "../Terrain/TerrainSampler.h"
@@ -56,6 +59,49 @@ namespace Shared {
 			return false;
 
 		outDistance = float(hit);
+		return true;
+	}
+
+	bool PhysicsCalculator::RayCapsule(const Vec3d& origin, const Vec3d& direction, const Vec3d& a, const Vec3d& b,
+		double radius, double tMin, double tMax, double& outDistance)
+	{
+		constexpr double kTiny = 1.0e-12;
+		double enter = 1.0e300, exit = -1.0e300;
+		auto take = [&](double t0, double t1) { enter = (std::min)(enter, t0); exit = (std::max)(exit, t1); };
+
+		// 두 끝 구
+		for (const Vec3d& c : { a, b })
+		{
+			const Vec3d oc = origin - c;
+			const double half = Shared::Dot(oc, direction);
+			const double h = half * half - (Shared::Dot(oc, oc) - radius * radius);
+			if (h >= 0.0) take(-half - std::sqrt(h), -half + std::sqrt(h));
+		}
+		// 몸통 — 끝없는 원기둥 ∩ 두 끝 면 사이
+		const Vec3d axis = b - a;
+		const double length = Length(axis);
+		if (length > kTiny)
+		{
+			const Vec3d u = axis * (1.0 / length);
+			const Vec3d oa = origin - a;
+			const double du = Shared::Dot(direction, u), ou = Shared::Dot(oa, u);
+			const Vec3d dp = direction - u * du, op = oa - u * ou;
+			const double qa = Shared::Dot(dp, dp), qb = Shared::Dot(op, dp), qc = Shared::Dot(op, op) - radius * radius;
+			const double h = qb * qb - qa * qc;
+			if (qa > kTiny && h >= 0.0 && std::fabs(du) > kTiny)
+			{
+				double c0 = (-qb - std::sqrt(h)) / qa, c1 = (-qb + std::sqrt(h)) / qa;
+				double s0 = -ou / du, s1 = (length - ou) / du;
+				if (s0 > s1) std::swap(s0, s1);
+				const double t0 = (std::max)(c0, s0), t1 = (std::min)(c1, s1);
+				if (t0 <= t1) take(t0, t1);
+			}
+			else if (qa > kTiny && h >= 0.0 && ou >= 0.0 && ou <= length)
+				take((-qb - std::sqrt(h)) / qa, (-qb + std::sqrt(h)) / qa);   // 축에 수직으로 지나간다
+			// 축과 나란한 레이(qa ≈ 0)는 두 끝 구 구간이 이미 몸통을 덮는다
+		}
+		if (!(enter <= exit) || exit < tMin || enter > tMax) return false;
+		outDistance = (std::max)(enter, tMin);
 		return true;
 	}
 

@@ -32,6 +32,7 @@ namespace swc {
 		staticVertexCount = 0;
 		instanceCount = 0;
 		capsuleCount = 0;
+		bodyCount = 0;
 		truncated = false;
 	}
 
@@ -39,6 +40,35 @@ namespace swc {
 	{
 		vertices.resize(staticVertexCount);
 		capsuleCount = 0;
+		bodyCount = 0;
+	}
+
+	/////////////////////////////////////////////////////////////////////
+	//  몸 충돌체 선 (2026-11-25) — 정적 충돌체(Update)와 같은 모서리(CollisionMesh::edges)를 자세 xf 로 옮긴다.
+	void ColliderDebugView::AddBody(const Shared::CollisionWorld& body, const float xf[12], uint32_t color)
+	{
+		size_t need = 0;
+		for (size_t m = 0; m < body.MeshCount(); ++m)
+			need += body.Mesh(m).edges.size();
+		if (vertices.size() + need > kMaxVertices)
+		{
+			truncated = true;
+			return;
+		}
+		Shared::CollisionInstance pose;
+		std::copy(xf, xf + 12, pose.xf);
+		for (size_t m = 0; m < body.MeshCount(); ++m)
+		{
+			const Shared::CollisionMesh& mesh = body.Mesh(m);
+			for (size_t e = 0; e + 1 < mesh.edges.size(); e += 2)
+			{
+				const Shared::Vec3 a = Shared::CollisionWorld::Transform(pose, mesh.vertices[mesh.edges[e]]);
+				const Shared::Vec3 b = Shared::CollisionWorld::Transform(pose, mesh.vertices[mesh.edges[e + 1]]);
+				vertices.push_back({ DirectX::XMFLOAT3(a.x, a.y, a.z), color });
+				vertices.push_back({ DirectX::XMFLOAT3(b.x, b.y, b.z), color });
+			}
+		}
+		++bodyCount;
 	}
 
 	/////////////////////////////////////////////////////////////////////
@@ -116,6 +146,7 @@ namespace swc {
 		vertices.clear();
 		staticVertexCount = 0;
 		capsuleCount = 0;
+		bodyCount = 0;
 		truncated = false;
 
 		const Shared::Vec3 center{ float(eye.x), float(eye.y), float(eye.z) };
@@ -140,7 +171,7 @@ namespace swc {
 		{
 			const Shared::CollisionInstance& instance = world->Instance(index);
 			const Shared::CollisionMesh& mesh = world->Mesh(instance.mesh);
-			if (vertices.size() + mesh.edges.size() > kMaxVertices - kCapsuleReserve)   // 캡슐 몫을 남긴다
+			if (vertices.size() + mesh.edges.size() > kMaxVertices - kDynamicReserve)   // 캡슐 · 몸 충돌체 몫을 남긴다(2026-11-25 몸 몫 추가)
 			{
 				truncated = true;
 				break;

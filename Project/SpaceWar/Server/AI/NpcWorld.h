@@ -93,6 +93,10 @@ namespace srv {
 		// 스폰 자리를 고를 때 피할 정적 충돌체(건물 · 소품). 없으면(nullptr) 지형만 본다. 행동 스레드를 띄우기 전에 한 번 준다.
 		void SetCollision(const Shared::CollisionWorld* c) { collision = c; }
 
+		// 첫 NPC 번호(2026-11-19 맵마다 NPC 무리) — SpawnGroups 전에 한 번. 맵마다 무리가 따로라 번호가 겹치지 않게
+		//  맵 번호로 띄운다(main.cpp NpcIdBase). 클라는 번호로 노드 · 피 자리를 찾으므로 맵을 바꿔도 번호가 섞이면 안 된다.
+		void SetIdBase(uint32_t first) { nextNpcId = first; }
+
 		// 시작 지점(spawnPos, 월드 좌표)에서 일정 거리 띠 안에 무리지어 count 마리를 깐다 (2026-10-29).
 		void SpawnGroups(const Shared::Vec3& spawnPos, int count);
 
@@ -106,11 +110,9 @@ namespace srv {
 		void Tick(const std::vector<PlayerView>& players, float dt);
 
 		// ── 사격 판정 ───────────────────────────────────────
-		//  레이에 가장 먼저 맞는 살아 있는 NPC 를 찾는다. 지형 가림은 보지 않는다
-		//  (부르는 쪽이 대상을 정한 뒤 한 번만 검사한다).
-		//  ★ 2026-11-15 부터 ResolveFire 는 Shared::TraceShot(몸 · 충돌체 · 지형을 한 번에)에 Snapshot 의 NPC 를 넘긴다 — 지금 부르는 곳 없음.
-		bool Raycast(const Shared::Vec3& origin, const Shared::Vec3& direction,
-			float maxDistance, uint32_t& outNpcId, float& outDistance) const;
+		//  ResolveFire(main.cpp)가 Shared::TraceShot(몸 · 충돌체 · 지형을 한 번에)에 Snapshot 의 NPC 를 넘긴다.
+		//  몸 = 그 맵의 몬스터 몸 충돌체(ServerWorld::npcBody — COL_ 부위 메시를 NPC 자리에 씌운다).
+		//  ★ 2026-11-25 — 부르는 곳 없던 Raycast(몸통 중심 구 kHitRadius)를 지웠다(사용자 «구로 판정하라 한적 없고»).
 
 		// 피해를 입힌다. 이번 피격으로 쓰러졌으면 true.
 		bool Damage(uint32_t npcId, float damage);
