@@ -460,9 +460,27 @@ namespace swc {
 		XMFLOAT3   cameraUp;        float    softDistance;        // 깊이 페이드 폭(m)
 		XMFLOAT3   sunDir;          uint32_t width;
 		XMFLOAT3   sunIlluminance;  uint32_t height;
-		XMFLOAT3   planetUp;        uint32_t pad0;
+		XMFLOAT3   planetUp;        uint32_t lightEnabled;      // 2026-11-25(예전 pad0) — 1 = t1 에 [0b] 파티클 빛 결과를 묶었다
+		// 2026-11-25 — 주변광을 GI 프로브로(TransparentConstants 와 같은 값)
+		uint32_t   probeIrradianceSrv, probeDistanceSrv, probeStateSrv, pad0;
+		ProbeVolumeGpu probeVolume;        // GI 가까운 겹
+		ProbeVolumeGpu probeVolumeFar;     // GI 먼 겹
+		// 2026-11-23 플립북 표 — 칸마다 (색 바인드리스 번호, 노멀 바인드리스 번호, 열 | 행 << 16, 프레임 수).
+		//  번호 0xFFFFFFFF = 없음. ParticleSprite::flipbook − 1 이 칸 번호(FramePacket::particleFlipbooks 순서).
+		XMUINT4    flipbooks[kMaxParticleFlipbooks];
 	};
-	static_assert(sizeof(ParticleConstants) == 224, "ParticleCB 는 224바이트");
+	static_assert(sizeof(ParticleConstants) == 224 + 16 + 2 * sizeof(ProbeVolumeGpu) + 16 * kMaxParticleFlipbooks,
+		"ParticleCB 는 224 + 2026-11-25 프로브 272 + 플립북 표 바이트");
+
+	// ParticleLight.hlsl 의 ParticleLightCB 와 같은 순서 · 크기 (2026-11-25, [0b] 파티클 빛 — 해 가시도 · AO)
+	struct ParticleLightConstants
+	{
+		XMFLOAT3 sunDir;       uint32_t count;        // 해 → 장면 방향 · 이번 프레임 파티클 수
+		XMFLOAT3 planetUp;     uint32_t outputUav;    // 카메라 자리의 위(AO 반구 축) · 결과 UAV(바인드리스)
+		float    maxDistance;  float    aoRadius;     // 해 쪽 레이 길이(m) · AO 반경(m)
+		uint32_t firstOutput;  uint32_t pad0;         // 결과 버퍼에서 이번 슬롯의 첫 칸
+	};
+	static_assert(sizeof(ParticleLightConstants) == 48, "ParticleLightCB 는 48바이트");
 
 	// ColorPyramid.hlsl 의 PyramidCB (2026-10-27 렌더 9단계) — 디스패치마다 256 B 칸 하나
 	struct PyramidConstants
@@ -722,6 +740,8 @@ namespace swc {
 			//  프레임마다 이번 슬롯의 파티클 TLAS · 파티클 배열을 가리키게 다시 쓴다(PrepareParticleAccel). 못 쓰면 빈 뷰.
 			BindlessParticleTlas = 83,                                          // 파티클 TLAS (RaytracingAccelerationStructure)
 			BindlessParticleSrv = 84,                                           // 파티클 배열 (StructuredBuffer<ParticleSprite>)
+			// 2026-11-25 — [0b] 파티클 빛 결과 (RWStructuredBuffer<float4>, 슬롯 2벌 전체 — 슬롯은 상수 firstOutput 으로 고른다)
+			BindlessParticleLightUav = 85,
 			// 앞 128칸을 프레임 자원 자리로 잡아 둔다(6단계에서 16 → 64, 10단계에서 → 128).
 			//  텍스처 · 메시 번호는 그 뒤부터 받으므로 이 값이 바뀌어도 셰이더는 영향이 없다(재질 표 · 인스턴스 표에 번호가 적힌다).
 			BindlessReserved = 128 };
@@ -1058,8 +1078,10 @@ namespace swc {
 		//  ★ 슬롯 2벌: 지금은 EndFrame 이 GPU 를 기다려 한 벌로도 안전하지만, CPU 가 GPU 를 기다리지 않게 바꾸면
 		//    GPU 가 앞 프레임 것을 읽는 동안 덮어쓰게 된다(인스턴스 · TLAS 설명자와 같은 규칙 — AccelStructure::kFrameSlots).
 		static constexpr UINT MaxParticles = 4096;          // ParticleSystem::kSpritePool 과 같다(넘는 몫은 그리지 않는다)
-		static constexpr UINT ParticleCBSize = 256;         // CBV 256 B 정렬
-		ComPtr<ID3D12Resource>      particleBuffer;         // UPLOAD, 슬롯 2벌 × MaxParticles × 48 B
+		// CBV 256 B 정렬 — 2026-11-23 플립북 표(128 B)가 붙어 352 B → 512, 2026-11-24 표 128 줄(2,048 B)이라 2,272 B → 2,304,
+		//  2026-11-25 GI 프로브 272 B 가 붙어 2,544 B → 2,560
+		static constexpr UINT ParticleCBSize = UINT((sizeof(ParticleConstants) + 255) & ~size_t(255));
+		ComPtr<ID3D12Resource>      particleBuffer;         // UPLOAD, 슬롯 2벌 × MaxParticles × sizeof(ParticleSprite)(2026-11-25 48 → 96 B)
 		uint8_t*                    particleData = nullptr;
 		ComPtr<ID3D12Resource>      particleCB;             // UPLOAD, 슬롯 2벌 × 256 B
 		uint8_t*                    particleCBData = nullptr;
@@ -1079,6 +1101,16 @@ namespace swc {
 		bool                   particleRtReady = false;
 		UINT                   particleRtCount = 0;         // 이번 프레임 가속 구조에 넣은 파티클 수
 		UINT                   particleRtSlot = 0;
+		// ── [0b] 파티클 빛 (2026-11-25, ParticleLight.hlsl — 사용자 «그늘에서 파티클이 … 태양 빛을 받은것 처럼 밝아» → «그렇게 작업해줘») ──
+		//  파티클마다 해 가시도(본 TLAS + 파티클 TLAS) · AO(본 TLAS 레이 8개)를 미리 계산해 [7b] 가 읽는다.
+		//  비동기 컴퓨트 큐의 TLAS 빌드 바로 뒤(같은 리스트 · 같은 asFence) — G-buffer 와 같이 돈다. 큐가 없으면 직접 리스트에서.
+		//  결과는 DEFAULT 버퍼 슬롯 2벌(파티클 배열과 같은 규칙). 버퍼라 ExecuteCommandLists 끝에 COMMON 으로 돌아가고,
+		//  컴퓨트 큐(UAV) · 그래픽 큐(VS · GS 읽기)가 각자 암묵 승격으로 쓴다 — 그래픽 큐는 asFence 를 기다린 뒤 읽는다.
+		ComPtr<ID3D12PipelineState> particleLightPso;       // cs_6_6 CSParticleLight (컴퓨트 공용 루트)
+		ComPtr<ID3D12Resource>      particleLightBuffer;    // DEFAULT, 슬롯 2벌 × MaxParticles × float4 (해 가시도 RGB, AO)
+		ComPtr<ID3D12Resource>      particleLightCB;        // UPLOAD, 슬롯 2벌 × 256 B
+		uint8_t*                    particleLightCBData = nullptr;
+		bool                        particleLightLive = false;   // 이번 프레임에 빛 패스를 넣었나([7b] 가 t1 을 읽을지)
 		// ── [8] 후처리 (2026-10-27 렌더 10단계, PostProcess.hlsl · Tonemap.hlsl PSTonemap) ──
 		//  블룸(Jimenez 2014) → 자동 노출(휘도 히스토그램, UE 기본값) → ACES 근사 톤 곡선(설계 문서 6.7) → sRGB.
 		//  디버그 뷰(0 이 아님)와 바인드리스가 없는 장치는 예전 «0~1 자르기» 톤맵을 쓴다(값을 숫자 그대로 보려고).
@@ -1525,7 +1557,15 @@ namespace swc {
 			{
 				const ParticleSprite& p = particles[i];
 				const float r = 0.5f * p.size;   // 셰이더는 지름 size 인 구로 맞는다 — 상자는 그 구를 감싼다
-				aabbs[i] = { p.position.x - r, p.position.y - r, p.position.z - r, p.position.x + r, p.position.y + r, p.position.z + r };
+				// 2026-11-25 — 구의 가운데 = ParticleCommon.hlsli ParticleRayCenter 와 같은 식(고정 사각형은 기준점 → 사각형 가운데)
+				XMFLOAT3 c = p.position;
+				if (p.flags & kParticleFixedAxes)
+				{
+					c.x += (p.axisX.x * p.offsetX + p.axisY.x * p.offsetY) * p.size;
+					c.y += (p.axisX.y * p.offsetX + p.axisY.y * p.offsetY) * p.size;
+					c.z += (p.axisX.z * p.offsetX + p.axisY.z * p.offsetY) * p.size;
+				}
+				aabbs[i] = { c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r };
 			}
 			D3D12_RAYTRACING_INSTANCE_DESC instance = {};
 			instance.Transform[0][0] = 1.0f;   // 월드 그대로(AABB 를 월드 좌표로 넣었다)
@@ -1582,6 +1622,58 @@ namespace swc {
 			cmd->ResourceBarrier(1, &uav);
 		}
 
+		// ── [0b] 파티클 빛 준비 (2026-11-25) — 이번 슬롯 상수를 쓰고, 이번 프레임에 패스를 넣을지 정한다 ──
+		//  PrepareParticleAccel 뒤 · TLAS 제출 앞에서 부른다(파티클 배열 · 바인드리스 84 · 83 이 이번 슬롯을 가리킨 뒤).
+		//  파티클 TLAS · 본 TLAS 인스턴스가 있어야 한다. 없으면 [7b] 는 예전처럼(그림자 · AO 없이) 그린다.
+		void PrepareParticleLight(const XMFLOAT3& planetUp)
+		{
+			particleLightLive = false;
+			if (!particleLightPso || !particleLightBuffer || !particleLightCBData || !particleRtReady ||
+				particleRtCount == 0 || accel.InstanceCount() == 0)
+				return;
+			const UINT slot = particleRtSlot;
+			ParticleLightConstants lc = {};
+			lc.sunDir = sunDir;
+			lc.count = particleRtCount;
+			lc.planetUp = planetUp;
+			lc.outputUav = BindlessParticleLightUav;
+			lc.maxDistance = kShadowMaxDistance;   // [4a] 와 같은 해 쪽 레이 길이
+			lc.aoRadius = kAoRadius;               // [2] 와 같은 AO 반경
+			lc.firstOutput = slot * MaxParticles;
+			memcpy(particleLightCBData + size_t(slot) * 256, &lc, sizeof(lc));
+			particleLightLive = true;
+		}
+
+		// ── [0b] 파티클 빛 기록 — 본 TLAS · 파티클 TLAS 빌드(끝에 UAV 배리어) 바로 뒤에 같은 리스트로 ──
+		//  directList = 비동기 큐를 못 써 직접 리스트에 넣을 때. 이때는 같은 리스트 뒤에서 [7b] VS 가 읽으므로
+		//  여기서 UAV → 셰이더 읽기로 바꿔 둔다(비동기 큐면 리스트가 끝날 때 COMMON 으로 돌아가 그래픽 큐가 암묵 승격으로 읽는다).
+		//  그룹 하나 = 파티클 8개 × 스레드 8개(ParticleLight.hlsl kParticlesPerGroup · kLanes).
+		void RecordParticleLight(ID3D12GraphicsCommandList4* cmd, bool directList)
+		{
+			if (!particleLightLive || !cmd) return;
+			const UINT slot = particleRtSlot;
+			ID3D12DescriptorHeap* heaps[] = { bindlessHeap.Get() };
+			cmd->SetDescriptorHeaps(1, heaps);   // 힙을 먼저, 루트 시그니처를 나중에(CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED 사양)
+			cmd->SetComputeRootSignature(computeRootSig.Get());
+			cmd->SetPipelineState(particleLightPso.Get());
+			cmd->SetComputeRootConstantBufferView(0, particleLightCB->GetGPUVirtualAddress() + UINT64(slot) * 256);
+			cmd->SetComputeRootShaderResourceView(1, accel.TlasAddress());
+			cmd->SetComputeRootShaderResourceView(2, rtMaterials->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(3, rtInstances->GetGPUVirtualAddress() +
+				UINT64(slot) * MaxInstances * sizeof(RtInstanceGpu));
+			cmd->Dispatch((particleRtCount + 7) / 8, 1, 1);
+			if (directList)
+			{
+				D3D12_RESOURCE_BARRIER toRead = {};
+				toRead.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				toRead.Transition.pResource = particleLightBuffer.Get();
+				toRead.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				toRead.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+				toRead.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+				cmd->ResourceBarrier(1, &toRead);
+			}
+		}
+
 		// ── [0] TLAS 빌드를 비동기 컴퓨트 큐로 보낸다 (2026-10-27 렌더 3단계) ──
 		//  인스턴스 디스크립터(UPLOAD)는 부르기 전에 이번 프레임 값으로 채워 둔다(ResetInstances · AddInstance).
 		//  실패하면 false — 부른 쪽이 직접 커맨드 리스트에서 빌드한다.
@@ -1600,6 +1692,7 @@ namespace swc {
 				return false;
 			accel.BuildTlas(computeList.Get());   // 빌드 + UAV 배리어(같은 컴퓨트 리스트 안)
 			RecordParticleAccel(computeList.Get());   // 2026-11-17 P5 — 파티클 BLAS · TLAS 도 같은 리스트 · 같은 asFence
+			RecordParticleLight(computeList.Get(), false);   // 2026-11-25 [0b] — 두 TLAS 를 읽어 파티클 빛(같은 asFence 뒤에 [7b] 가 읽는다)
 			if (FAILED(computeList->Close()))
 				return false;
 			ID3D12CommandList* lists[] = { computeList.Get() };
@@ -3589,6 +3682,13 @@ namespace swc {
 					impl->rtShadowPso.Reset();
 					impl->status += L"  (RT 그림자 파이프라인 생성 실패 — 그림자 없이 진행)";
 				}
+				// 2026-11-25 [0b] 파티클 빛 (ParticleLight.hlsl) — 같은 공용 루트. 실패하면 [7b] 는 예전처럼(그림자 · AO 없이) 그린다.
+				//  결과 버퍼 · 상수는 아래 «P5 파티클 가속 구조» 블록에서 만든다(파티클 배열 · TLAS 가 있어야 돈다).
+				if (!createCompute(L"ParticleLight.hlsl", L"CSParticleLight", impl->particleLightPso))
+				{
+					impl->particleLightPso.Reset();
+					OutputDebugStringW(L"[GRenderer] [0b] 파티클 빛 파이프라인 생성 실패 — 파티클은 그림자 · AO 없이\n");
+				}
 			}
 
 			// [2] AO — 세 진입점 (AO.hlsl). RT 가 없는 장치는 RayQuery 를 빼고 컴파일한다(순수 SSAO).
@@ -3994,6 +4094,49 @@ namespace swc {
 				OutputDebugStringW(L"[GRenderer] P5 파티클 가속 구조 준비 (AABB BLAS + TLAS, 슬롯 2벌) — 그림자 · AO · GI · 반사\n");
 			}
 			impl->WriteParticleDescriptors(0, false);   // 첫 프레임 전까지는 빈 뷰(PrepareParticleAccel 이 진짜 뷰로 바꾼다)
+
+			// ── [0b] 파티클 빛 결과 · 상수 (2026-11-25, ParticleLight.hlsl) — 파티클 가속 구조와 PSO 가 있을 때만 ──
+			//  결과 = DEFAULT 버퍼(COMMON 으로 만든다 — 컴퓨트 큐 UAV · 그래픽 큐 읽기를 암묵 승격으로), 슬롯 2벌 × MaxParticles × float4.
+			//  UAV 하나가 두 슬롯 전체를 덮고, 셰이더는 상수 firstOutput 으로 이번 슬롯을 고른다(프레임마다 뷰를 다시 쓰지 않는다).
+			if (impl->particleRtReady && impl->particleLightPso)
+			{
+				D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+				D3D12_RESOURCE_DESC lightDesc = BufferDesc(UINT64(AccelStructure::kFrameSlots) * Impl::MaxParticles * 16);
+				lightDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+				D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				const D3D12_RESOURCE_DESC cbDesc = BufferDesc(UINT64(AccelStructure::kFrameSlots) * 256);
+				D3D12_RANGE noRead = { 0, 0 };
+				const bool lightOk =
+					SUCCEEDED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &lightDesc,
+						D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&impl->particleLightBuffer))) &&
+					SUCCEEDED(impl->device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &cbDesc,
+						D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&impl->particleLightCB))) &&
+					SUCCEEDED(impl->particleLightCB->Map(0, &noRead, reinterpret_cast<void**>(&impl->particleLightCBData)));
+				if (lightOk)
+				{
+					D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+					uav.Format = DXGI_FORMAT_UNKNOWN;
+					uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+					uav.Buffer.FirstElement = 0;
+					uav.Buffer.NumElements = AccelStructure::kFrameSlots * Impl::MaxParticles;
+					uav.Buffer.StructureByteStride = 16;
+					impl->device->CreateUnorderedAccessView(impl->particleLightBuffer.Get(), nullptr, &uav,
+						impl->BindlessCpu(Impl::BindlessParticleLightUav));
+					OutputDebugStringW(L"[GRenderer] [0b] 파티클 빛 준비 (해 가시도 · AO 8 레이, 비동기 컴퓨트 큐 TLAS 빌드 뒤)\n");
+				}
+				else
+				{
+					impl->particleLightPso.Reset();
+					impl->particleLightBuffer.Reset();
+					impl->particleLightCB.Reset();
+					impl->particleLightCBData = nullptr;
+					OutputDebugStringW(L"[GRenderer] [0b] 파티클 빛 버퍼 생성 실패 — 파티클은 그림자 · AO 없이\n");
+				}
+			}
+			else
+			{
+				impl->particleLightPso.Reset();   // 가속 구조가 없으면 돌 수 없다(PrepareParticleLight 도 막는다)
+			}
 		}
 
 		// ── [8] HDR → 백버퍼 파이프라인 (Tonemap.hlsl, 2026-10-27) ──
@@ -5093,12 +5236,15 @@ namespace swc {
 			}
 			// 2026-11-17 P5 — 파티클 AABB · 인스턴스 · 바인드리스 칸을 이번 슬롯으로(빌드는 아래 본 TLAS 와 같은 리스트)
 			impl->PrepareParticleAccel(packet.particles, particleCount);
+			// 2026-11-25 [0b] 파티클 빛 — 상수를 쓰고 넣을지 정한다(기록은 아래 TLAS 빌드 뒤 같은 리스트)
+			impl->PrepareParticleLight(view.up);
 			// ★ 2026-10-27 렌더 3단계 — [0] 빌드는 비동기 컴퓨트 큐로. 직접 큐는 G-buffer 뒤(JoinAsyncTlasBuild)에서 기다린다.
 			//   컴퓨트 큐가 없거나 제출에 실패하면 예전처럼 이 직접 리스트에서 빌드한다.
 			if (!impl->asyncAs || !impl->SubmitTlasBuildAsync())
 			{
 				impl->accel.BuildTlas(commandList);
 				impl->RecordParticleAccel(commandList);   // 2026-11-17 P5 — 직접 리스트에서도 본 TLAS 다음에
+				impl->RecordParticleLight(commandList, true);   // 2026-11-25 [0b] — 직접 리스트면 끝에 셰이더 읽기로 바꿔 둔다
 			}
 		}
 
@@ -5822,6 +5968,29 @@ namespace swc {
 			pc.sunIlluminance = impl->sunIlluminance;
 			pc.height = impl->height;
 			pc.planetUp = view.up;
+			// 2026-11-25 — [0b] 파티클 빛(해 가시도 · AO)을 이번 프레임에 넣었으면 t1 로 읽는다. 주변광은 GI 프로브(→ 하늘 조도).
+			const bool particleLight = rtActive && impl->particleLightLive;
+			pc.lightEnabled = particleLight ? 1u : 0u;
+			pc.probeIrradianceSrv = Impl::BindlessProbeIrradianceSrv;
+			pc.probeDistanceSrv = Impl::BindlessProbeDistanceSrv;
+			pc.probeStateSrv = Impl::BindlessProbeStateSrv;
+			pc.probeVolume = impl->probeVolume;          // enabled 0 이면 셰이더가 하늘 조도로 대신한다
+			pc.probeVolumeFar = impl->probeVolumeFar;
+			// 2026-11-23 플립북 표 — 텍스처 번호를 바인드리스 번호로. 놓았거나 없는 텍스처는 «없음»(셰이더가 둥근 모양으로 그린다).
+			auto textureSrv = [&](TextureHandle handle) -> uint32_t
+			{
+				if (handle == kInvalidTexture || handle >= impl->textures.size()) return 0xFFFFFFFFu;
+				const Impl::TextureGpu& texture = impl->textures[handle];
+				return texture.resource.Get() != nullptr ? texture.bindless : 0xFFFFFFFFu;
+			};
+			for (uint32_t f = 0; f < kMaxParticleFlipbooks; ++f)
+			{
+				pc.flipbooks[f] = XMUINT4(0xFFFFFFFFu, 0xFFFFFFFFu, 0u, 0u);
+				if (f >= packet.particleFlipbooks.size()) continue;
+				const ParticleFlipbook& fb = packet.particleFlipbooks[f];
+				pc.flipbooks[f] = XMUINT4(textureSrv(fb.color), textureSrv(fb.normal),
+					(std::min)(fb.columns, 0xFFFFu) | ((std::min)(fb.rows, 0xFFFFu) << 16), fb.frameCount);
+			}
 			memcpy(impl->particleCBData + size_t(slot) * Impl::ParticleCBSize, &pc, sizeof(pc));
 
 			impl->TransitionTargets({
@@ -5837,6 +6006,10 @@ namespace swc {
 			commandList->SetGraphicsRootConstantBufferView(0, impl->particleCB->GetGPUVirtualAddress() + UINT64(slot) * Impl::ParticleCBSize);
 			commandList->SetGraphicsRootShaderResourceView(2, impl->particleBuffer->GetGPUVirtualAddress() +
 				UINT64(slot) * Impl::MaxParticles * sizeof(ParticleSprite));
+			// 2026-11-25 t1 — 빛 패스 결과(이번 슬롯). 안 돌았으면 셰이더가 읽지 않지만 루트 칸은 채워 둔다(파티클 배열을 그대로).
+			commandList->SetGraphicsRootShaderResourceView(3, particleLight
+				? impl->particleLightBuffer->GetGPUVirtualAddress() + UINT64(slot) * Impl::MaxParticles * 16
+				: impl->particleBuffer->GetGPUVirtualAddress());
 			commandList->IASetPrimitiveTopology(kParticleExpandInGs ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			auto drawParticles = [&](ID3D12PipelineState* pso, UINT first, UINT particles)
 			{

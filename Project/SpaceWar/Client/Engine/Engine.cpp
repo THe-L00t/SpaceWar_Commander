@@ -60,6 +60,137 @@ namespace
 	//  false(지금) = 내 발이 몸에 맞은 그 프레임에 바로 피. true = 맞은 자리를 기억해 두었다가(ParticleSystem::RememberBodyHit)
 	//  서버가 NpcHit 로 «맞았다» 고 알리면 그 자리에 피(ConfirmNpcHits). 플레이어 몸은 아직 확인을 잇지 않았다(PlayerHealth 연결 전).
 	constexpr bool   kBloodWaitsForServer = false;
+
+	// ── 파티클 그림 표 (2026-11-23 플립북 · 11-24 낱장 텍스처 · 11-24 층마다 여러 장) ──
+	//  2026-11-23 사용자 «플립북 클래스도 하나 구성하고 리소스 매니저에서 읽어 넘겨주면 플립북으로 다룰 수 있도록»,
+	//  11-24 «일반 텍스처용 클래스 하나 만들어줘. 회전이 가능하게», 11-24 «먼지 전부, 연기 전부».
+	//  층 하나에 여러 장 — 파티클마다 태어날 때 그 층의 그림 중 하나를 같은 확률로 고른다(ParticleSystem::AddFlipbook · AddTexture).
+	//  경로는 assets\ 아래(AssetPath). 색 = 바탕색(sRGB) + 알파, 노멀 = 카메라 공간(선형) + 알파(nullptr = 노멀 없이).
+	//  못 읽은 파일은 그 그림만 빠진다(로그만). 한 장도 못 붙은 층은 예전처럼 둥근 모양.
+	//  ★ 줄 수 = Engine::particleFlipbooks · particleTextures 칸 수(BuildGameLoad 의 static_assert).
+	//  먼지 · 연기 = 후보 시트 03 · 04 전부(Resource_Work/HitParticles/후보_20261123 — 줄 끝 주석이 후보 ID, 옮긴 법 _scripts/copy_effect_assets.py).
+	//  tint = 층 표(ParticleSystem kLayers)의 색 그대로 — 텍스처가 흰색 · 회색이라 예전 둥근 모양과 같은 색 · 불투명도가 된다(2026-11-24 내가 고른 값).
+	using PL = swc::ParticleSystem::Layer;
+	const XMFLOAT4 kDustTint{ 0.32f, 0.29f, 0.25f, 0.55f };    // kLayers 먼지 색
+	const XMFLOAT4 kSmokeTint{ 0.45f, 0.44f, 0.42f, 0.28f };   // kLayers 연기 색
+
+	// 플립북(칸 · 프레임 — 돌지 않는다, Client/Effects/Flipbook.h)
+	//  먼지 · 연기 = Unity Labs VFX flipbooks(CC0) — 원본 TGA 를 RGBA PNG 로(텍스처 로더 WIC 는 TGA 를 못 읽는다). 설정은 색(tint)만 — 나머지는 층 표 그대로.
+	//  피 = 유체 시뮬 시트 4판(2026-11-25, Resource_Work/HitParticles/블렌더시험_20261124_유체2/게임텍스처 · 목록.md) → 피 안개 층.
+	//    사용자 «4개 다 해줘봐» · «맞은 지점 기준으로 정면 측면 둘다 출력하면 되잖아. 왜 골라» · «플립북 파티클 클래스에 해당 값도 넣어서 설정할 수 있게해줘».
+	//    판마다 정면 + 측면이 한 묶음(group) — 맞을 때마다 네 판 중 하나를 고르고 두 판을 맞은 자리에 엇갈려 세운다.
+	//    값(목록.md): 칸 한 변 1.0 m · 수명 0.4 s(16 칸 = 0 ~ 400 ms) · 흰색 · 상처 자리 정면 (0.5, 0.32) · 측면 (0.15, 0.32) ·
+	//    맞은 자리에 머묾(움직임은 칸에 구움) · 층 옅어짐 안 씀(끝맺음은 텍스처 알파). 아래 두 값은 2026-11-25 시트에서 잰 값:
+	//      standOff = 측면 시트에서 상처 → 피(알파 가중)의 평균 뿜은 깊이(m) — 정면 판을 그만큼 쏜 쪽으로 띄운다(맞은 면에 붙이면 깊이 페이드 0.3 m 에 지워진다).
+	//      rayCoverage = 칸 안 원(레이가 보는 구의 단면)의 평균 알파 — 레이가 1 m 구를 1/3 로 가리면 7 ~ 15 배 진해진다.
+	struct ParticleFlipbookAsset
+	{
+		swc::ParticleSystem::Layer layer;
+		const wchar_t*             color;
+		const wchar_t*             normal;
+		swc::FlipbookLayout        layout;
+		swc::FlipbookSettings      settings;   // 2026-11-25 — 크기 · 수명 · 기준점 · 색 · 보는 쪽 …(Flipbook.h). 예전 tint 칸은 settings.tint 로
+		uint16_t                   group;      // 2026-11-25 — 같은 층 · 같은 번호(0 아님)는 한꺼번에 나온다(ParticleSystem::AddFlipbook)
+	};
+	using FF = swc::FlipbookFacing;
+	constexpr swc::FlipbookSettings BloodSheet(FF facing, float pivotU, float standOff, float rayCoverage)
+	{
+		return { .facing = facing, .size = 1.0f, .life = 0.4f, .pivot = { pivotU, 0.32f }, .tint = { 1.0f, 1.0f, 1.0f, 1.0f },
+				 .standOff = standOff, .stayAtHit = true, .layerFade = false, .rayCoverage = rayCoverage };
+	}
+	const ParticleFlipbookAsset kParticleFlipbooks[] =
+	{
+		//  판   보는 쪽     상처 u  띄움(m) 레이 몫          — 판 성격: A 한쪽 쏠림 · B 가는 줄기 별 모양 · C 굵게 쏟아짐 · D 넓게 터짐
+		{ PL::BloodMist, L"effect\\blood\\Blood_A_front_4x4_color.png", L"effect\\blood\\Blood_A_front_4x4_normal.png", { 4, 4, 16 }, BloodSheet(FF::Front, 0.50f, 0.33f, 0.032f), 1 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_A_side_4x4_color.png",  L"effect\\blood\\Blood_A_side_4x4_normal.png",  { 4, 4, 16 }, BloodSheet(FF::Side,  0.15f, 0.00f, 0.042f), 1 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_B_front_4x4_color.png", L"effect\\blood\\Blood_B_front_4x4_normal.png", { 4, 4, 16 }, BloodSheet(FF::Front, 0.50f, 0.33f, 0.030f), 2 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_B_side_4x4_color.png",  L"effect\\blood\\Blood_B_side_4x4_normal.png",  { 4, 4, 16 }, BloodSheet(FF::Side,  0.15f, 0.00f, 0.039f), 2 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_C_front_4x4_color.png", L"effect\\blood\\Blood_C_front_4x4_normal.png", { 4, 4, 16 }, BloodSheet(FF::Front, 0.50f, 0.24f, 0.018f), 3 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_C_side_4x4_color.png",  L"effect\\blood\\Blood_C_side_4x4_normal.png",  { 4, 4, 16 }, BloodSheet(FF::Side,  0.15f, 0.00f, 0.025f), 3 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_D_front_4x4_color.png", L"effect\\blood\\Blood_D_front_4x4_normal.png", { 4, 4, 16 }, BloodSheet(FF::Front, 0.50f, 0.35f, 0.049f), 4 },
+		{ PL::BloodMist, L"effect\\blood\\Blood_D_side_4x4_color.png",  L"effect\\blood\\Blood_D_side_4x4_normal.png",  { 4, 4, 16 }, BloodSheet(FF::Side,  0.15f, 0.00f, 0.048f), 4 },
+		{ PL::Dust, L"effect\\dust\\Cloud01_8x8.png", nullptr, { 8, 8, 64 }, { .tint = kDustTint }, 0 },   // D14
+		{ PL::Dust, L"effect\\dust\\Cloud03_8x8.png", nullptr, { 8, 8, 64 }, { .tint = kDustTint }, 0 },   // D15
+		{ PL::Dust, L"effect\\dust\\Explosion01-light-nofire_5x5.png", nullptr, { 5, 5, 25 }, { .tint = kDustTint }, 0 },   // D16
+		{ PL::Smoke, L"effect\\smoke\\WispySmoke01_8x8.png", nullptr, { 8, 8, 64 }, { .tint = kSmokeTint }, 0 },   // K51
+		{ PL::Smoke, L"effect\\smoke\\WispySmoke02_8x8.png", nullptr, { 8, 8, 64 }, { .tint = kSmokeTint }, 0 },   // K52
+		{ PL::Smoke, L"effect\\smoke\\DiscSmoke01_16x4.png", nullptr, { 16, 4, 64 }, { .tint = kSmokeTint }, 0 },   // K53
+	};
+	// 낱장 텍스처(한 장 — 사각형이 돈다, Client/Effects/ParticleTexture.h)
+	//  먼지 = Kenney Particle Pack(dirt · smoke), 연기 = Kenney Smoke Particles(흰 연기 25 · 검은 연기 25) — 모두 CC0, RGBA PNG 로 다시 저장.
+	struct ParticleTextureAsset
+	{
+		swc::ParticleSystem::Layer layer;
+		const wchar_t*             color;
+		const wchar_t*             normal;   // nullptr = 노멀 없이
+		XMFLOAT4                   tint;     // 텍스처 색에 곱할 색 · a = 불투명도(층 표의 색 대신)
+	};
+	const ParticleTextureAsset kParticleTextures[] =
+	{
+		{ PL::Dust, L"effect\\dust\\dirt_01.png", nullptr, kDustTint },   // D01
+		{ PL::Dust, L"effect\\dust\\dirt_02.png", nullptr, kDustTint },   // D02
+		{ PL::Dust, L"effect\\dust\\dirt_03.png", nullptr, kDustTint },   // D03
+		{ PL::Dust, L"effect\\dust\\smoke_01.png", nullptr, kDustTint },   // D04
+		{ PL::Dust, L"effect\\dust\\smoke_02.png", nullptr, kDustTint },   // D05
+		{ PL::Dust, L"effect\\dust\\smoke_03.png", nullptr, kDustTint },   // D06
+		{ PL::Dust, L"effect\\dust\\smoke_04.png", nullptr, kDustTint },   // D07
+		{ PL::Dust, L"effect\\dust\\smoke_05.png", nullptr, kDustTint },   // D08
+		{ PL::Dust, L"effect\\dust\\smoke_06.png", nullptr, kDustTint },   // D09
+		{ PL::Dust, L"effect\\dust\\smoke_07.png", nullptr, kDustTint },   // D10
+		{ PL::Dust, L"effect\\dust\\smoke_08.png", nullptr, kDustTint },   // D11
+		{ PL::Dust, L"effect\\dust\\smoke_09.png", nullptr, kDustTint },   // D12
+		{ PL::Dust, L"effect\\dust\\smoke_10.png", nullptr, kDustTint },   // D13
+		{ PL::Smoke, L"effect\\smoke\\whitePuff00.png", nullptr, kSmokeTint },   // K01
+		{ PL::Smoke, L"effect\\smoke\\whitePuff01.png", nullptr, kSmokeTint },   // K02
+		{ PL::Smoke, L"effect\\smoke\\whitePuff02.png", nullptr, kSmokeTint },   // K03
+		{ PL::Smoke, L"effect\\smoke\\whitePuff03.png", nullptr, kSmokeTint },   // K04
+		{ PL::Smoke, L"effect\\smoke\\whitePuff04.png", nullptr, kSmokeTint },   // K05
+		{ PL::Smoke, L"effect\\smoke\\whitePuff05.png", nullptr, kSmokeTint },   // K06
+		{ PL::Smoke, L"effect\\smoke\\whitePuff06.png", nullptr, kSmokeTint },   // K07
+		{ PL::Smoke, L"effect\\smoke\\whitePuff07.png", nullptr, kSmokeTint },   // K08
+		{ PL::Smoke, L"effect\\smoke\\whitePuff08.png", nullptr, kSmokeTint },   // K09
+		{ PL::Smoke, L"effect\\smoke\\whitePuff09.png", nullptr, kSmokeTint },   // K10
+		{ PL::Smoke, L"effect\\smoke\\whitePuff10.png", nullptr, kSmokeTint },   // K11
+		{ PL::Smoke, L"effect\\smoke\\whitePuff11.png", nullptr, kSmokeTint },   // K12
+		{ PL::Smoke, L"effect\\smoke\\whitePuff12.png", nullptr, kSmokeTint },   // K13
+		{ PL::Smoke, L"effect\\smoke\\whitePuff13.png", nullptr, kSmokeTint },   // K14
+		{ PL::Smoke, L"effect\\smoke\\whitePuff14.png", nullptr, kSmokeTint },   // K15
+		{ PL::Smoke, L"effect\\smoke\\whitePuff15.png", nullptr, kSmokeTint },   // K16
+		{ PL::Smoke, L"effect\\smoke\\whitePuff16.png", nullptr, kSmokeTint },   // K17
+		{ PL::Smoke, L"effect\\smoke\\whitePuff17.png", nullptr, kSmokeTint },   // K18
+		{ PL::Smoke, L"effect\\smoke\\whitePuff18.png", nullptr, kSmokeTint },   // K19
+		{ PL::Smoke, L"effect\\smoke\\whitePuff19.png", nullptr, kSmokeTint },   // K20
+		{ PL::Smoke, L"effect\\smoke\\whitePuff20.png", nullptr, kSmokeTint },   // K21
+		{ PL::Smoke, L"effect\\smoke\\whitePuff21.png", nullptr, kSmokeTint },   // K22
+		{ PL::Smoke, L"effect\\smoke\\whitePuff22.png", nullptr, kSmokeTint },   // K23
+		{ PL::Smoke, L"effect\\smoke\\whitePuff23.png", nullptr, kSmokeTint },   // K24
+		{ PL::Smoke, L"effect\\smoke\\whitePuff24.png", nullptr, kSmokeTint },   // K25
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke00.png", nullptr, kSmokeTint },   // K26
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke01.png", nullptr, kSmokeTint },   // K27
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke02.png", nullptr, kSmokeTint },   // K28
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke03.png", nullptr, kSmokeTint },   // K29
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke04.png", nullptr, kSmokeTint },   // K30
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke05.png", nullptr, kSmokeTint },   // K31
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke06.png", nullptr, kSmokeTint },   // K32
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke07.png", nullptr, kSmokeTint },   // K33
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke08.png", nullptr, kSmokeTint },   // K34
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke09.png", nullptr, kSmokeTint },   // K35
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke10.png", nullptr, kSmokeTint },   // K36
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke11.png", nullptr, kSmokeTint },   // K37
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke12.png", nullptr, kSmokeTint },   // K38
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke13.png", nullptr, kSmokeTint },   // K39
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke14.png", nullptr, kSmokeTint },   // K40
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke15.png", nullptr, kSmokeTint },   // K41
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke16.png", nullptr, kSmokeTint },   // K42
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke17.png", nullptr, kSmokeTint },   // K43
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke18.png", nullptr, kSmokeTint },   // K44
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke19.png", nullptr, kSmokeTint },   // K45
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke20.png", nullptr, kSmokeTint },   // K46
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke21.png", nullptr, kSmokeTint },   // K47
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke22.png", nullptr, kSmokeTint },   // K48
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke23.png", nullptr, kSmokeTint },   // K49
+		{ PL::Smoke, L"effect\\smoke\\blackSmoke24.png", nullptr, kSmokeTint },   // K50
+	};
 	// 한 프레임에 쏠 수 있는 최대 발 수 — 프레임이 발 간격보다 길 때(기관총 1/11 s 면 11 fps 밑) 밀린 발을 이만큼까지 같이 쏜다.
 	//  서버가 한꺼번에 받아 주는 발 수(Server main.cpp kFireBurstShots)와 같게 둔다(2026-11-15).
 	constexpr uint32_t kMaxShotsPerFrame = 3;
@@ -712,6 +843,104 @@ namespace swc {
 						return true;
 					});
 			}
+		}
+
+		// ── 파티클 플립북 (2026-11-23, Client/Effects/Flipbook.h) ──
+		//  ResourceManager 가 색 · 노멀을 읽고(로딩 스레드) → Flipbook 이 GPU 로 올려(메인) → ParticleSystem 층에 붙인다.
+		//  파티클 시스템은 파일을 모른다. 같은 단계 안의 완료 순서는 정해지지 않았으므로 두 장이 다 온 뒤에 만든다.
+		//  못 읽으면 그 그림만 빠진다 — 게임은 띄운다(로그만). 노멀만 없으면 노멀 없이 만든다.
+		//  2026-11-24 — 층마다 여러 장(AddFlipbook — 사용자 «먼지 전부, 연기 전부»). 한 장도 못 붙은 층은 둥근 모양.
+		static_assert(std::size(kParticleFlipbooks) == std::tuple_size_v<decltype(particleFlipbooks)>,
+			"kParticleFlipbooks 줄 수 = Engine::particleFlipbooks 칸 수");
+		for (size_t i = 0; i < std::size(kParticleFlipbooks); ++i)
+		{
+			struct Pending
+			{
+				TextureDataHandle color;
+				TextureDataHandle normal;
+				int               waiting = 0;   // 아직 안 온 장 수
+			};
+			const ParticleFlipbookAsset& asset = kParticleFlipbooks[i];
+			auto pending = std::make_shared<Pending>();
+			pending->waiting = asset.normal ? 2 : 1;
+			auto finish = [this, i, pending]()
+			{
+				if (--pending->waiting > 0) return;
+				const ParticleFlipbookAsset& a = kParticleFlipbooks[i];
+				const TextureData* color = resources.Get(pending->color);
+				const TextureData* normal = a.normal ? resources.Get(pending->normal) : nullptr;
+				if (!color)
+					Log(L"[플립북] 건너뜀 — 색 텍스처를 읽지 못했다(이 그림만 빠진다): %s", a.color);
+				else
+				{
+					if (a.normal && !normal)
+						Log(L"[플립북] 노멀 텍스처를 읽지 못해 노멀 없이 만든다: %s", a.normal);
+					if (particleFlipbooks[i].Create(renderer, *color, normal, a.layout, a.settings))
+					{
+						particles.AddFlipbook(a.layer, &particleFlipbooks[i], a.group);
+						Log(L"[플립북] %s — %u × %u 칸 · %u 프레임%s", a.color, a.layout.columns, a.layout.rows,
+							a.layout.frameCount, particleFlipbooks[i].HasNormal() ? L" · 노멀 있음" : L" · 노멀 없음");
+					}
+					else
+						Log(L"[플립북] 건너뜀 — %s: %s", a.color, particleFlipbooks[i].LastError().c_str());
+				}
+				// GPU 로 올렸으니(또는 못 썼으니) RAM 사본을 버린다.
+				resources.Release(pending->color);
+				resources.Release(pending->normal);
+			};
+			resources.RequestTexture(batch, AssetPath(asset.color), true,
+				[pending, finish](TextureDataHandle handle) { pending->color = handle; finish(); return true; });
+			if (asset.normal)
+				resources.RequestTexture(batch, AssetPath(asset.normal), false,
+					[pending, finish](TextureDataHandle handle) { pending->normal = handle; finish(); return true; });
+		}
+
+		// ── 파티클 낱장 텍스처 (2026-11-24, Client/Effects/ParticleTexture.h) ──
+		//  위 플립북과 같은 길 — ResourceManager 가 읽고 → ParticleTexture 가 GPU 로 올려 → ParticleSystem 층에 붙인다(AddTexture).
+		//  못 읽으면 그 그림만 빠진다(로그만). 노멀만 없으면 노멀 없이 만든다.
+		static_assert(std::size(kParticleTextures) == std::tuple_size_v<decltype(particleTextures)>,
+			"kParticleTextures 줄 수 = Engine::particleTextures 칸 수");
+		for (size_t i = 0; i < std::size(kParticleTextures); ++i)
+		{
+			struct Pending
+			{
+				TextureDataHandle color;
+				TextureDataHandle normal;
+				int               waiting = 0;   // 아직 안 온 장 수
+			};
+			const ParticleTextureAsset& asset = kParticleTextures[i];
+			auto pending = std::make_shared<Pending>();
+			pending->waiting = asset.normal ? 2 : 1;
+			auto finish = [this, i, pending]()
+			{
+				if (--pending->waiting > 0) return;
+				const ParticleTextureAsset& a = kParticleTextures[i];
+				const TextureData* color = resources.Get(pending->color);
+				const TextureData* normal = a.normal ? resources.Get(pending->normal) : nullptr;
+				if (!color)
+					Log(L"[파티클 텍스처] 건너뜀 — 색 텍스처를 읽지 못했다(이 그림만 빠진다): %s", a.color);
+				else
+				{
+					if (a.normal && !normal)
+						Log(L"[파티클 텍스처] 노멀 텍스처를 읽지 못해 노멀 없이 만든다: %s", a.normal);
+					if (particleTextures[i].Create(renderer, *color, normal))
+					{
+						particles.AddTexture(a.layer, &particleTextures[i], a.tint);
+						Log(L"[파티클 텍스처] %s — 낱장 · 회전%s", a.color,
+							particleTextures[i].HasNormal() ? L" · 노멀 있음" : L" · 노멀 없음");
+					}
+					else
+						Log(L"[파티클 텍스처] 건너뜀 — %s: %s", a.color, particleTextures[i].LastError().c_str());
+				}
+				// GPU 로 올렸으니(또는 못 썼으니) RAM 사본을 버린다.
+				resources.Release(pending->color);
+				resources.Release(pending->normal);
+			};
+			resources.RequestTexture(batch, AssetPath(asset.color), true,
+				[pending, finish](TextureDataHandle handle) { pending->color = handle; finish(); return true; });
+			if (asset.normal)
+				resources.RequestTexture(batch, AssetPath(asset.normal), false,
+					[pending, finish](TextureDataHandle handle) { pending->normal = handle; finish(); return true; });
 		}
 
 		// ── 단계 1: 씬 구성 · 스폰 · 서버 접속 (메인) ──
@@ -1640,10 +1869,10 @@ namespace swc {
 				if (impactSurface == ParticleSystem::Surface::Body && kBloodWaitsForServer)
 				{
 					if (impactNpc)
-						particles.RememberBodyHit(impactNpcId, impactPoint, impactNormal, eyePosition);
+						particles.RememberBodyHit(impactNpcId, impactPoint, impactNormal, planet.Up(impactPoint), eyePosition);
 				}
 				else
-					particles.EmitImpact(impactSurface, impactPoint, impactNormal, eyePosition);
+					particles.EmitImpact(impactSurface, impactPoint, impactNormal, planet.Up(impactPoint), eyePosition);
 			}
 		}
 		fireCooldown = (std::max)(0.0f, fireCooldown);   // 상한에 걸려 남은 발은 버린다(다음 프레임에 몰아 쏘지 않게)
@@ -1960,7 +2189,8 @@ namespace swc {
 		// 2026-11-17 피격 파티클 — 알파 묶음(먼 것부터) + 가산 묶음. 렌더러 [7b] 가 이 배열만 본다(명세 7절 Particle[]).
 		{
 			const XMFLOAT3& e = packet.view.eyePosition;
-			particles.Extract(Vec3d{ double(e.x), double(e.y), double(e.z) }, packet.particles, packet.particleAlphaCount);
+			particles.Extract(Vec3d{ double(e.x), double(e.y), double(e.z) }, packet.particles, packet.particleAlphaCount,
+				packet.particleFlipbooks);   // 2026-11-23 — 층에 붙은 플립북 표
 		}
 
 		uiSprites.clear();

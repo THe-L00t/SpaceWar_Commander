@@ -36,6 +36,8 @@
 #include "Shared/GameLogic/PlayerMovement.h"    // Shared::MoveWorld
 #include "Shared/GameLogic/ShotTrace.h"         // Shared::ShotHit — 2026-11-16 TraceVisibleShot
 #include "Client/Effects/ParticleSystem.h"      // 2026-11-17 피격 파티클
+#include "Client/Effects/Flipbook.h"            // 2026-11-23 파티클 플립북
+#include "Client/Effects/ParticleTexture.h"     // 2026-11-24 파티클 낱장 텍스처
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -218,6 +220,16 @@ namespace swc {
 		// ── 피격 파티클 (2026-11-17, Client/Effects/ParticleSystem.h · 명세 21절) ──
 		//  UpdateFire 가 내 발이 처음 닿는 곳에 효과를 만들고, Run 이 매 프레임 움직이고(UpdateNetwork 뒤), RenderFrame 이 패킷에 담는다.
 		ParticleSystem          particles;
+		// 파티클 플립북 (2026-11-23 사용자 «리소스 매니저에서 읽어 넘겨주면 플립북으로 다룰 수 있도록»)
+		//  BuildGameLoad 단계 0 이 ResourceManager::RequestTexture 로 색 · 노멀을 읽어 Flipbook::Create 로 올리고 층에 붙인다.
+		//  파일이 없으면 그 그림만 빠진다(로그만). 표 = Engine.cpp kParticleFlipbooks — 칸 수 = 표 줄 수(static_assert).
+		//  2026-11-24 — 피 1 + 먼지 3 + 연기 3(사용자 «먼지 전부, 연기 전부»). ParticleSystem::AddFlipbook 으로 층에 여러 장.
+		//  2026-11-25 — 피 1 → 8(유체 시뮬 4판 × 정면 · 측면, 판마다 한 묶음 — 사용자 «정면 측면 둘다 출력»).
+		std::array<Flipbook, 14> particleFlipbooks;
+		// 파티클 낱장 텍스처 (2026-11-24 사용자 «일반 텍스처용 클래스 하나 만들어줘. 회전이 가능하게»)
+		//  플립북과 같은 길로 읽어 ParticleTexture::Create → ParticleSystem::AddTexture. 표 = Engine.cpp kParticleTextures.
+		//  2026-11-24 — 먼지 13 + 연기 50(«먼지 전부, 연기 전부»).
+		std::array<ParticleTexture, 63> particleTextures;
 
 		// ── 총 모델 (2026-11-14, Shared/GameObject/Weapon.h · Client/Weapon/WeaponModels.h) ──
 		//  총 종류 × 1인칭 · 3인칭을 게임 로드 때 한 번 올린다. 명세에는 21절 «작업 중 추가된 클래스» 에 있다.

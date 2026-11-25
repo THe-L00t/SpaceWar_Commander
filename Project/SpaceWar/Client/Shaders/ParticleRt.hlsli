@@ -4,7 +4,7 @@
 //  파티클은 본 TLAS 에 없다(명세 7절 Particle[]). GRenderer 가 매 프레임 파티클마다 AABB 하나로 BLAS 를 만들고,
 //  인스턴스 하나짜리 «파티클 TLAS» 를 비동기 컴퓨트 큐에서 본 TLAS 뒤에 만든다. 레이를 쏘는 패스는 본 TLAS 를 쏜 뒤
 //  이 TLAS 를 한 번 더 조회한다(BF V 방식 — 불투명 TLAS → 그 거리까지 파티클 TLAS → 섞기).
-//    · ParticleTransmittance — 남는 빛(0 ~ 1). [4a] 그림자 · [2] AO
+//    · ParticleTransmittance — 남는 빛(0 ~ 1). [4a] 그림자 · [2] AO · (Skip 판) [0b] 파티클 빛(ParticleLight.hlsl, 2026-11-25)
 //    · TraceParticles        — 사이에 있는 파티클의 빛 + 남는 빛. [4c] GI 프로브 · [4b] 반사
 //  ★ 맞음 판정은 셰이더가 한다(AABB = 절차적 기하 → RayQuery 후보 CANDIDATE_PROCEDURAL_PRIMITIVE).
 //    파티클 = 지름이 size 인 구 — 사각형과 달리 레이 방향과 상관없이 맞는다(BF V 의 «빌보드가 옆에서 보이는» 문제가 없다).
@@ -20,13 +20,14 @@
 
 static const uint  kBindlessParticleTlas = 83;
 static const uint  kBindlessParticleSrv  = 84;
-// 래스터의 둥근 모양 (1 − r²)² 를 원판 전체에서 평균하면 1/3 — 레이 하나가 받는 평균 불투명도로 쓴다.
-static const float kParticleRtCoverage = 0.33;
+// 레이 하나가 받는 평균 불투명도 몫 — 2026-11-25 부터 파티클마다 p.rayCoverage(C++ 가 채운다).
+//  기본 = 래스터의 둥근 모양 (1 − r²)² 를 원판 전체에서 평균한 1/3(C++ kParticleRayCoverageRound),
+//  플립북은 FlipbookSettings::rayCoverage(피 시트는 칸 평균 0.02 ~ 0.05 — 1/3 이면 1 m 구가 7 ~ 15 배 진하게 가린다).
 
-// 구(지름 = p.size)와 레이의 교점 — tMin ~ tMax 안의 가장 가까운 t. 구 안에서 출발하면 나가는 점.
+// 구(지름 = p.size, 가운데 = ParticleRayCenter)와 레이의 교점 — tMin ~ tMax 안의 가장 가까운 t. 구 안에서 출발하면 나가는 점.
 bool IntersectParticle(ParticleSprite p, float3 origin, float3 dir, float tMin, float tMax, out float t)
 {
-	const float3 oc = origin - p.position;
+	const float3 oc = origin - ParticleRayCenter(p);
 	const float  r  = 0.5 * p.size;
 	const float  b  = dot(oc, dir);
 	const float  c  = dot(oc, oc) - r * r;
@@ -43,11 +44,13 @@ bool IntersectParticle(ParticleSprite p, float3 origin, float3 dir, float tMin, 
 
 float ParticleRayAlpha(ParticleSprite p)
 {
-	return saturate(p.color.a * kParticleRtCoverage);
+	return saturate(p.color.a * p.rayCoverage);
 }
 
 // 남는 빛 — 알파 묶음(먼지 · 연기 · 피)만 가린다. 섬광 · 불꽃(가산)은 빛을 거의 가리지 않아 뺀다.
-float ParticleTransmittance(float3 origin, float3 dir, float tMax)
+//  2026-11-25 skipIndex — 이 번호의 파티클은 건너뛴다(파티클 빛 패스 ParticleLight.hlsl 가 자기 구 안에서 쏠 때 자기를 빼려고).
+//  다른 패스는 ParticleTransmittance(아래) — 건너뛰는 것 없음.
+float ParticleTransmittanceSkip(float3 origin, float3 dir, float tMax, uint skipIndex)
 {
 	RaytracingAccelerationStructure scene     = ResourceDescriptorHeap[kBindlessParticleTlas];
 	StructuredBuffer<ParticleSprite> particles = ResourceDescriptorHeap[kBindlessParticleSrv];
@@ -64,7 +67,10 @@ float ParticleTransmittance(float3 origin, float3 dir, float tMax)
 	{
 		if (q.CandidateType() != CANDIDATE_PROCEDURAL_PRIMITIVE)
 			continue;
-		const ParticleSprite p = particles[q.CandidatePrimitiveIndex()];
+		const uint index = q.CandidatePrimitiveIndex();   // AABB 번호 = 파티클 배열 번호(GRenderer PrepareParticleAccel)
+		if (index == skipIndex)
+			continue;
+		const ParticleSprite p = particles[index];
 		if ((p.flags & kParticleAdditive) != 0)
 			continue;
 		float t;
@@ -78,6 +84,11 @@ float ParticleTransmittance(float3 origin, float3 dir, float tMax)
 		}
 	}
 	return transmittance;
+}
+
+float ParticleTransmittance(float3 origin, float3 dir, float tMax)
+{
+	return ParticleTransmittanceSkip(origin, dir, tMax, 0xFFFFFFFFu);
 }
 
 struct ParticleRayResult

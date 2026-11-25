@@ -50,21 +50,54 @@ namespace swc {
 
 	// ── 파티클 사각형 하나 (2026-11-17 사용자 «파티클 전용 파이프라인», 명세 7절 Render World Particle[]) ──
 	//  ParticleSystem(Client/Effects)이 매 프레임 채우고, 렌더러 [7b] 파티클 패스가 카메라를 보는 사각형으로 펴 그린다.
-	//  ★ Particles.hlsl 의 ParticleSprite 와 같은 배치(48 B). 기존 인스턴스 경로(InstanceData · 그리기 묶음 · 본 TLAS)는 거치지 않는다.
+	//  ★ ParticleCommon.hlsli 의 ParticleSprite 와 같은 배치(96 B — 2026-11-25 고정 사각형 축 · 기준점 · 레이 몫이 붙어 48 → 96).
+	//    기존 인스턴스 경로(InstanceData · 그리기 묶음 · 본 TLAS)는 거치지 않는다.
 	enum ParticleFlags : uint32_t
 	{
-		kParticleAdditive = 1u << 0,   // 가산 블렌드(섬광 · 불꽃 — 스스로 빛남). 없으면 알파 블렌드(먼지 · 연기 · 피)
-		kParticleLit      = 1u << 1,   // 해 · 하늘 빛을 받는다(알파 묶음). 없으면 색 그대로(자체 발광)
+		kParticleAdditive  = 1u << 0,   // 가산 블렌드(섬광 · 불꽃 — 스스로 빛남). 없으면 알파 블렌드(먼지 · 연기 · 피)
+		kParticleLit       = 1u << 1,   // 해 · 하늘 빛을 받는다(알파 묶음). 없으면 색 그대로(자체 발광)
+		// 2026-11-25 사용자 «맞은 지점 기준으로 정면 측면 둘다 출력» — 카메라를 보지 않고 axisX · axisY · axisZ 로 고정된 사각형.
+		//  없으면 예전처럼 카메라를 보는 사각형(축 = 카메라 오른쪽 · 위를 rotation 만큼 돌린 것).
+		kParticleFixedAxes = 1u << 2,
 	};
+	// 레이(그림자 · AO · GI · 반사)가 파티클 구 하나에서 받는 평균 불투명도 몫의 기본값 — 둥근 모양 (1 − r²)² 의 원판 평균 1/3.
+	//  플립북은 FlipbookSettings::rayCoverage 로 바꾼다(2026-11-25 — 피 시트는 칸 평균 0.02 ~ 0.05).
+	inline constexpr float kParticleRayCoverageRound = 0.33f;
 	struct ParticleSprite {
-		DirectX::XMFLOAT3 position{ };   // 월드 위치(m)
+		DirectX::XMFLOAT3 position{ };   // 월드 위치(m) — 사각형의 기준점(2026-11-25 플립북 pivot 이 놓이는 곳, 기본 = 사각형 가운데)
 		float             size = 0.0f;   // 사각형 한 변(m)
-		DirectX::XMFLOAT4 color{ };      // 선형 RGB(1 넘으면 블룸으로 번진다) · a = 불투명도
-		float             rotation = 0.0f;   // 화면 안 회전(라디안)
+		DirectX::XMFLOAT4 color{ };      // 선형 RGB(1 넘으면 블룸으로 번진다) · a = 불투명도. 플립북이면 텍스처 색에 곱한다
+		float             rotation = 0.0f;   // 화면 안 회전(라디안) — 카메라를 보는 사각형만
 		uint32_t          flags = 0;     // ParticleFlags
-		float             pad[2]{ };
+		// 2026-11-23 플립북 — 예전 pad 두 칸. flipbook = 0 이면 텍스처 없음(둥근 모양 계산),
+		//  n 이면 FramePacket::particleFlipbooks[n − 1]. frame = 프레임 위치(0 ~ 프레임 수 − 1, 소수 = 다음 프레임과 섞는 몫).
+		uint32_t          flipbook = 0;
+		float             frame = 0.0f;
+		// 2026-11-25 — 고정 사각형 축(kParticleFixedAxes 일 때만, 월드 단위 벡터): X = 사각형 오른쪽 · Y = 위 · Z = 보는 쪽(노멀 텍스처의 Z).
+		//  offsetX · offsetY = 기준점 → 사각형 가운데(한 변 단위, 오른쪽 · 위가 +). 카메라를 보는 사각형이면 카메라 오른쪽 · 위 쪽으로.
+		DirectX::XMFLOAT3 axisX{ };
+		float             offsetX = 0.0f;
+		DirectX::XMFLOAT3 axisY{ };
+		float             offsetY = 0.0f;
+		DirectX::XMFLOAT3 axisZ{ };
+		float             rayCoverage = kParticleRayCoverageRound;   // 레이가 받는 불투명도 = color.a × 이 값
 	};
-	static_assert(sizeof(ParticleSprite) == 48, "ParticleSprite 는 48바이트 (Particles.hlsl 와 같아야 한다)");
+	static_assert(sizeof(ParticleSprite) == 96, "ParticleSprite 는 96바이트 (ParticleCommon.hlsli 와 같아야 한다)");
+
+	// ── 파티클 플립북 한 줄 (2026-11-23 사용자 «플립북 클래스도 하나 구성하고 리소스 매니저에서 읽어 넘겨주면 플립북으로 다룰 수 있도록») ──
+	//  Flipbook(Client/Effects)이 만든 GPU 텍스처 · 칸 배치. ParticleSystem::Extract 가 패킷에 채우고,
+	//  렌더러가 텍스처 번호를 바인드리스 번호로 바꿔 [7b] 파티클 상수에 싣는다(Particles.hlsl gFlipbooks).
+	//  칸 = 열 × 행, 프레임은 왼쪽 위부터 오른쪽 → 다음 줄 순서.
+	//  2026-11-24 — 낱장 텍스처(ParticleTexture, 사각형이 도는 것)도 1 × 1 칸 · 1 프레임 한 줄로 같은 표에 들어간다.
+	struct ParticleFlipbook {
+		TextureHandle color = kInvalidTexture;    // 바탕색(sRGB) + 알파 — 빛은 굽지 않는다(게임이 비춘다)
+		TextureHandle normal = kInvalidTexture;   // 카메라 공간 노멀(선형, X 오른쪽 · Y 위 · Z 카메라 쪽) + 알파. 없으면 노멀 없이 비춘다
+		uint32_t      columns = 1;
+		uint32_t      rows = 1;
+		uint32_t      frameCount = 1;
+	};
+	//  2026-11-24 — 층마다 여러 장(사용자 «먼지 전부, 연기 전부» — 먼지 16 · 연기 53 + 피)이라 8 → 128.
+	inline constexpr uint32_t kMaxParticleFlipbooks = 128;   // 한 프레임에 쓸 수 있는 표 줄 수(Particles.hlsl PARTICLE_MAX_FLIPBOOKS 와 같다)
 
 	// 렌더 추출 ④ 의 결과 — 렌더러가 받는 유일한 입력 (수정방향 3.2, 멀티스레딩 명세 §6 ④)
 	//  광원·이미터·데칼 배열은 해당 항목(3.12 등)을 할 때 붙는다.
@@ -75,6 +108,8 @@ namespace swc {
 		//  메인 패스에만 채운다(배경 패스는 비운다). 메시 파편 배열은 4단계(P4)에서 붙는다.
 		std::vector<ParticleSprite> particles;
 		uint32_t particleAlphaCount = 0;
+		// 2026-11-23 — 파티클 플립북 표(ParticleSprite::flipbook − 1 이 이 번호). kMaxParticleFlipbooks 를 넘는 몫은 렌더러가 안 쓴다.
+		std::vector<ParticleFlipbook> particleFlipbooks;
 		// 인스턴스의 «구성» 버전(수정방향 3.2 «버전 번호»). 노드 추가·메시 변경·가시성·반전 여부가
 		// 바뀔 때만 오른다. 렌더러는 이 값이 같으면 그리기 묶음을 다시 만들지 않는다.
 		//  상위 32비트 = 장면 번호, 하위 32비트 = 장면 안의 버전.

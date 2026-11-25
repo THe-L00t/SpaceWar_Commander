@@ -117,6 +117,12 @@
     <Filter Include="클래스 목록\ParticleSystem">
       <UniqueIdentifier>{3f8c2a61-7d94-4e0b-a5c3-9b16e2d47f08}</UniqueIdentifier>
     </Filter>
+    <Filter Include="클래스 목록\Flipbook">
+      <UniqueIdentifier>{8e954bb3-41b4-4f5c-93ec-b3cde38a1a31}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="클래스 목록\ParticleTexture">
+      <UniqueIdentifier>{c4a7e2d9-5b31-4f86-9e0a-71d3b6f42c58}</UniqueIdentifier>
+    </Filter>
     <Filter Include="셰이더">
       <UniqueIdentifier>{7a4e0c92-1f38-4d5b-9c26-e5b8a03f7d41}</UniqueIdentifier>
     </Filter>
@@ -229,6 +235,12 @@
     </ClCompile>
     <ClCompile Include="Effects\ParticleSystem.cpp">
       <Filter>클래스 목록\ParticleSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\Flipbook.cpp">
+      <Filter>클래스 목록\Flipbook</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ParticleTexture.cpp">
+      <Filter>클래스 목록\ParticleTexture</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -382,6 +394,12 @@
     <ClInclude Include="Effects\ParticleSystem.h">
       <Filter>클래스 목록\ParticleSystem</Filter>
     </ClInclude>
+    <ClInclude Include="Effects\Flipbook.h">
+      <Filter>클래스 목록\Flipbook</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ParticleTexture.h">
+      <Filter>클래스 목록\ParticleTexture</Filter>
+    </ClInclude>
     <ClInclude Include="Log.h">
       <Filter>클래스 목록\Log</Filter>
     </ClInclude>
@@ -499,6 +517,9 @@
       <Filter>셰이더</Filter>
     </None>
     <None Include="Shaders\ParticleRt.hlsli">
+      <Filter>셰이더</Filter>
+    </None>
+    <None Include="Shaders\ParticleLight.hlsl">
       <Filter>셰이더</Filter>
     </None>
   </ItemGroup>
