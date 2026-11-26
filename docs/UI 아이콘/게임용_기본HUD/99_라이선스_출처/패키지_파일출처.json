@@ -1,0 +1,49 @@
+{
+  "createdDate": "2026-11-26",
+  "sourceEditor": "03_UI/03_동적_편집기",
+  "scope": [
+    "health",
+    "armor",
+    "fonts",
+    "compass",
+    "reload"
+  ],
+  "images": "Copied byte for byte; sourceRect metadata selects the existing symbols.",
+  "files": [
+    {
+      "file": "01_글꼴_TTF/Pretendard-Medium.ttf",
+      "bytes": 2701192,
+      "sha256": "3bae579377eb8e9ac412cb4809ebc3de1d956ed75995c1e346f0c1311053f4e2"
+    },
+    {
+      "file": "01_글꼴_TTF/Pretendard-Regular.ttf",
+      "bytes": 2725828,
+      "sha256": "6d0af5258997aec7354a6e340fc2325ba321c410ca48b3af858c8c3d6e92a324"
+    },
+    {
+      "file": "01_글꼴_TTF/Rajdhani-Medium.ttf",
+      "bytes": 384348,
+      "sha256": "12ff7dcfe4c206e3875ac53b1762eab57de6a2fa7f5a86c26b97b88d6591eac2"
+    },
+    {
+      "file": "01_글꼴_TTF/Rajdhani-Regular.ttf",
+      "bytes": 377860,
+      "sha256": "6e1fc228a8318251a6e569502ec57bac1e4656c582f92f59ccecc4688e039b98"
+    },
+    {
+      "file": "02_기호_이미지/armor-base.png",
+      "bytes": 124656,
+      "sha256": "7b779d40391c75ddab674da1e93aa1db3acc2880852cb5aad09fc288b29fb699"
+    },
+    {
+      "file": "02_기호_이미지/hp-base.png",
+      "bytes": 103034,
+      "sha256": "14641ea8d3817d2284fd77800f7a80d61ab41042270c6f070f9f91ee98cf258d"
+    },
+    {
+      "file": "04_동작참고_JS/hud-motion.reference.js",
+      "bytes": 2857,
+      "sha256": "48e486e0105bf48a29158d96904c802caa84955fcd06dad96e66e6ca4505603c"
+    }
+  ]
+}

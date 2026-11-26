@@ -1,0 +1,38 @@
+[
+  {
+    "file": "Pretendard-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/orioncactus/pretendard/v1.3.9/packages/pretendard/dist/public/static/alternative/Pretendard-Regular.ttf",
+    "bytes": 2725828,
+    "sha256": "6d0af5258997aec7354a6e340fc2325ba321c410ca48b3af858c8c3d6e92a324"
+  },
+  {
+    "file": "Pretendard-Medium.ttf",
+    "url": "https://raw.githubusercontent.com/orioncactus/pretendard/v1.3.9/packages/pretendard/dist/public/static/alternative/Pretendard-Medium.ttf",
+    "bytes": 2701192,
+    "sha256": "3bae579377eb8e9ac412cb4809ebc3de1d956ed75995c1e346f0c1311053f4e2"
+  },
+  {
+    "file": "Pretendard-OFL.txt",
+    "url": "https://raw.githubusercontent.com/orioncactus/pretendard/v1.3.9/LICENSE",
+    "bytes": 4418,
+    "sha256": "d31ddd9f2bed32fd7e302a205cf2380ba0de6529152d239ef99cfb6f261bfc04"
+  },
+  {
+    "file": "Rajdhani-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/rajdhani/Rajdhani-Regular.ttf",
+    "bytes": 377860,
+    "sha256": "6e1fc228a8318251a6e569502ec57bac1e4656c582f92f59ccecc4688e039b98"
+  },
+  {
+    "file": "Rajdhani-Medium.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/rajdhani/Rajdhani-Medium.ttf",
+    "bytes": 384348,
+    "sha256": "12ff7dcfe4c206e3875ac53b1762eab57de6a2fa7f5a86c26b97b88d6591eac2"
+  },
+  {
+    "file": "Rajdhani-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/rajdhani/OFL.txt",
+    "bytes": 4373,
+    "sha256": "f62ef357d3a1c3d27edd35a6e1ba350e8a8d13499797964eeadefbf0b3b15d1f"
+  }
+]

@@ -1,0 +1,69 @@
+{
+  "coordinateConvention": "pixels; left/top inclusive; right/bottom exclusive",
+  "usage": "원본 텍스처의 지정 영역만 그립니다. 전체 이미지는 UI로 그리지 않습니다.",
+  "alpha": "straight / unassociated alpha",
+  "sprites": [
+    {
+      "id": "health",
+      "file": "hp-base.png",
+      "textureSize": [
+        2172,
+        724
+      ],
+      "sourceRectLTRB": [
+        335,
+        304,
+        449,
+        414
+      ],
+      "sourceRectXYWH": [
+        335,
+        304,
+        114,
+        110
+      ],
+      "uvLTRB": [
+        0.15423572744014732,
+        0.4198895027624309,
+        0.2067219152854512,
+        0.5718232044198895
+      ],
+      "displayBox": [
+        22,
+        22
+      ],
+      "preserveAspectRatio": true
+    },
+    {
+      "id": "shield",
+      "file": "armor-base.png",
+      "textureSize": [
+        2172,
+        724
+      ],
+      "sourceRectLTRB": [
+        375,
+        300,
+        489,
+        418
+      ],
+      "sourceRectXYWH": [
+        375,
+        300,
+        114,
+        118
+      ],
+      "uvLTRB": [
+        0.17265193370165746,
+        0.4143646408839779,
+        0.22513812154696133,
+        0.5773480662983426
+      ],
+      "displayBox": [
+        22,
+        24
+      ],
+      "preserveAspectRatio": true
+    }
+  ]
+}
