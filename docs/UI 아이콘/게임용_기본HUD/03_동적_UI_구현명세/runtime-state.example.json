@@ -1,0 +1,23 @@
+{
+  "health": {
+    "current": 82,
+    "maximum": 100
+  },
+  "armor": {
+    "current": 64,
+    "maximum": 100
+  },
+  "view": {
+    "yawDegrees": 300
+  },
+  "weapon": {
+    "ammo": 8,
+    "reserve": 96,
+    "magazineSize": 30,
+    "isReloading": false,
+    "reloadElapsedSeconds": 0,
+    "reloadDurationSeconds": 2.4,
+    "reloadKey": "R"
+  },
+  "timeSeconds": 0
+}

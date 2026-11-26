@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "purpose": "게임 엔진에 옮길 외형 설정; 기존 편집기 JSON과 다른 전용 명세",
+  "referenceResolution": [
+    1920,
+    1080
+  ],
+  "scaling": {
+    "mode": "uniform-fit",
+    "formula": "min(viewportWidth/1920, viewportHeight/1080)",
+    "alignment": "center"
+  },
+  "fonts": {
+    "bodyRegular": {
+      "file": "../01_글꼴_TTF/Pretendard-Regular.ttf",
+      "weight": 400
+    },
+    "bodyMedium": {
+      "file": "../01_글꼴_TTF/Pretendard-Medium.ttf",
+      "weight": 500
+    },
+    "digitsRegular": {
+      "file": "../01_글꼴_TTF/Rajdhani-Regular.ttf",
+      "weight": 400
+    },
+    "digitsMedium": {
+      "file": "../01_글꼴_TTF/Rajdhani-Medium.ttf",
+      "weight": 500
+    }
+  },
+  "fontUsage": {
+    "korean": "bodyRegular",
+    "numbersAndDirections": "digitsRegular",
+    "emphasis": "bodyMedium / digitsMedium",
+    "bodySize": 21,
+    "numberSize": 30
+  },
+  "colors": {
+    "foreground": "#ecf3f6",
+    "muted": "#8799a6",
+    "armor": "#8edfe7",
+    "warning": "#dcb36b"
+  },
+  "geometry": {
+    "lineWidth": 1,
+    "barHeight": 7,
+    "emptyTrackOpacity": 0.32
+  },
+  "health": {
+    "label": "체력",
+    "iconId": "health",
+    "iconBox": [
+      48,
+      887,
+      22,
+      22
+    ],
+    "labelCenter": [
+      84,
+      899
+    ],
+    "barCenter": [
+      176,
+      899
+    ],
+    "barWidth": 190,
+    "valueRightCenter": [
+      424,
+      899
+    ]
+  },
+  "armor": {
+    "label": "방탄판",
+    "iconId": "shield",
+    "iconBox": [
+      48,
+      852,
+      22,
+      24
+    ],
+    "labelCenter": [
+      84,
+      862
+    ],
+    "barCenter": [
+      176,
+      862
+    ],
+    "barWidth": 190,
+    "valueRightCenter": [
+      424,
+      862
+    ]
+  },
+  "compass": {
+    "northAngle": 0,
+    "eastAngle": 90,
+    "southAngle": 180,
+    "westAngle": 270,
+    "centerX": 960,
+    "width": 560,
+    "pixelsPerDegree": 4,
+    "tickEveryDegrees": 5,
+    "labelEveryDegrees": 15,
+    "cardinalEveryDegrees": 45,
+    "labelY": 26,
+    "baselineY": 48,
+    "headingY": 64,
+    "clipRect": [
+      680,
+      8,
+      560,
+      50
+    ],
+    "directions": [
+      "N",
+      "NE",
+      "E",
+      "SE",
+      "S",
+      "SW",
+      "W",
+      "NW"
+    ]
+  },
+  "reload": {
+    "defaultKey": "R",
+    "prompt": "재장전",
+    "progressLabel": "재장전 중",
+    "emptyLabel": "탄약 없음",
+    "noReserveLabel": "예비 탄약 없음",
+    "lowAmmoPercent": 30,
+    "pulseFrequency": 1.5,
+    "pulseMinOpacity": 0.72,
+    "ammoCountLeftCenter": [
+      143,
+      960
+    ],
+    "promptLeftCenter": [
+      333,
+      960
+    ],
+    "keycapHeight": 30,
+    "keycapMinWidth": 27,
+    "keycapMaxWidth": 100,
+    "keycapPaddingX": 8,
+    "keyLabelGap": 10,
+    "progressBarLeftCenter": [
+      333,
+      988
+    ],
+    "progressWidth": 220,
+    "percentRightCenter": [
+      553,
+      960
+    ]
+  }
+}
