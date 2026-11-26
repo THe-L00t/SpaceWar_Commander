@@ -95,6 +95,7 @@ namespace swc {
 		void ReturnToGameMap();
 		Vec3d GameMapSpawnPoint() const;   // 게임 맵 스폰(착륙 지점 L1 방향, 지면 위 kGroundOffset)
 		void UpdateDebugPlanetObjects();
+		size_t RasterObjectBudget() const;   // 2026-11-17 — 래스터 오브젝트 메시 예산(렌더러 상한 − 다른 몫 − 여유)
 		void ParkNetworkNodes();
 		bool InDebugPlanet() const { return activeDebugPlanet != kNoDebugPlanet; }
 		// 지금 보이는 맵의 번호 — 게임 맵 0, 예시 행성 1 ~ 5(Shared/World/WorldCatalog.h).
@@ -137,6 +138,17 @@ namespace swc {
 		double                    budgetDistance = 0.0;     // 측정 구간에 움직인 거리(m)
 		Vec3d                     budgetLastPos;            // 거리 재기용 앞 프레임 위치
 		uint32_t                  budgetRestreams = 0;      // 측정 구간에 오브젝트를 다시 고른 횟수(UpdateDebugPlanetObjects)
+		// 2026-11-17 TLAS 목록 분리 (render/tlas-select) — 켜면 예시 행성의 TLAS 를 래스터 목록과 따로 만든다(Engine.cpp kTlasSeparateDefault)
+		bool                      tlasSeparate = true;
+		uint32_t                  budgetTlasReselects = 0;  // 측정 구간에 TLAS 목록을 다시 고른 횟수
+		double                    budgetTlasSelectMax = 0.0;   // 그 가운데 가장 오래 걸린 고르기(ms)
+		double                    budgetTlasSelectSum = 0.0;   // 고르기 시간 합(ms)
+		size_t                    budgetTlasExamined = 0;   // 마지막 고르기에서 훑은 배치 수
+		double                    budgetTlasWarmupMax = 0.0;   // 예열 중(들어간 직후 첫 고르기 포함) 가장 오래 걸린 고르기(ms)
+		double                    budgetStreamMax = 0.0;    // 측정 구간 StreamObjects(래스터 고르기) 최대(ms)
+		size_t                    rasterOthers = 512;       // 2026-11-17 예시 행성 장면의 «배치 오브젝트가 아닌» 래스터 인스턴스 수(앞 프레임, 처음은 어림 512)
+		bool                      lastRtSeparate = false;   // 마지막 메인 패킷이 TLAS 목록을 따로 넘겼나
+		size_t                    lastRtCount = 0;          // 그 TLAS 목록(또는 래스터 목록) 크기
 
 		HWND hwnd = nullptr;
 

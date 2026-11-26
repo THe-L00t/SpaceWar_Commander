@@ -190,6 +190,9 @@ namespace swc {
 
 		// 노드 이름/계층은 값으로 보관해 향후 애니메이션 확장에 사용할 수 있다.
 		nodes = data.nodes;
+		nodeLod.assign(nodes.size(), 0);   // 2026-11-20 메시 LOD — 단계 노드 표시
+		for (size_t i = 0; i < nodes.size(); ++i)
+			nodeLod[i] = static_cast<uint8_t>(LodLevelOfNodeName(nodes[i].name));
 		meshes = std::move(uploadedMeshes);
 		meshMaterials = std::move(uploadedMaterials);
 		// 2026-11-17 — 놓을 때(Release) 쓰려고 이 모델이 만든 텍스처 · 재질 번호를 남긴다(meshMaterials 에는 0번 기본 재질도 섞여 있다).
@@ -209,6 +212,7 @@ namespace swc {
 			return false;
 		}
 		nodes.clear();
+		nodeLod.clear();
 		meshes.clear();
 		meshMaterials.clear();
 		textures.clear();
@@ -229,13 +233,15 @@ namespace swc {
 
 		std::vector<NodeHandle> nodeHandles;
 		nodeHandles.reserve(nodes.size());
-		for (const ModelNodeData& node : nodes)
+		for (size_t n = 0; n < nodes.size(); ++n)
 		{
+			const ModelNodeData& node = nodes[n];
 			const NodeHandle nodeParent = node.parent == kInvalidModelIndex
 				? visual : nodeHandles[node.parent];
 			const NodeHandle handle = scene.AddNode(nodeParent, kInvalidMesh, kInvalidMaterial);
 			scene.SetLocalTransform(handle, XMLoadFloat4x4(&node.local));
 			nodeHandles.push_back(handle);
+			if (n < nodeLod.size() && nodeLod[n] != 0) continue;   // 2026-11-20 LOD 단계 노드는 그리지 않는다(렌더러가 고른다)
 
 			// 한 모델 노드가 여러 재질 부분을 가지면 같은 부모 아래 별도 draw 노드를 둔다.
 			for (uint32_t mesh : node.meshes)
@@ -245,5 +251,101 @@ namespace swc {
 			}
 		}
 		return root;
+	}
+
+	// TLAS 목록 분리 (2026-11-17) — Instantiate 가 만드는 노드 사슬과 같은 곱(행 벡터: 월드 = local × 부모 월드).
+	//  루트(rootWorld) → 표시 보정(visualLocal) → 모델 노드(부모가 늘 앞 번호 — Initialize 가 검사) → 그리기 노드(단위 행렬).
+	void Model::AppendInstances(const XMFLOAT4X4& rootWorld, std::vector<InstanceData>& out) const
+	{
+		if (!initialized) return;
+		const XMMATRIX visualWorld = XMLoadFloat4x4(&visualLocal) * XMLoadFloat4x4(&rootWorld);
+		std::vector<XMFLOAT4X4> worlds(nodes.size());
+		for (size_t i = 0; i < nodes.size(); ++i)
+		{
+			const ModelNodeData& node = nodes[i];
+			const XMMATRIX parentWorld = node.parent == kInvalidModelIndex ? visualWorld : XMLoadFloat4x4(&worlds[node.parent]);
+			const XMMATRIX world = XMLoadFloat4x4(&node.local) * parentWorld;
+			XMStoreFloat4x4(&worlds[i], world);
+			if (node.meshes.empty()) continue;
+			if (i < nodeLod.size() && nodeLod[i] != 0) continue;   // 2026-11-20 LOD 단계 노드는 넣지 않는다(래스터는 렌더러가 고르고, TLAS 는 LOD0)
+			const float det = XMVectorGetX(XMMatrixDeterminant(world));
+			const uint32_t flags = std::fabs(det) < 1.0e-12f ? kInstanceDegenerate : (det < 0.0f ? kInstanceMirrored : 0u);
+			for (const uint32_t mesh : node.meshes)
+			{
+				InstanceData item;
+				item.world = worlds[i];
+				item.prevWorld = worlds[i];
+				item.mesh = meshes[mesh];
+				item.material = meshMaterials[mesh];
+				item.flags = flags;
+				out.push_back(item);
+			}
+		}
+	}
+
+	// ── 메시 LOD (2026-11-20 render/tlas-select 시험) ──
+	int Model::LodLevelOfNodeName(const std::string& name, std::string* base)
+	{
+		const size_t n = name.size();
+		if (n > 5 && name.compare(n - 5, 4, "_LOD") == 0 && name[n - 1] >= '1' && name[n - 1] <= '3')
+		{
+			if (base) *base = name.substr(0, n - 5);
+			return name[n - 1] - '0';
+		}
+		if (base) *base = name;
+		return 0;
+	}
+
+	uint32_t Model::BaseMeshCount() const
+	{
+		uint32_t count = 0;
+		for (size_t i = 0; i < nodes.size(); ++i)
+			if (i >= nodeLod.size() || nodeLod[i] == 0)
+				count += static_cast<uint32_t>(nodes[i].meshes.size());
+		return count;
+	}
+
+	uint32_t Model::RegisterLods(GRenderer& renderer, const XMFLOAT3& objectCenter, const XMFLOAT3& objectExtents) const
+	{
+		if (!initialized) return 0;
+		auto isIdentity = [](const XMFLOAT4X4& m)
+		{
+			const float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+			const float* p = &m._11;
+			for (int k = 0; k < 16; ++k)
+				if (std::fabs(p[k] - id[k]) > 1.0e-6f) return false;
+			return true;
+		};
+		uint32_t registered = 0;
+		for (size_t i = 0; i < nodes.size(); ++i)
+		{
+			if (nodeLod[i] != 0 || nodes[i].meshes.empty()) continue;
+			// 단계 노드 찾기 — «이름_LOD1» ~ «_LOD3», 같은 부모 · 단위 변환 · 같은 메시 수 · 같은 재질 순서
+			int found[3] = { -1, -1, -1 };
+			for (size_t j = 0; j < nodes.size(); ++j)
+			{
+				std::string base;
+				const int level = LodLevelOfNodeName(nodes[j].name, &base);
+				if (level == 0 || base != nodes[i].name) continue;
+				if (nodes[j].parent != nodes[i].parent || nodes[j].meshes.size() != nodes[i].meshes.size()) continue;
+				if (!isIdentity(nodes[j].local) || !isIdentity(nodes[i].local)) continue;
+				bool sameMaterials = true;
+				for (size_t p = 0; p < nodes[i].meshes.size(); ++p)
+					sameMaterials = sameMaterials && meshMaterials[nodes[j].meshes[p]] == meshMaterials[nodes[i].meshes[p]];
+				if (sameMaterials) found[level - 1] = int(j);
+			}
+			uint32_t levels = 0;
+			while (levels < 3 && found[levels] >= 0) ++levels;   // LOD1 부터 끊김 없이 있는 데까지
+			if (levels == 0) continue;
+			for (size_t p = 0; p < nodes[i].meshes.size(); ++p)
+			{
+				MeshHandle lods[3] = { kInvalidMesh, kInvalidMesh, kInvalidMesh };
+				for (uint32_t k = 0; k < levels; ++k)
+					lods[k] = meshes[nodes[size_t(found[k])].meshes[p]];
+				renderer.SetMeshLods(meshes[nodes[i].meshes[p]], lods, levels, objectCenter, objectExtents);
+				++registered;
+			}
+		}
+		return registered;
 	}
 }

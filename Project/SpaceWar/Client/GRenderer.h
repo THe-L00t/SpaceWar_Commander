@@ -26,6 +26,19 @@ namespace swc {
 		size_t instances = 0;    // 그려진 인스턴스 수(컬링 뒤)
 		size_t dropped = 0;      // 버퍼·묶음 상한을 넘어 못 그린 수 — 0 이어야 정상
 		uint64_t triangles = 0;
+		// 2026-11-17 지형 조각 컬링(ClusterCull.hlsl) — 조각으로 그린 묶음(큰 메시 × 인스턴스 1개)만 센다. 끄면 전부 0.
+		size_t   clusterTotal = 0;           // 판정한 조각 수
+		size_t   clusterDrawn = 0;           // 그린 조각 수
+		size_t   clusterFrustum = 0;         // ① 프러스텀으로 뺀 조각
+		size_t   clusterHorizon = 0;         // ② 지평선 · 행성 반대편으로 뺀 조각
+		size_t   clusterBackFacing = 0;      // ③ 뒷면으로 뺀 조각
+		uint64_t clusterTriangles = 0;       // 그린 삼각형(조각 묶음 몫 — triangles 에도 들어 있다)
+		uint64_t clusterTrianglesTotal = 0;  // 그 메시들의 전체 삼각형(조각 컬링이 없으면 그렸을 몫)
+		float    occluderRadius = 0.0f;      // 2026-11-17 지평선 판정의 가리는 공 반지름(m, 메인 패스) — 0 = 판정 안 함
+		size_t   instanceLists = 0;          // 2026-11-17 이번 프레임에 쓴 추가 래스터 리스트 수(FramePacket::instanceLists)
+		// 2026-11-20 메시 LOD — LOD 가 이어진 묶음에서 단계별로 그린 인스턴스 수 · 삼각형(래스터 메인 패스 + 리스트, EndFrame 에서 채움)
+		size_t   lodInstances[4] = {};
+		uint64_t lodTriangles[4] = {};
 	};
 
 	class GRenderer
@@ -86,6 +99,23 @@ namespace swc {
 		const RayTracingParams& GetRayTracingParams() const;
 
 		void SetSunDirection(const DirectX::XMFLOAT3&);
+		// ── 지형 조각 컬링 (2026-11-17, ClusterCull.hlsl) ──
+		//  삼각형이 많은 메시(예시 행성 지형)를 조각으로 나눠 프러스텀 · 지평선 · 뒷면으로 거른 뒤 그린다. 래스터 전용(BLAS · TLAS 그대로).
+		//  처음 상태는 GRenderer.cpp kClusterCullingDefault. 자동 측정(Engine kFrameBudgetClusterAB)이 끔/켬을 번갈아 잰다.
+		//  파이프라인을 못 만든 장치에서는 켜도 아무 일도 하지 않는다(ClusterCullingAvailable = false).
+		void SetClusterCulling(bool);
+		bool ClusterCulling() const;
+		bool ClusterCullingAvailable() const;
+		// ── 메시 LOD (2026-11-20 render/tlas-select 시험, 사용자 «테스트 브랜치 이동해서 LOD 적용시키고 Gbuffer 측정해줘») ──
+		//  lod0 메시의 LOD1 ~ count 단계 메시(같은 재질 · 같은 노드 공간)를 잇는다. 래스터 GPU 컬링(Cull.hlsl)이 인스턴스마다
+		//  «물체 경계 구의 화면 지름 px» 로 단계를 골라 그 메시 묶음에 넣는다(노션 「LOD 적용 준비」 8.6 — 선택은 GPU 컬링에서).
+		//  objectCenter · objectExtents = 단계 판정에 쓸 물체 전체 경계(메시 로컬 AABB) — 한 물체의 여러 메시(껍질 · 잎)가 같은 단계를 고르게.
+		//  TLAS · 그림자 · 반사는 LOD0 만(8.6 BLAS (가)). 프레임 밖에서 부른다. count 0 이면 잇기를 지운다.
+		void SetMeshLods(MeshHandle lod0, const MeshHandle* lods, uint32_t count,
+			const DirectX::XMFLOAT3& objectCenter, const DirectX::XMFLOAT3& objectExtents);
+		// 단계 전환 화면 지름(px, 이보다 작으면 그 단계) — LOD1 · LOD2 · LOD3. enabled = false 면 늘 LOD0(측정 A/B).
+		void SetLodSelection(bool enabled, float lod1Px, float lod2Px, float lod3Px);
+		bool LodSelection() const;
 		void SetDebugMode(uint32_t);
 		uint32_t DebugMode() const;
 		const RenderStats& Stats() const;
@@ -105,6 +135,8 @@ namespace swc {
 		uint32_t TlasInstanceCount() const;
 		uint32_t TlasMaxInstances() const;
 		uint32_t TlasDroppedInstances() const;
+		// 2026-11-17 render/tlas-select — 래스터 패스당 인스턴스 상한(Impl::MaxDrawInstances, 넘는 것은 버리고 stats.dropped)
+		uint32_t RasterMaxInstances() const;
 
 		// ── GPU 구간 시간 보고 (2026-11-17 — Engine 자동 프레임 시간 측정 kAutoFrameBudget) ──
 		//  2 초마다 디버그 출력으로 내는 «[GPU 시간] N 프레임 평균 — 전체 … | 구간 …» 의 마지막 한 줄과, 지금까지 낸 보고 수.

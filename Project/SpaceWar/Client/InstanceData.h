@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <vector>
 #include <DirectXMath.h>
 #include "Handles.h"
@@ -45,6 +46,9 @@ namespace swc {
 		// 카메라 자리의 «위» (행성 중심 → 카메라, 단위 벡터) — 2026-10-27 렌더 6단계 [6] 하늘.
 		//  하늘과 해의 높이를 이 방향 기준으로 계산한다. 배경 · 메인 패스에 같은 값을 넣는다.
 		DirectX::XMFLOAT3   up{ 0.0f, 1.0f, 0.0f };
+		// 2026-11-17 지형 조각 컬링(ClusterCull.hlsl) — 행성 중심(월드). w = 1 이면 «지평선 · 행성 반대편» 판정을 쓴다.
+		//  0(평면 맵 · 배경 패스 · 모름)이면 프러스텀 · 뒷면 판정만 한다.
+		DirectX::XMFLOAT4   planet{ 0.0f, 0.0f, 0.0f, 0.0f };
 		bool background = false;             // 배경 패스 뒤 깊이만 초기화한다.
 	};
 
@@ -99,6 +103,15 @@ namespace swc {
 	//  2026-11-24 — 층마다 여러 장(사용자 «먼지 전부, 연기 전부» — 먼지 16 · 연기 53 + 피)이라 8 → 128.
 	inline constexpr uint32_t kMaxParticleFlipbooks = 128;   // 한 프레임에 쓸 수 있는 표 줄 수(Particles.hlsl PARTICLE_MAX_FLIPBOOKS 와 같다)
 
+	// ── 추가 래스터 리스트 (2026-11-17 render/tlas-select, 사용자 «재구성 범위 단위별로 리스트 만들어 두고 해당 리스트들만
+	//    불러오는건 어때» · «리스트 하나에 최대 8192로») — 예시 행성 배치 오브젝트를 칸(링) · 큰 것 · 임시 리스트로 미리 만든다.
+	//  items 는 바뀔 때만 새로 만들어지는 읽기 전용 배열(공유 — 매 프레임 복사하지 않는다), version 이 바뀌면 렌더러가 다시 묶고 올린다.
+	//  한 리스트는 렌더러 패스 자원 하나(인스턴스 · 컬링 버퍼, 최대 MaxDrawInstances = 8,192)를 쓴다.
+	struct InstanceList {
+		std::shared_ptr<const std::vector<InstanceData>> items;
+		uint64_t version = 0;
+	};
+
 	// 렌더 추출 ④ 의 결과 — 렌더러가 받는 유일한 입력 (수정방향 3.2, 멀티스레딩 명세 §6 ④)
 	//  광원·이미터·데칼 배열은 해당 항목(3.12 등)을 할 때 붙는다.
 	struct FramePacket {
@@ -110,6 +123,13 @@ namespace swc {
 		uint32_t particleAlphaCount = 0;
 		// 2026-11-23 — 파티클 플립북 표(ParticleSprite::flipbook − 1 이 이 번호). kMaxParticleFlipbooks 를 넘는 몫은 렌더러가 안 쓴다.
 		std::vector<ParticleFlipbook> particleFlipbooks;
+		// 2026-11-17 TLAS 목록 분리 (사용자 «TLAS 따로 고르는 단계 만들어» · «아예 두 묶음으로 다르게») —
+		//  rtSeparate 면 렌더러가 TLAS 를 rtInstances 로 만든다(래스터 묶음 · 반투명은 instances 그대로, 서로 독립).
+		//  false 면 예전처럼 instances 로 만든다. 메인 패스에만 채운다.
+		std::vector<InstanceData> rtInstances;
+		bool rtSeparate = false;
+		// 2026-11-17 추가 래스터 리스트 — 메인 패스에만. instances(기본 리스트)와 따로 묶고 · 컬링하고 · 그린다(TLAS 에는 안 쓴다).
+		std::vector<InstanceList> instanceLists;
 		// 인스턴스의 «구성» 버전(수정방향 3.2 «버전 번호»). 노드 추가·메시 변경·가시성·반전 여부가
 		// 바뀔 때만 오른다. 렌더러는 이 값이 같으면 그리기 묶음을 다시 만들지 않는다.
 		//  상위 32비트 = 장면 번호, 하위 32비트 = 장면 안의 버전.

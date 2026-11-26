@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -400,7 +402,24 @@ namespace swc {
 		lastStreamEye = Vec3d{};
 		streamed = false;
 		selectedMeshes = 0;
+		lastStreamBudget = 0;
 		farHemisphereSkipped = 0;
+		freeVector(gridBuckets);   // 2026-11-17 TLAS 목록
+		freeVector(gridItems);
+		gridBuilt = false;
+		freeVector(objectMesh);
+		freeVector(tlasObjects);
+		freeVector(tlasPrimary);
+		freeVector(tlasFill);
+		freeVector(bucketExamined);
+		lastTlasEye = Vec3d{};
+		lastTlasBudget = 0;
+		tlasSelected = false;
+		rankValid = false;
+		rankBudget = 0;
+		objectModelsFinished = 0;
+		freeVector(rasterLists);   // 2026-11-17 래스터 칸 리스트
+		rasterBuilt = false;
 		return released;
 	}
 
@@ -444,12 +463,40 @@ namespace swc {
 		liveList.clear();
 		stamp = 0;
 		streamed = false;
+		gridBuilt = false;        // 2026-11-17 TLAS 목록 — 배치가 바뀌면 격자 · 고른 목록을 새로
+		tlasSelected = false;
+		tlasObjects.clear();
+		rankValid = false;
+		objectModelsFinished = 0;
+		rasterLists.clear();      // 2026-11-17 래스터 칸 리스트
+		rasterBuilt = false;
 	}
+
+	// ── 식생 LOD 시험 (2026-11-20 render/tlas-select, 사용자 «테스트 브랜치 이동해서 LOD 적용시키고 Gbuffer 측정해줘») ──
+	//  켜면 아래 종류는 같은 폴더의 «이름_LOD.glb»(Resource_Work/LOD_Vegetation/out 결과 — LOD0 = 원본 + 노드 _LOD1 ~ _LOD3)를 읽는다.
+	//  LOD0 메시는 원본 glb 와 바이트까지 같다(Resource_Work/LOD_Vegetation/렌더_20261120/목록.md). 끄면 예전 glb.
+	constexpr bool kVegetationLodAssets = true;
+	constexpr const char* kLodAssetNames[] = {
+		"Tree_Oak_A", "Tree_Oak_B", "Tree_Beech_A", "Tree_Beech_B", "Tree_Pine_A", "Tree_Pine_B",
+		"Grass_Patch_A", "Grass_Patch_B", "Weed_Patch_A" };
 
 	std::wstring PlanetDebugScene::ObjectAsset(size_t type) const
 	{
 		if (type >= objectTypes.size()) return std::wstring();
-		std::wstring relative = FromUtf8(objectTypes[type].file);
+		std::string file = objectTypes[type].file;
+		if (kVegetationLodAssets)
+		{
+			for (const char* name : kLodAssetNames)
+			{
+				const std::string suffix = std::string("/") + name + ".glb";
+				if (file.size() > suffix.size() && file.compare(file.size() - suffix.size(), suffix.size(), suffix) == 0)
+				{
+					file = file.substr(0, file.size() - 4) + "_LOD.glb";
+					break;
+				}
+			}
+		}
+		std::wstring relative = FromUtf8(file);
 		std::replace(relative.begin(), relative.end(), L'/', L'\\');
 		return L"model\\" + relative;
 	}
@@ -478,72 +525,65 @@ namespace swc {
 		const float dz = data.boundsMax.z - data.boundsMin.z;
 		target.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
 
-		target.meshCount = 0;
-		for (const ModelNodeData& node : data.nodes)
-			target.meshCount += static_cast<uint32_t>(node.meshes.size());
+		// 2026-11-20 메시 LOD — 인스턴스 하나가 래스터 목록에서 차지하는 칸 = LOD0 노드 메시 수(단계 노드는 목록에 안 든다)
+		target.meshCount = target.model.BaseMeshCount();
 		target.loaded = target.meshCount > 0;
+		{
+			const XMFLOAT3 center((data.boundsMin.x + data.boundsMax.x) * 0.5f, (data.boundsMin.y + data.boundsMax.y) * 0.5f,
+				(data.boundsMin.z + data.boundsMax.z) * 0.5f);
+			const XMFLOAT3 extents(dx * 0.5f, dy * 0.5f, dz * 0.5f);
+			target.lodMeshes = target.model.RegisterLods(renderer, center, extents);   // 단계 노드가 없으면 0
+		}
+		// 2026-11-17 TLAS 목록 분리 — 이 종류의 GPU 메시를 표시해 둔다(래스터 목록에서 오브젝트를 가려낼 때)
+		for (const MeshHandle mesh : target.model.Meshes())
+		{
+			if (mesh == kInvalidMesh) continue;
+			if (mesh >= objectMesh.size()) objectMesh.resize(size_t(mesh) + 1, 0);
+			objectMesh[mesh] = 1;
+		}
+		gridBuilt = false;
 		if (!target.loaded)
 			error = L"그릴 메시가 없습니다.";
 		return target.loaded;
 	}
 
 	// ── 오브젝트 고르기 (메인 · 매 프레임) ───────────────────────────
-	bool PlanetDebugScene::StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force)
+	bool PlanetDebugScene::StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force, size_t budget)
 	{
 		if (!loaded || root == kInvalidNode || staticObjects.empty()) return false;
-		if (!force && streamed && Length(eye - lastStreamEye) < kRestreamDistance) return false;
+		// 2026-11-17 — 예산이 줄어 고른 것이 넘치거나 64 이상 늘었으면 움직이지 않아도 다시 고른다(SelectTlasObjects 와 같은 규칙)
+		const bool budgetChanged = streamed && (budget < selectedMeshes || budget >= lastStreamBudget + 64);
+		if (!force && streamed && !budgetChanged && Length(eye - lastStreamEye) < kRestreamDistance) return false;
 		lastStreamEye = eye;
+		lastStreamBudget = budget;
 		streamed = true;
 
-		// ① 점수 = 반지름 × 배율 ÷ 거리 (화면 크기 근사). 모델을 못 올린 종류는 뺀다.
-		//  ★ 2026-11-16 사용자 «반대편 반구는 제외하도록 수정해줘» — 눈의 반대편 반구(행성 중심 기준 내적 < 0)에 있는
-		//    오브젝트는 후보에 넣지 않는다. 전에는 점수만 봐서 큰 건물 · 다리가 반대편에서도 뽑혀 TLAS 자리를 먹었다.
-		scratch.clear();
-		farHemisphereSkipped = 0;
-		for (uint32_t i = 0; i < static_cast<uint32_t>(staticObjects.size()); ++i)
-		{
-			const Shared::StaticObject& object = staticObjects[i];
-			const ObjectType& type = objectTypes[object.meshIndex];
-			if (!type.loaded) continue;
-			const double facing = double(object.position.x) * eye.x + double(object.position.y) * eye.y +
-				double(object.position.z) * eye.z;
-			if (facing < 0.0)
-			{
-				++farHemisphereSkipped;
-				continue;
-			}
-			const double dx = double(object.position.x) - eye.x;
-			const double dy = double(object.position.y) - eye.y;
-			const double dz = double(object.position.z) - eye.z;
-			const double distance = (std::max)(std::sqrt(dx * dx + dy * dy + dz * dz), 1.0);
-			scratch.emplace_back(static_cast<float>(type.radius * std::fabs(object.scale.x) / distance), i);
-		}
-
-		// ② 점수 높은 순으로 메시 노드 예산까지. 인스턴스 하나는 메시 1개 이상이라 앞쪽 kObjectMeshBudget 개면 충분하다.
-		const auto byScore = [](const std::pair<float, uint32_t>& a, const std::pair<float, uint32_t>& b)
-		{
-			return a.first > b.first;
-		};
-		const size_t candidates = (std::min)(scratch.size(), kObjectMeshBudget);
-		if (candidates < scratch.size())
-			std::nth_element(scratch.begin(), scratch.begin() + candidates, scratch.end(), byScore);
-		std::sort(scratch.begin(), scratch.begin() + candidates, byScore);
-
+		// ①② 2026-11-17 render/tlas-select — TLAS 와 같은 순위(RankObjects: 앞쪽 반구 · 60 m 안 전부 + 조준 32 px →
+		//  단계 → px, 남는 자리는 32 px 밑 px 순)로 메시 예산까지(사용자 «우선 TLAS 하되, 컬링은 그대로 유지해줘»).
+		//  전에는 점수(반지름 × 배율 ÷ 거리) 순이라 먼 큰 나무 · 건물이 가까운 작은 풀보다 먼저 자리를 차지했다.
+		//  반대편 반구 제외(2026-11-16 사용자 지시)는 순위 안에 그대로 있다.
+		RankObjects(eye, budget);
 		if (++stamp == 0)   // 한 바퀴 돌면 표시를 지우고 1 부터
 		{
 			std::fill(selectStamp.begin(), selectStamp.end(), 0u);
 			stamp = 1;
 		}
-		size_t selected = 0;
+		scratch.clear();    // 고른 배치(second) — ④ 에서 놓는다
 		size_t meshes = 0;
-		for (; selected < candidates; ++selected)
+		auto pick = [&](const std::vector<std::pair<float, uint32_t>>& list)
 		{
-			const uint32_t i = scratch[selected].second;
-			const size_t cost = objectTypes[staticObjects[i].meshIndex].meshCount;
-			if (meshes + cost > kObjectMeshBudget) break;
-			meshes += cost;
-			selectStamp[i] = stamp;
-		}
+			for (const auto& entry : list)
+			{
+				const size_t cost = objectTypes[staticObjects[entry.second].meshIndex].meshCount;
+				if (meshes + cost > budget) return false;
+				meshes += cost;
+				selectStamp[entry.second] = stamp;
+				scratch.emplace_back(0.0f, entry.second);
+			}
+			return true;
+		};
+		if (pick(tlasPrimary)) pick(tlasFill);
+		const size_t selected = scratch.size();
 		selectedMeshes = meshes;
 
 		// ③ 이번에 빠진 것을 숨기고 종류별 빈 자리로 돌린다.
@@ -586,6 +626,338 @@ namespace swc {
 			object.renderObjectId = slot;   // StaticObject → 렌더 데이터(명세 6.11 RenderObjectID)
 			liveList.push_back(i);
 		}
+		return true;
+	}
+
+	// ── TLAS 목록 (2026-11-17) ─────────────────────────────────────
+	//  공간 격자 = 행성 중심 기준 128 m 칸 × 크기 묶음(지름 0.25 m 부터 2 배 간격). 묶음마다 «가장 큰 지름» 을 들고 있어,
+	//  칸이 통째로 반대편이거나 60 m 밖인데 가장 큰 것도 32 px 가 안 되는 묶음은 통째로 건너뛴다(11-17 계산: 훑는 양 4 ~ 17 %).
+	namespace
+	{
+		constexpr double kTlasCell        = 128.0;   // m
+		constexpr double kTlasNear        = 60.0;    // m — R0: 이 안은 전부 후보 · 단계 0
+		constexpr double kTlasMid         = 120.0;   // m — R1: 단계 1
+		constexpr double kTlasMinPx       = 32.0;    // 60 m 밖 후보의 최소 화면 지름(px, 조준 기준) — 단계 한 칸 올림 문턱과 같다
+		constexpr double kTlasPromote2Px  = 128.0;   // 이 이상이면 단계 두 칸 올림
+		// 조준 기준 초점 거리(px) = (화면 높이 720 / 2) ÷ tan(조준 FOV 35° / 2) — Camera.cpp kAimFov, 11-16 결정
+		const double kTlasAimFocal = 360.0 / std::tan(17.5 * 3.14159265358979 / 180.0);
+	}
+
+	void PlanetDebugScene::BuildObjectGrid()
+	{
+		gridBuckets.clear();
+		gridItems.clear();
+		std::vector<std::pair<uint64_t, uint32_t>> keys;
+		keys.reserve(staticObjects.size());
+		for (uint32_t i = 0; i < static_cast<uint32_t>(staticObjects.size()); ++i)
+		{
+			const Shared::StaticObject& object = staticObjects[i];
+			const ObjectType& type = objectTypes[object.meshIndex];
+			if (!type.loaded) continue;
+			const double diameter = 2.0 * double(type.radius) * std::fabs(double(object.scale.x));
+			const int64_t cx = int64_t(std::floor(double(object.position.x) / kTlasCell)) + 4096;
+			const int64_t cy = int64_t(std::floor(double(object.position.y) / kTlasCell)) + 4096;
+			const int64_t cz = int64_t(std::floor(double(object.position.z) / kTlasCell)) + 4096;
+			const int64_t size = std::clamp<int64_t>(int64_t(std::floor(std::log2((std::max)(diameter, 1.0e-3) / 0.25))), 0, 15);
+			const uint64_t key = (uint64_t(cx) << 44) | (uint64_t(cy) << 28) | (uint64_t(cz) << 12) | uint64_t(size);
+			keys.emplace_back(key, i);
+		}
+		std::sort(keys.begin(), keys.end());
+		gridItems.reserve(keys.size());
+		for (size_t k = 0; k < keys.size(); ++k)
+		{
+			if (k == 0 || keys[k].first != keys[k - 1].first)
+			{
+				const uint64_t key = keys[k].first;
+				GridBucket bucket;
+				bucket.center = Vec3d{ (double(int64_t((key >> 44) & 0xFFFF)) - 4096.0 + 0.5) * kTlasCell,
+					(double(int64_t((key >> 28) & 0xFFFF)) - 4096.0 + 0.5) * kTlasCell,
+					(double(int64_t((key >> 12) & 0xFFFF)) - 4096.0 + 0.5) * kTlasCell };
+				bucket.first = uint32_t(gridItems.size());
+				gridBuckets.push_back(bucket);
+			}
+			const uint32_t i = keys[k].second;
+			const Shared::StaticObject& object = staticObjects[i];
+			GridBucket& bucket = gridBuckets.back();
+			bucket.maxDiameter = (std::max)(bucket.maxDiameter,
+				float(2.0 * double(objectTypes[object.meshIndex].radius) * std::fabs(double(object.scale.x))));
+			++bucket.count;
+			gridItems.push_back(i);
+		}
+		gridBuilt = true;
+		rankValid = false;
+	}
+
+	// 오브젝트 모델 하나가 끝났다(올렸든 못 올렸든) — 마지막 종류면 공간 격자를 만든다(로드 때 미리, 2026-11-17
+	//  사용자 «격자를 로드 때 미리» — 실행 5 에서 들어간 직후 첫 고르기가 18.6 ~ 72.4 ms 끊겼다).
+	void PlanetDebugScene::ObjectModelFinished()
+	{
+		if (++objectModelsFinished < objectTypes.size()) return;
+		const auto start = std::chrono::steady_clock::now();
+		BuildObjectGrid();
+		Log(L"[디버그 행성] 오브젝트 공간 격자 — 배치 %zu · 묶음 %zu · %.1f ms (로드 때)", gridItems.size(), gridBuckets.size(),
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+	}
+
+	bool PlanetDebugScene::SelectTlasObjects(const Vec3d& eye, size_t budget, bool force)
+	{
+		if (!loaded || staticObjects.empty())
+		{
+			tlasObjects.clear();
+			return false;
+		}
+		const bool moved = !tlasSelected || Length(eye - lastTlasEye) >= kRestreamDistance;
+		const bool budgetChanged = budget < tlasObjects.size() || budget >= lastTlasBudget + 64;
+		if (!force && !moved && !budgetChanged) return false;
+
+		const auto start = std::chrono::steady_clock::now();
+		lastTlasEye = eye;
+		lastTlasBudget = budget;
+		tlasSelected = true;
+
+		RankObjects(eye, budget);   // 같은 프레임에 래스터(StreamObjects)가 더 큰 예산으로 이미 순위를 냈으면 그것을 쓴다
+
+		// 순서대로 메시 상한까지 — 후보(단계 · px) 다음 채움(px)
+		tlasObjects.clear();
+		tlasObjects.reserve(budget);
+		size_t used = 0;
+		auto take = [&](const std::vector<std::pair<float, uint32_t>>& list)
+		{
+			for (const auto& entry : list)
+			{
+				const Shared::StaticObject& object = staticObjects[entry.second];
+				const ObjectType& type = objectTypes[object.meshIndex];
+				if (used + type.meshCount > budget) return false;
+				used += type.meshCount;
+				XMFLOAT4X4 rootWorld;
+				XMStoreFloat4x4(&rootWorld, InstanceMatrix(object) *
+					XMMatrixTranslation(float(center.x), float(center.y), float(center.z)));   // 맵 루트(행성 중심) 아래
+				type.model.AppendInstances(rootWorld, tlasObjects);
+			}
+			return true;
+		};
+		if (take(tlasPrimary)) take(tlasFill);
+
+		lastTlasSelectMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+		return true;
+	}
+
+	// ── 오브젝트 순위 (2026-11-17) — TLAS · 래스터가 같이 쓴다 ──
+	//  tlasPrimary = 후보(앞쪽 반구 · 60 m 안이거나 조준 32 px 이상)를 단계 → px 순, tlasFill = 32 px 밑을 px 큰 순.
+	//  budget 메시를 채울 만큼만 격자를 훑는다. 눈이 1 m 안이고 budget 이 앞 순위 이하면 앞 순위를 그대로 쓴다
+	//  (더 큰 예산의 순위 앞부분 = 작은 예산의 순위 — 채움은 px 문턱 위만 세고 멈추므로).
+	void PlanetDebugScene::RankObjects(const Vec3d& eye, size_t budget)
+	{
+		if (rankValid && Length(eye - rankEye) < 1.0 && budget <= rankBudget) return;
+		if (!gridBuilt) BuildObjectGrid();
+		rankEye = eye;
+		rankBudget = budget;
+		rankValid = true;
+
+		const double eyeLength = Length(eye);
+		const Vec3d up = eyeLength > 1.0e-9 ? eye * (1.0 / eyeLength) : Vec3d{ 0.0, 1.0, 0.0 };
+		const double half = kTlasCell * std::sqrt(3.0) * 0.5;
+		tlasPrimary.clear();
+		tlasFill.clear();
+		bucketExamined.assign(gridBuckets.size(), 0);
+		size_t examined = 0;
+		size_t farSkipped = 0;
+
+		// 배치 하나 — 후보면 tlasPrimary(정렬 키), 아니면 minPx 이상일 때 tlasFill(px)
+		auto visit = [&](uint32_t i, double minPx)
+		{
+			const Shared::StaticObject& object = staticObjects[i];
+			const Vec3d position{ double(object.position.x), double(object.position.y), double(object.position.z) };
+			if (Dot(position, eye) < 0.0) { ++farSkipped; return; }   // 반대편 반구(2026-11-16 사용자 지시)
+			const ObjectType& type = objectTypes[object.meshIndex];
+			const double distance = (std::max)(Length(position - eye), 1.0);
+			const double px = 2.0 * double(type.radius) * std::fabs(double(object.scale.x)) * kTlasAimFocal / distance;
+			if (distance <= kTlasNear || px >= kTlasMinPx)
+			{
+				int tier = distance <= kTlasNear ? 0 : (distance <= kTlasMid ? 1 : 2);
+				tier -= px >= kTlasPromote2Px ? 2 : (px >= kTlasMinPx ? 1 : 0);
+				tier = (std::max)(tier, 0);
+				tlasPrimary.emplace_back(float(double(tier) * 1.0e6 - px), i);
+			}
+			else if (px >= minPx)
+				tlasFill.emplace_back(float(px), i);
+		};
+
+		// ① 후보 — 60 m 안이거나 32 px 이상이 될 수 있는 묶음만 훑는다
+		for (size_t b = 0; b < gridBuckets.size(); ++b)
+		{
+			const GridBucket& bucket = gridBuckets[b];
+			if (Dot(bucket.center, up) + half < 0.0) { bucketExamined[b] = 1; farSkipped += bucket.count; continue; }   // 칸 통째로 반대편
+			const double nearest = (std::max)(Length(bucket.center - eye) - half, 1.0);
+			if (nearest > kTlasNear && double(bucket.maxDiameter) * kTlasAimFocal / nearest < kTlasMinPx) continue;
+			bucketExamined[b] = 1;
+			for (uint32_t k = 0; k < bucket.count; ++k)
+				visit(gridItems[bucket.first + k], 0.0);   // 같은 묶음의 32 px 밑은 채움 후보로 모은다(이미 훑었으니)
+			examined += bucket.count;
+		}
+		size_t candidateMeshes = 0;
+		for (const auto& entry : tlasPrimary)
+			candidateMeshes += objectTypes[staticObjects[entry.second].meshIndex].meshCount;
+		lastTlasCandidateMeshes = candidateMeshes;
+
+		// ② 자리가 남으면 32 px 밑을 마저 채운다 — 문턱을 반씩 낮추며 안 훑은 묶음을 더 훑는다(모자라지 않을 때까지)
+		//  모은 채움 후보 중 minPx 이상의 메시 수 — 안 훑은 묶음의 것은 모두 문턱 밑이라, 이 수가 남는 자리를 채우면 멈춰도 순서가 맞다.
+		auto fillMeshes = [&](double minPx)
+		{
+			size_t meshes = 0;
+			for (const auto& entry : tlasFill)
+				if (double(entry.first) >= minPx) meshes += objectTypes[staticObjects[entry.second].meshIndex].meshCount;
+			return meshes;
+		};
+		for (double threshold = kTlasMinPx * 0.5; candidateMeshes < budget; threshold *= 0.5)
+		{
+			const double minPx = threshold < 1.0 ? 0.0 : threshold;
+			for (size_t b = 0; b < gridBuckets.size(); ++b)
+			{
+				if (bucketExamined[b]) continue;
+				const GridBucket& bucket = gridBuckets[b];
+				const double nearest = (std::max)(Length(bucket.center - eye) - half, 1.0);
+				if (minPx > 0.0 && double(bucket.maxDiameter) * kTlasAimFocal / nearest < minPx) continue;
+				bucketExamined[b] = 1;
+				for (uint32_t k = 0; k < bucket.count; ++k)
+					visit(gridItems[bucket.first + k], 0.0);
+				examined += bucket.count;
+			}
+			if (minPx == 0.0 || candidateMeshes + fillMeshes(minPx) >= budget) break;
+		}
+		lastTlasExamined = examined;
+		farHemisphereSkipped = farSkipped;   // 창 제목 «반대편 제외» — 통째로 건너뛴 칸 + 훑은 칸에서 뺀 것
+
+		// ③ 정렬 — 후보(단계 · px), 채움(px 큰 순)
+		std::sort(tlasPrimary.begin(), tlasPrimary.end(),
+			[](const std::pair<float, uint32_t>& a, const std::pair<float, uint32_t>& b) { return a.first < b.first; });
+		std::sort(tlasFill.begin(), tlasFill.end(),
+			[](const std::pair<float, uint32_t>& a, const std::pair<float, uint32_t>& b) { return a.first > b.first; });
+	}
+
+	// ── 래스터 칸 리스트 (2026-11-17) — PlanetDebugScene.h BuildRasterLists 주석 ──
+	namespace
+	{
+		constexpr double kRasterBigDiameter = 4.0;     // m — 이 이상은 큰 리스트(사용자 «문턱은 4m»)
+		constexpr size_t kRasterListMax     = 8192;    // 리스트 하나 최대 메시(사용자 «리스트 하나에 최대 8192») = GRenderer MaxDrawInstances
+		constexpr double kRasterRingPx[4]   = { 0.0, 8.0, 16.0, 32.0 };   // 링 0 · 1 · 2 · 3 이상의 px 문턱(조준 기준)
+	}
+
+	bool PlanetDebugScene::BuildRasterLists(const Vec3d& eye, bool force)
+	{
+		if (!loaded || staticObjects.empty())
+		{
+			rasterLists.clear();
+			return false;
+		}
+		const int64_t cell[3] = { int64_t(std::floor(eye.x / kTlasCell)), int64_t(std::floor(eye.y / kTlasCell)),
+			int64_t(std::floor(eye.z / kTlasCell)) };
+		if (!force && rasterBuilt && cell[0] == rasterCell[0] && cell[1] == rasterCell[1] && cell[2] == rasterCell[2])
+			return false;
+		const auto start = std::chrono::steady_clock::now();
+		if (!gridBuilt) BuildObjectGrid();
+		rasterBuilt = true;
+		rasterCell[0] = cell[0]; rasterCell[1] = cell[1]; rasterCell[2] = cell[2];
+
+		const double eyeLength = Length(eye);
+		const Vec3d up = eyeLength > 1.0e-9 ? eye * (1.0 / eyeLength) : Vec3d{ 0.0, 1.0, 0.0 };
+		const double half = kTlasCell * std::sqrt(3.0) * 0.5;
+
+		// ① 고르기 — 링별 작은 것 · 큰 것 후보(px · 링)
+		struct BigPick { float px; uint32_t index; int64_t ring; };
+		std::vector<std::vector<uint32_t>> ringSmall;
+		std::vector<BigPick> big;
+		for (const GridBucket& bucket : gridBuckets)
+		{
+			if (Dot(bucket.center, up) + half < 0.0) continue;   // 칸 통째로 반대편 반구
+			const int64_t bc[3] = { int64_t(std::floor(bucket.center.x / kTlasCell)), int64_t(std::floor(bucket.center.y / kTlasCell)),
+				int64_t(std::floor(bucket.center.z / kTlasCell)) };
+			const int64_t ring = (std::max)({ std::llabs(bc[0] - cell[0]), std::llabs(bc[1] - cell[1]), std::llabs(bc[2] - cell[2]) });
+			const double minPx = kRasterRingPx[(std::min)(ring, int64_t(3))];
+			if (minPx > 0.0)
+			{
+				const double nearest = (std::max)(Length(bucket.center - eye) - half, 1.0);
+				if (double(bucket.maxDiameter) * kTlasAimFocal / nearest < minPx) continue;   // 묶음에서 가장 큰 것도 문턱 밑
+			}
+			for (uint32_t k = 0; k < bucket.count; ++k)
+			{
+				const uint32_t i = gridItems[bucket.first + k];
+				const Shared::StaticObject& object = staticObjects[i];
+				const Vec3d position{ double(object.position.x), double(object.position.y), double(object.position.z) };
+				if (Dot(position, eye) < 0.0) continue;   // 반대편 반구(2026-11-16 사용자 지시)
+				const double diameter = 2.0 * double(objectTypes[object.meshIndex].radius) * std::fabs(double(object.scale.x));
+				const double px = diameter * kTlasAimFocal / (std::max)(Length(position - eye), 1.0);
+				if (px < minPx) continue;
+				if (diameter >= kRasterBigDiameter)
+					big.push_back({ float(px), i, ring });
+				else
+				{
+					if (ringSmall.size() <= size_t(ring)) ringSmall.resize(size_t(ring) + 1);
+					ringSmall[size_t(ring)].push_back(i);
+				}
+			}
+		}
+
+		// ② 리스트 — 링 0(플레이어 칸) 하나 · 링 1 ~ 마다 8,192 씩 · 큰 것 하나 · 임시 하나
+		std::vector<std::vector<InstanceData>> built;
+		std::vector<InstanceData> temp;
+		rasterSmallMeshes = rasterBigMeshes = rasterTempMeshes = rasterCutBigMeshes = 0;
+		const XMMATRIX toWorld = XMMatrixTranslation(float(center.x), float(center.y), float(center.z));   // 맵 루트(행성 중심) 아래
+		auto append = [&](std::vector<InstanceData>& out, uint32_t i)
+		{
+			const Shared::StaticObject& object = staticObjects[i];
+			XMFLOAT4X4 rootWorld;
+			XMStoreFloat4x4(&rootWorld, InstanceMatrix(object) * toWorld);
+			objectTypes[object.meshIndex].model.AppendInstances(rootWorld, out);
+		};
+		auto cost = [&](uint32_t i) { return size_t(objectTypes[staticObjects[i].meshIndex].meshCount); };
+		for (size_t ring = 0; ring < ringSmall.size(); ++ring)
+		{
+			if (ringSmall[ring].empty()) continue;
+			built.emplace_back();
+			for (const uint32_t i : ringSmall[ring])
+			{
+				if (built.back().size() + cost(i) > kRasterListMax)
+				{
+					if (ring == 0)   // 플레이어 칸이 넘치면 임시 리스트로(사용자 «플레이어가 속한 격자인데 안그려지는거는 임시 리스트에 전부»)
+					{
+						append(temp, i);
+						continue;
+					}
+					built.emplace_back();   // 링 1 ~ 은 리스트를 하나 더
+				}
+				append(built.back(), i);
+			}
+		}
+		for (const std::vector<InstanceData>& list : built) rasterSmallMeshes += list.size();
+		std::sort(big.begin(), big.end(), [](const BigPick& a, const BigPick& b) { return a.px > b.px; });
+		std::vector<InstanceData> bigList;
+		for (const BigPick& pick : big)
+		{
+			if (bigList.size() + cost(pick.index) <= kRasterListMax)
+				append(bigList, pick.index);
+			else if (pick.ring == 0)   // 큰 리스트에서 잘렸는데 플레이어 칸이면 임시 리스트로
+				append(temp, pick.index);
+			else
+				rasterCutBigMeshes += cost(pick.index);
+		}
+		rasterBigMeshes = bigList.size();
+		if (!bigList.empty()) built.push_back(std::move(bigList));
+		if (temp.size() > kRasterListMax) temp.resize(kRasterListMax);   // 임시 리스트도 하나 최대 8,192
+		rasterTempMeshes = temp.size();
+		if (!temp.empty()) built.push_back(std::move(temp));
+
+		rasterLists.clear();
+		rasterLists.reserve(built.size());
+		for (std::vector<InstanceData>& list : built)
+		{
+			if (list.empty()) continue;
+			InstanceList entry;
+			entry.items = std::make_shared<const std::vector<InstanceData>>(std::move(list));
+			entry.version = ++rasterVersion;
+			rasterLists.push_back(std::move(entry));
+		}
+		lastRasterBuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 		return true;
 	}
 
@@ -723,8 +1095,9 @@ namespace swc {
 				std::to_wstring(staticObjects.size()) + L" · 종류 " + std::to_wstring(loadedTypes) + L"/" +
 				std::to_wstring(objectTypes.size());
 			// 2026-11-16 — 고른 메시 수 / 예산 · 반대편 반구라 뺀 오브젝트 수(실행 중 확인용)
-			status += L" · 메시 " + std::to_wstring(selectedMeshes) + L"/" + std::to_wstring(kObjectMeshBudget) +
-				L" · 반대편 제외 " + std::to_wstring(farHemisphereSkipped);
+			// 2026-11-17 render/tlas-select — 래스터 칸 리스트(BuildRasterLists): 리스트 수 · 작은 것 · 큰 것 · 임시 메시
+			status += L" · 래스터 리스트 " + std::to_wstring(rasterLists.size()) + L"개(작은 " + std::to_wstring(rasterSmallMeshes) +
+				L" · 큰 " + std::to_wstring(rasterBigMeshes) + L" · 임시 " + std::to_wstring(rasterTempMeshes) + L")";
 			if (skippedInstances > 0)
 				status += L" · 건너뜀 " + std::to_wstring(skippedInstances);
 		}
