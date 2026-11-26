@@ -28,6 +28,16 @@ namespace {
 	//  true  = 지오메트리 셰이더(VSPoint + GSQuad — 점 하나 → 사각형). 바꿔 빌드한 뒤 자동 측정(Engine kAutoFrameBudget)의 «[7b] 파티클» 로 비교한다.
 	constexpr bool kParticleExpandInGs = false;
 
+	// ── 지형 조각(클러스터) 컬링 (2026-11-17 사용자 «TLAS 인스턴스 선발하듯이 지평선 자르고, 행성 반대편 메시도 제외하고 그릴 방법»
+	//    → «클러스터드 컬링 … 코드로 실측해줘. 혹시나 해당 판정하는 오버헤드가 더 크진 않을지 확인해줘») ──
+	//  삼각형이 kClusterMinTriangles 보다 많은 메시는 CreateMesh 가 인덱스를 «조각» 순서로 다시 놓는다(BLAS 도 같은 버퍼라 그대로 맞다).
+	//  메인 패스에서 그런 메시를 인스턴스 하나로 그리는 묶음(예시 행성 지형)은 Shaders/ClusterCull.hlsl 이 조각마다
+	//  프러스텀 · 지평선 · 뒷면을 보고, 살아남은 조각만 ExecuteIndirect(개수 버퍼)로 그린다. 래스터 전용 — BLAS · TLAS 는 그대로.
+	//  kClusterCullingDefault = 처음 상태(GRenderer::SetClusterCulling 으로 바꾼다 — 자동 측정이 끔/켬을 번갈아 잰다).
+	constexpr bool     kClusterCullingDefault = true;   // render/tlas-select — TLAS 목록 분리(Engine kTlasSeparateDefault)와 같이 켬
+	constexpr uint32_t kClusterMinTriangles   = 65536;   // 이보다 많으면 조각으로 나눈다(예시 행성 지형은 340만 ~ 400만)
+	constexpr uint32_t kClusterTriangles      = 1024;    // 조각 하나의 삼각형 수(마지막 조각만 적을 수 있다)
+
 	// 셰이더는 빌드 후 exe 옆 Shaders\ 로 복사된다. 작업 디렉터리와 무관하게 찾는다.
 	std::wstring ShaderPath(const wchar_t* name)
 	{
@@ -580,14 +590,182 @@ namespace swc {
 	static_assert(sizeof(TerrainConstants) == kMaterialRootConstants * sizeof(uint32_t), "지형 상수 = 재질 루트 상수 20 DWORD");
 	static_assert(sizeof(MaterialConstants) <= sizeof(TerrainConstants), "일반 재질 상수는 루트 상수 자리 안에 들어가야 한다");
 
-	// Cull.hlsl 의 CullCB 와 같은 순서. 루트 상수 26개.
+	// Cull.hlsl 의 CullCB 와 같은 순서. 루트 상수 36개.
 	struct CullConstants
 	{
 		XMFLOAT4 planes[6];      // xyz = 법선, w = d (정규화)
 		uint32_t entryCount;
 		uint32_t cullEnabled;    // 0 이면 전부 보이는 것으로 둔다(프러스텀을 못 만들었을 때)
+		// 2026-11-17 인스턴스 지평선 판정(render/tlas-select, 사용자 «레스터 쪽은 우리가 이야기 했던 컬링 다 넣어서») —
+		//  지형 조각 컬링과 같은 «가리는 공»(행성 중심 · 지형 최저 반지름). 반지름 0 = 판정 안 함.
+		// 2026-11-20 메시 LOD (render/tlas-select 시험) — 예전 빈 자리(pad[2] · pad2)에 단계 거리 배수 3개.
+		//  물체 경계 구 반지름 r · 눈까지 거리 d 일 때 d > r × lodK[k] 이면 LOD k+1(화면 지름 px 문턱을 거리로 바꾼 값). 0 이면 LOD 안 고름.
+		float    lodK[2];
+		XMFLOAT3 eye;            float occluderRadius;
+		XMFLOAT3 planetCenter;   float lodK2;
 	};
-	static_assert(sizeof(CullConstants) == 26 * sizeof(uint32_t));
+	static_assert(sizeof(CullConstants) == 36 * sizeof(uint32_t));
+
+	// ── 지형 조각 (2026-11-17, ClusterCull.hlsl) ──
+	// ClusterCull.hlsl 의 ClusterGpu 와 같은 배치(48 B). 메시 로컬 좌표.
+	struct ClusterGpu
+	{
+		XMFLOAT3 center;     float    radius;     // 경계 구
+		XMFLOAT3 coneAxis;   float    coneCos;    // 바깥쪽 면 법선 원뿔 — coneCos ≤ 0 이면 원뿔 판정 안 함
+		uint32_t firstIndex; uint32_t indexCount; // 인덱스 버퍼 안 이 조각의 구간
+		uint32_t pad[2];
+	};
+	static_assert(sizeof(ClusterGpu) == 48, "ClusterGpu 는 48바이트 (ClusterCull.hlsl 과 같아야 한다)");
+
+	// ClusterCull.hlsl 의 ClusterCullCB 와 같은 순서. 루트 상수 36개.
+	struct ClusterCullConstants
+	{
+		XMFLOAT4 planes[6];        // 월드, 안쪽이 양수 (CullConstants 와 같다)
+		XMFLOAT3 eye;              uint32_t clusterCount;
+		XMFLOAT3 planetCenter;     float    occluderRadius;   // 0 = 지평선 판정 끔
+		uint32_t instance;         uint32_t commandBase;
+		uint32_t counterSlot;      uint32_t flags;            // 1 프러스텀 · 2 지평선 · 4 뒷면
+	};
+	static_assert(sizeof(ClusterCullConstants) == 36 * sizeof(uint32_t), "ClusterCullCB 는 루트 상수 36개");
+
+	// Morton(Z) 순서 — 10비트 정수의 비트 사이에 0 두 개씩 끼운다(x, y, z 를 엮어 30비트 키).
+	static uint32_t MortonSpread10(uint32_t x)
+	{
+		x &= 0x3FFu;
+		x = (x | (x << 16)) & 0x030000FFu;
+		x = (x | (x << 8))  & 0x0300F00Fu;
+		x = (x | (x << 4))  & 0x030C30C3u;
+		x = (x | (x << 2))  & 0x09249249u;
+		return x;
+	}
+
+	// 조각 만들기 (CreateMesh — 로드 때 한 번)
+	//  ① 삼각형 무게중심을 메시 경계 상자 안 1024³ 칸의 Morton 순서로 정렬한다 → 가까운 삼각형끼리 모인다.
+	//  ② 앞에서부터 kClusterTriangles 개씩 끊어 조각 하나. 인덱스를 그 순서로 다시 놓는다(outIndices).
+	//  ③ 조각마다 경계 구(정점 상자 중심 · 가장 먼 정점까지)와 바깥쪽 면 법선 원뿔.
+	//     «바깥쪽 면 법선» = 와인딩 법선(cross) × 메시 부호. 부호는 정점 법선과의 내적 합(다수결)으로 정한다 — 제대로 그려지는 메시는
+	//     앞면 = 바깥쪽이라, 래스터라이저가 와인딩으로 버리는 면과 같은 면을 뒷면으로 본다(면마다 와인딩을 따르므로 섞인 면도 맞다).
+	static void BuildClusters(const Vertex* verts, const uint32_t* indices, size_t icount,
+		const XMFLOAT3& boundsMin, const XMFLOAT3& boundsMax,
+		std::vector<uint32_t>& outIndices, std::vector<ClusterGpu>& outClusters, std::vector<XMFLOAT4>& outSpheres)
+	{
+		const size_t triangles = icount / 3;
+		auto load = [&](uint32_t index) -> XMFLOAT3
+		{
+			const Shared::Vec3& p = verts[index].position;
+			return XMFLOAT3(p.x, p.y, p.z);
+		};
+		auto faceCross = [&](size_t t) -> XMFLOAT3
+		{
+			const XMFLOAT3 a = load(indices[t * 3 + 0]), b = load(indices[t * 3 + 1]), c = load(indices[t * 3 + 2]);
+			const XMFLOAT3 e1(b.x - a.x, b.y - a.y, b.z - a.z), e2(c.x - a.x, c.y - a.y, c.z - a.z);
+			return XMFLOAT3(e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x);
+		};
+
+		// 메시 부호 — 와인딩 법선이 정점 법선(바깥쪽)과 같은 쪽이면 +1
+		double orientation = 0.0;
+		for (size_t t = 0; t < triangles; ++t)
+		{
+			const XMFLOAT3 cr = faceCross(t);
+			double nx = 0.0, ny = 0.0, nz = 0.0;
+			for (int k = 0; k < 3; ++k)
+			{
+				const Shared::Vec3& n = verts[indices[t * 3 + k]].normal;
+				nx += n.x; ny += n.y; nz += n.z;
+			}
+			orientation += double(cr.x) * nx + double(cr.y) * ny + double(cr.z) * nz;
+		}
+		const float sign = orientation < 0.0 ? -1.0f : 1.0f;
+
+		// ① Morton 정렬 — 키 위 32비트 = Morton, 아래 32비트 = 삼각형 번호
+		const float ex = (std::max)(boundsMax.x - boundsMin.x, 1e-6f);
+		const float ey = (std::max)(boundsMax.y - boundsMin.y, 1e-6f);
+		const float ez = (std::max)(boundsMax.z - boundsMin.z, 1e-6f);
+		auto cell = [](float u) -> uint32_t { return uint32_t((std::min)((std::max)(u, 0.0f), 1.0f) * 1023.0f); };
+		std::vector<uint64_t> keys(triangles);
+		for (size_t t = 0; t < triangles; ++t)
+		{
+			const XMFLOAT3 a = load(indices[t * 3 + 0]), b = load(indices[t * 3 + 1]), c = load(indices[t * 3 + 2]);
+			const uint32_t qx = cell(((a.x + b.x + c.x) / 3.0f - boundsMin.x) / ex);
+			const uint32_t qy = cell(((a.y + b.y + c.y) / 3.0f - boundsMin.y) / ey);
+			const uint32_t qz = cell(((a.z + b.z + c.z) / 3.0f - boundsMin.z) / ez);
+			const uint32_t morton = MortonSpread10(qx) | (MortonSpread10(qy) << 1) | (MortonSpread10(qz) << 2);
+			keys[t] = (uint64_t(morton) << 32) | uint64_t(t);
+		}
+		std::sort(keys.begin(), keys.end());
+
+		// ② 인덱스를 정렬 순서로
+		outIndices.resize(triangles * 3);
+		for (size_t k = 0; k < triangles; ++k)
+		{
+			const size_t t = size_t(keys[k] & 0xFFFFFFFFull);
+			outIndices[k * 3 + 0] = indices[t * 3 + 0];
+			outIndices[k * 3 + 1] = indices[t * 3 + 1];
+			outIndices[k * 3 + 2] = indices[t * 3 + 2];
+		}
+
+		// ③ 조각마다 경계 구 · 법선 원뿔
+		outClusters.clear();
+		outSpheres.clear();
+		for (size_t start = 0; start < triangles; start += kClusterTriangles)
+		{
+			const size_t count = (std::min)(size_t(kClusterTriangles), triangles - start);
+			XMFLOAT3 lo = load(outIndices[start * 3]), hi = lo;
+			for (size_t i = start * 3; i < (start + count) * 3; ++i)
+			{
+				const XMFLOAT3 p = load(outIndices[i]);
+				lo.x = (std::min)(lo.x, p.x); hi.x = (std::max)(hi.x, p.x);
+				lo.y = (std::min)(lo.y, p.y); hi.y = (std::max)(hi.y, p.y);
+				lo.z = (std::min)(lo.z, p.z); hi.z = (std::max)(hi.z, p.z);
+			}
+			const XMFLOAT3 center((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f);
+			float radius2 = 0.0f;
+			for (size_t i = start * 3; i < (start + count) * 3; ++i)
+			{
+				const XMFLOAT3 p = load(outIndices[i]);
+				const float dx = p.x - center.x, dy = p.y - center.y, dz = p.z - center.z;
+				radius2 = (std::max)(radius2, dx * dx + dy * dy + dz * dz);
+			}
+
+			// 법선 원뿔 — 축 = 단위 면 법선의 합, 퍼짐 = 축과 가장 많이 벌어진 면
+			std::vector<XMFLOAT3> normals;
+			normals.reserve(count);
+			double ax = 0.0, ay = 0.0, az = 0.0;
+			for (size_t t = start; t < start + count; ++t)
+			{
+				const XMFLOAT3 a = load(outIndices[t * 3 + 0]), b = load(outIndices[t * 3 + 1]), c = load(outIndices[t * 3 + 2]);
+				const XMFLOAT3 e1(b.x - a.x, b.y - a.y, b.z - a.z), e2(c.x - a.x, c.y - a.y, c.z - a.z);
+				const XMFLOAT3 cr(e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x);
+				const float len = std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
+				if (!(len > 1e-12f)) continue;   // 퇴화 삼각형 — 그려지지 않는다
+				const XMFLOAT3 n(sign * cr.x / len, sign * cr.y / len, sign * cr.z / len);
+				normals.push_back(n);
+				ax += n.x; ay += n.y; az += n.z;
+			}
+			float coneCos = 0.0f;
+			XMFLOAT3 axis(0.0f, 0.0f, 0.0f);
+			const double axisLength = std::sqrt(ax * ax + ay * ay + az * az);
+			if (!normals.empty() && axisLength > 1e-6)
+			{
+				axis = XMFLOAT3(float(ax / axisLength), float(ay / axisLength), float(az / axisLength));
+				float minDot = 1.0f;
+				for (const XMFLOAT3& n : normals)
+					minDot = (std::min)(minDot, n.x * axis.x + n.y * axis.y + n.z * axis.z);
+				coneCos = minDot - 1e-3f;   // 부동소수 여유
+				if (coneCos <= 0.0f) coneCos = 0.0f;   // 90° 이상 벌어지면 뒷면 판정을 하지 않는다
+			}
+
+			ClusterGpu cluster = {};
+			cluster.center = center;
+			cluster.radius = std::sqrt(radius2) * 1.0001f + 1e-4f;   // 부동소수 여유
+			cluster.coneAxis = axis;
+			cluster.coneCos = coneCos;
+			cluster.firstIndex = uint32_t(start * 3);
+			cluster.indexCount = uint32_t(count * 3);
+			outClusters.push_back(cluster);
+			outSpheres.push_back(XMFLOAT4(center.x, center.y, center.z, cluster.radius));
+		}
+	}
 
 	// UI.hlsl 의 SpriteCB 와 순서가 같아야 한다. 루트 상수 16개(64바이트).
 	struct SpriteConstants
@@ -625,6 +803,9 @@ namespace swc {
 		//  인스턴스 128 B × 8192 = 1 MiB. TLAS 상한(MaxInstances 4096)보다 넉넉하다.
 		static const UINT MaxDrawInstances = 8192;
 		static const UINT MaxBatches = 4096;
+		// 2026-11-20 메시 LOD — 보이는 목록 칸 수. LOD 가 이어진 묶음은 단계마다 count 칸을 따로 잡는다(인스턴스가 어느 단계로든 몰릴 수 있다).
+		//  4 단계 = 최대 4 배. 넘치면 그 묶음은 LOD 없이 그린다(buildBatches).
+		static const UINT MaxVisible = MaxDrawInstances * 4;
 		static const UINT PassCount = 2;        // 0 = 배경(하늘 행성), 1 = 메인
 		static const UINT CullGroupSize = 64;   // Cull.hlsl 의 numthreads 와 같아야 한다
 
@@ -641,6 +822,16 @@ namespace swc {
 			// 4단계 — 반사 히트 셰이더가 정점 · 인덱스를 읽는 바인드리스 힙 번호(raw SRV). 바인드리스를 못 쓰면 kNoDescriptor.
 			uint32_t vertexDescriptor = 0xFFFFFFFFu;
 			uint32_t indexDescriptor = 0xFFFFFFFFu;
+			// 2026-11-17 지형 조각 컬링 — 삼각형이 kClusterMinTriangles 보다 많은 메시만(인덱스는 조각 순서로 다시 놓였다).
+			ComPtr<ID3D12Resource> clusters;        // UPLOAD  ClusterGpu × clusterCount — 로드 때 한 번 쓴다(ClusterCull.hlsl t1)
+			uint32_t clusterCount = 0;
+			std::vector<XMFLOAT4> clusterSpheres;   // CPU 사본(메시 로컬 중심 · 반지름) — 매 프레임 «가리는 공» 반지름 어림
+			float minOriginRadius = 0.0f;           // 2026-11-17 — 메시 원점에서 가장 가까운 정점까지(m, 메시 로컬). 조각이 있는 메시만
+			// 2026-11-20 메시 LOD — 이 메시(LOD0)에 이은 LOD1 ~ lodCount 메시와 단계 판정용 물체 경계(메시 로컬 AABB). SetMeshLods
+			MeshHandle lodNext[3] = { kInvalidMesh, kInvalidMesh, kInvalidMesh };
+			uint32_t   lodCount = 0;
+			XMFLOAT3   lodCenter{};
+			XMFLOAT3   lodExtents{};
 		};
 
 		struct TextureGpu
@@ -1052,7 +1243,8 @@ namespace swc {
 		ComPtr<ID3D12PipelineState> transparentPso;
 		ComPtr<ID3D12Resource>      transparentCB;   // UPLOAD, 288 B → 512 B
 		uint8_t*                    transparentCBData = nullptr;
-		struct TransparentDraw { uint32_t instance; MaterialHandle material; MeshHandle mesh; float distanceSq; };
+		// list = 0 이면 기본 리스트(메인 패스 instances), j + 1 이면 추가 래스터 리스트 j(2026-11-17) — 인스턴스 번호는 그 리스트 안 번호
+		struct TransparentDraw { uint32_t instance; MaterialHandle material; MeshHandle mesh; float distanceSq; uint32_t list = 0; };
 		std::vector<TransparentDraw> transparentDraws;   // 이번 프레임에 그릴 투과 물체(뒤에서 앞으로 정렬)
 		// ── [7b] 파티클 (2026-11-17, Particles.hlsl) — FramePacket::particles 를 프레임 슬롯마다 따로 올린다 ──
 		//  ★ 슬롯 2벌: 지금은 EndFrame 이 GPU 를 기다려 한 벌로도 안전하지만, CPU 가 GPU 를 기다리지 않게 바꾸면
@@ -1164,6 +1356,11 @@ namespace swc {
 			MeshHandle mesh = kInvalidMesh;
 			uint32_t first = 0;                // 보이는 인스턴스 목록에서 이 묶음 구간의 시작
 			uint32_t count = 0;                // 이 묶음에 들 수 있는 인스턴스 수(컬링 전)
+			uint32_t firstInstance = 0;        // 2026-11-17 — 이 묶음 첫 인스턴스의 패킷 번호(조각 컬링은 인스턴스 1개 묶음만 쓴다)
+			// 2026-11-20 메시 LOD — -1 = LOD 없음. 0 = LOD 를 고르는 묶음(컬링 항목이 가리킴), 1 ~ 3 = 바로 앞 LOD0 묶음의 형제(항목 없음,
+			//  컬링 셰이더가 «LOD0 묶음 번호 + 단계» 로 넣는다). 형제의 count 는 LOD0 와 같다(모든 인스턴스가 한 단계로 몰릴 수 있다).
+			int32_t lodLevel = -1;
+			uint32_t lodSpan = 0;              // LOD0 묶음만 — 단계 수(LOD0 포함)
 		};
 
 		// (프레임 슬롯 × 패스)마다 하나. CPU 가 쓰는 버퍼는 슬롯별이라 비행 중 프레임에서도 덮어쓰지 않는다(3.1).
@@ -1188,13 +1385,104 @@ namespace swc {
 			size_t   dropped = 0;                 // 상한을 넘어 묶음에 못 넣은 인스턴스 수
 			bool     statesInitialized = false;   // 첫 사용 전에는 생성 직후 상태다
 			bool     usedThisFrame = false;
+			// 2026-11-17 추가 래스터 리스트 — 리스트가 바뀔 때만 인스턴스를 올린다(기본 리스트는 매 프레임)
+			uint64_t uploadedVersion = (std::numeric_limits<uint64_t>::max)();
+			size_t   uploadedCount = 0;
 		};
 		PassGpu passes[FrameCount][PassCount];
+		// 2026-11-17 render/tlas-select — 메인 패스의 추가 래스터 리스트(FramePacket::instanceLists)마다 패스 자원 하나. 필요할 때 만든다.
+		std::vector<PassGpu> listPasses[FrameCount];
+
+		// 패스 자원(인스턴스 · 컬링 항목 · 묶음 경계 · 간접 인자 · 보이는 목록 · 읽기용 사본) — 실패하면 false
+		bool CreatePassResources(PassGpu& pass)
+		{
+			auto createUpload = [&](UINT64 bytes, ComPtr<ID3D12Resource>& out, uint8_t*& mapped) -> bool
+			{
+				D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+				D3D12_RESOURCE_DESC desc = BufferDesc(bytes);
+				if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&out))))
+					return false;
+				D3D12_RANGE noRead = { 0, 0 };
+				return SUCCEEDED(out->Map(0, &noRead, reinterpret_cast<void**>(&mapped)));
+			};
+			auto createDefault = [&](UINT64 bytes, D3D12_RESOURCE_STATES state, ComPtr<ID3D12Resource>& out) -> bool
+			{
+				D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+				D3D12_RESOURCE_DESC desc = BufferDesc(bytes);
+				desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+				return SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+					state, nullptr, IID_PPV_ARGS(&out)));
+			};
+			const UINT64 argsBytes = UINT64(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS)) * MaxBatches;
+			D3D12_HEAP_PROPERTIES readbackHeap = HeapProps(D3D12_HEAP_TYPE_READBACK);
+			D3D12_RESOURCE_DESC readbackDesc = BufferDesc(argsBytes);
+			return createUpload(UINT64(sizeof(InstanceGpu)) * MaxDrawInstances, pass.instances, pass.instanceData) &&
+				createUpload(UINT64(sizeof(CullEntryGpu)) * MaxDrawInstances, pass.entries, pass.entryData) &&
+				createUpload(UINT64(sizeof(BatchBoundsGpu)) * MaxBatches, pass.bounds, pass.boundsData) &&
+				createUpload(argsBytes, pass.argsTemplate, pass.templateData) &&
+				createDefault(argsBytes, D3D12_RESOURCE_STATE_COPY_DEST, pass.args) &&
+				createDefault(UINT64(sizeof(uint32_t)) * MaxVisible, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, pass.visible) &&
+				SUCCEEDED(device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+					D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pass.readback)));
+		}
 		std::vector<uint32_t> batchOrder;          // 묶음 재구성 때만 쓰는 작업 배열
 
 		ComPtr<ID3D12RootSignature>        cullRootSig;
 		ComPtr<ID3D12PipelineState>        cullPso;
 		ComPtr<ID3D12CommandSignature>     drawSignature;   // DRAW_INDEXED 하나
+
+		// ── 지형 조각 컬링 (2026-11-17, ClusterCull.hlsl) ──
+		//  메인 패스에서 «조각이 있는 메시 × 인스턴스 1개» 묶음(예시 행성 지형)을 조각마다 판정해, 살아남은 조각만
+		//  ExecuteIndirect(명령 = 루트 상수 1개 + DRAW_INDEXED, 개수 버퍼)로 그린다. 정점 셰이더는 그대로 —
+		//  루트 상수(gInstanceBase) = 조각 묶음 번호, t7(gVisible) 자리에 «조각 묶음 번호 → 인스턴스 번호» 버퍼를 묶는다.
+		static const UINT kMaxClusterBatches    = 8;       // 한 프레임에 조각으로 그릴 묶음 수 상한
+		static const UINT kMaxClusterCommands   = 32768;   // 조각 명령 상한(24 B × 32768 = 768 KB)
+		static const UINT kClusterCommandStride = 24;      // 루트 상수 4 B + D3D12_DRAW_INDEXED_ARGUMENTS 20 B
+		static const UINT kClusterCounterStride = 32;      // ClusterCull.hlsl 카운터 칸(그릴 조각 · 삼각형 · 뺀 조각 ×3)
+		static const UINT ClusterGroupSize      = 64;      // ClusterCull.hlsl 의 numthreads
+		struct ClusterDraw
+		{
+			uint32_t batch = 0;          // 묶음 번호(pass.batches)
+			uint32_t slot = 0;           // 조각 묶음 번호(카운터 칸 · 루트 상수)
+			uint32_t commandBase = 0;    // 명령 버퍼에서 이 묶음 구간의 시작(명령 단위)
+			uint32_t clusterCount = 0;
+			uint32_t instance = 0;       // 패킷 인스턴스 번호
+			uint64_t triangleTotal = 0;  // 그 메시의 전체 삼각형
+		};
+		ComPtr<ID3D12RootSignature>    clusterRootSig;
+		ComPtr<ID3D12PipelineState>    clusterPso;
+		ComPtr<ID3D12CommandSignature> clusterDrawSignature;   // 루트 상수 1개(b1 gInstanceBase) + DRAW_INDEXED — 래스터 rootSig 와 짝
+		ComPtr<ID3D12Resource> clusterCommands;                // DEFAULT UAV — 조각 명령(GPU 만 쓰고 읽는다)
+		ComPtr<ID3D12Resource> clusterCounters;                // DEFAULT UAV — 조각 묶음마다 32 B(앞 4 B 가 개수 버퍼)
+		ComPtr<ID3D12Resource> clusterZero;                    // UPLOAD — 카운터를 0 으로 되돌릴 원본
+		ComPtr<ID3D12Resource> clusterInstances[FrameCount];   // UPLOAD — 조각 묶음 번호 → 인스턴스 번호(프레임 슬롯마다)
+		uint32_t*              clusterInstanceData[FrameCount] = {};
+		ComPtr<ID3D12Resource> clusterReadback[FrameCount];    // READBACK — 카운터 사본(통계)
+		bool                   clusterReady = false;           // 파이프라인 · 자원을 다 만들었다
+		bool                   clusterCulling = kClusterCullingDefault;
+		bool                   clusterStatesInitialized = false;
+		// 2026-11-20 메시 LOD — 단계 고르기 켬 · 전환 화면 지름(px). Engine 이 SetLodSelection 으로 정한다(시험값은 Engine.cpp kLod*Px).
+		bool                   lodSelection = false;
+		float                  lodPx[3] = { 600.0f, 150.0f, 60.0f };
+
+		// 메시 LOD — 컬링 상수에 단계 거리 배수를 넣는다(메인 · 리스트 패스 같은 값). 화면 지름 px = 2r × f / d, f = 초점 거리(px)
+		//  = P22 × 높이 / 2 → «px < 문턱» ⇔ d > r × P22 × 높이 / 문턱. P22 = viewProj 둘째 열 xyz 길이(뷰 회전이 직교라 투영의 P22 와 같다).
+		void FillLodConstants(CullConstants& c, const RenderView& view) const
+		{
+			c.eye = view.eyePosition;   // 지평선 판정은 occluderRadius > 0 일 때만 읽는다
+			c.lodK[0] = c.lodK[1] = c.lodK2 = 0.0f;
+			if (!lodSelection || view.background || height == 0) return;
+			const XMFLOAT4X4& vp = view.viewProj;
+			const float p22 = std::sqrt(vp._12 * vp._12 + vp._22 * vp._22 + vp._32 * vp._32);
+			const float k = p22 * float(height);
+			c.lodK[0] = k / (std::max)(lodPx[0], 1.0f);
+			c.lodK[1] = k / (std::max)(lodPx[1], 1.0f);
+			c.lodK2   = k / (std::max)(lodPx[2], 1.0f);
+		}
+		std::vector<ClusterDraw> clusterDraws;                 // 이번 프레임 메인 패스의 조각 묶음
+		std::vector<int32_t>     clusterSlotOfBatch;           // 메인 패스 묶음 번호 → clusterDraws 번호(−1 = 보통 그리기)
+		UINT                     clusterFrameSlot = 0;         // 이번 프레임 조각 자원 슬롯(frameIndex)
 
 		std::vector<MeshGpu> meshes;
 		std::vector<TextureGpu> textures;
@@ -1453,7 +1741,8 @@ namespace swc {
 			return gpu;
 		}
 
-		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[kPsoKeyCount])
+		//  clusterPass = 메인 G-buffer — 조각 묶음(clusterSlotOfBatch ≥ 0)은 조각 명령으로 그린다(2026-11-17).
+		void DrawBatches(const PassGpu& pass, ID3D12PipelineState* const (&psoByKey)[kPsoKeyCount], bool clusterPass = false)
 		{
 			ID3D12PipelineState* currentPso = nullptr;
 			MaterialHandle currentMaterial = kInvalidMaterial;
@@ -1479,6 +1768,20 @@ namespace swc {
 				const MeshGpu& m = meshes[batch.mesh];
 				commandList->IASetVertexBuffers(0, 1, &m.vbv);
 				commandList->IASetIndexBuffer(&m.ibv);
+				// ── 조각 묶음 (2026-11-17) — ClusterCull.hlsl 이 쓴 명령을 개수 버퍼만큼 그린다 ──
+				//  정점 셰이더는 gInstances[gVisible[gInstanceBase + 0]] 을 읽는다 → t7 에 «조각 묶음 번호 → 인스턴스 번호» 버퍼,
+				//  명령의 루트 상수 = 조각 묶음 번호. 끝나면 t7 을 이 패스의 보이는 목록으로 되돌린다.
+				const int32_t clusterSlot = (clusterPass && b < clusterSlotOfBatch.size()) ? clusterSlotOfBatch[b] : -1;
+				if (clusterSlot >= 0)
+				{
+					const ClusterDraw& draw = clusterDraws[size_t(clusterSlot)];
+					commandList->SetGraphicsRootShaderResourceView(5, clusterInstances[clusterFrameSlot]->GetGPUVirtualAddress());
+					commandList->ExecuteIndirect(clusterDrawSignature.Get(), draw.clusterCount, clusterCommands.Get(),
+						UINT64(draw.commandBase) * kClusterCommandStride, clusterCounters.Get(), UINT64(draw.slot) * kClusterCounterStride);
+					commandList->SetGraphicsRootShaderResourceView(5, pass.visible->GetGPUVirtualAddress());
+					++stats.drawCalls;
+					continue;
+				}
 				// 그리기에 넘기는 것은 «이 묶음의 보이는 목록 시작 번호» 하나다(수정방향 3.2).
 				commandList->SetGraphicsRoot32BitConstant(0, batch.first, 0);
 				commandList->ExecuteIndirect(drawSignature.Get(), 1, pass.args.Get(),
@@ -2825,7 +3128,7 @@ namespace swc {
 						!createUpload(UINT64(sizeof(Impl::BatchBoundsGpu)) * Impl::MaxBatches, pass.bounds, pass.boundsData) ||
 						!createUpload(argsBytes, pass.argsTemplate, pass.templateData) ||
 						!createDefault(argsBytes, D3D12_RESOURCE_STATE_COPY_DEST, pass.args) ||
-						!createDefault(UINT64(sizeof(uint32_t)) * Impl::MaxDrawInstances, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, pass.visible) ||
+						!createDefault(UINT64(sizeof(uint32_t)) * Impl::MaxVisible, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, pass.visible) ||
 						FAILED(impl->device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
 							D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pass.readback))))
 					{
@@ -4160,6 +4463,121 @@ namespace swc {
 			}
 		}
 
+		// ── 지형 조각 컬링 파이프라인 (2026-11-17, ClusterCull.hlsl) — 못 만들면 큰 메시도 예전처럼 통째로 그린다 ──
+		//   b0 = ClusterCullCB(루트 상수 36개), t0 = 인스턴스, t1 = 조각 표, u0 = 명령, u1 = 카운터. 전부 루트 디스크립터.
+		//   그리기 명령 시그니처 = 루트 상수 1개(래스터 rootSig 의 0번 = b1 gInstanceBase) + DRAW_INDEXED, 24 B.
+		{
+			bool ok = true;
+			D3D12_ROOT_PARAMETER params[5] = {};
+			params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+			params[0].Constants.ShaderRegister = 0;
+			params[0].Constants.Num32BitValues = sizeof(ClusterCullConstants) / sizeof(uint32_t);
+			params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  params[1].Descriptor.ShaderRegister = 0;
+			params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  params[2].Descriptor.ShaderRegister = 1;
+			params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;  params[3].Descriptor.ShaderRegister = 0;
+			params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;  params[4].Descriptor.ShaderRegister = 1;
+			for (D3D12_ROOT_PARAMETER& param : params)
+				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+			rsDesc.NumParameters = 5;
+			rsDesc.pParameters = params;
+			ComPtr<ID3DBlob> sig, err;
+			ok = SUCCEEDED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)) &&
+				SUCCEEDED(impl->device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&impl->clusterRootSig)));
+
+			std::string log;
+			std::vector<uint8_t> cs;
+			if (ok)
+			{
+				const std::wstring path = ShaderPath(L"ClusterCull.hlsl");
+				cs = impl->shaderCompiler.CompileFromFile(path.c_str(), L"CSMain", L"cs_6_0", nullptr, 0, log);
+				ok = !cs.empty();
+			}
+			if (ok)
+			{
+				D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+				psoDesc.pRootSignature = impl->clusterRootSig.Get();
+				psoDesc.CS = { cs.data(), cs.size() };
+				ok = SUCCEEDED(impl->device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&impl->clusterPso)));
+			}
+			if (ok)
+			{
+				D3D12_INDIRECT_ARGUMENT_DESC arguments[2] = {};
+				arguments[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+				arguments[0].Constant.RootParameterIndex = 0;          // 래스터 rootSig 0번 = b1 gInstanceBase
+				arguments[0].Constant.DestOffsetIn32BitValues = 0;
+				arguments[0].Constant.Num32BitValuesToSet = 1;
+				arguments[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+				D3D12_COMMAND_SIGNATURE_DESC signature = {};
+				signature.ByteStride = Impl::kClusterCommandStride;
+				signature.NumArgumentDescs = 2;
+				signature.pArgumentDescs = arguments;
+				ok = SUCCEEDED(impl->device->CreateCommandSignature(&signature, impl->rootSig.Get(), IID_PPV_ARGS(&impl->clusterDrawSignature)));
+			}
+			if (ok)
+			{
+				auto createBuffer = [&](D3D12_HEAP_TYPE type, UINT64 bytes, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state,
+					ComPtr<ID3D12Resource>& out) -> bool
+				{
+					D3D12_HEAP_PROPERTIES heap = HeapProps(type);
+					D3D12_RESOURCE_DESC desc = BufferDesc(bytes);
+					desc.Flags = flags;
+					return SUCCEEDED(impl->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&out)));
+				};
+				const UINT64 counterBytes = UINT64(Impl::kClusterCounterStride) * Impl::kMaxClusterBatches;
+				ok = createBuffer(D3D12_HEAP_TYPE_DEFAULT, UINT64(Impl::kClusterCommandStride) * Impl::kMaxClusterCommands,
+						D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, impl->clusterCommands) &&
+					createBuffer(D3D12_HEAP_TYPE_DEFAULT, counterBytes,
+						D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST, impl->clusterCounters) &&
+					createBuffer(D3D12_HEAP_TYPE_UPLOAD, counterBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, impl->clusterZero);
+				for (UINT s = 0; ok && s < Impl::FrameCount; ++s)
+				{
+					ok = createBuffer(D3D12_HEAP_TYPE_UPLOAD, UINT64(sizeof(uint32_t)) * Impl::kMaxClusterBatches, D3D12_RESOURCE_FLAG_NONE,
+							D3D12_RESOURCE_STATE_GENERIC_READ, impl->clusterInstances[s]) &&
+						createBuffer(D3D12_HEAP_TYPE_READBACK, counterBytes, D3D12_RESOURCE_FLAG_NONE,
+							D3D12_RESOURCE_STATE_COPY_DEST, impl->clusterReadback[s]);
+					D3D12_RANGE noRead = { 0, 0 };
+					ok = ok && SUCCEEDED(impl->clusterInstances[s]->Map(0, &noRead, reinterpret_cast<void**>(&impl->clusterInstanceData[s])));
+				}
+				if (ok)
+				{
+					void* zero = nullptr;
+					D3D12_RANGE noRead = { 0, 0 };
+					ok = SUCCEEDED(impl->clusterZero->Map(0, &noRead, &zero));
+					if (ok)
+					{
+						memset(zero, 0, size_t(counterBytes));
+						impl->clusterZero->Unmap(0, nullptr);
+					}
+				}
+			}
+			impl->clusterReady = ok;
+			if (ok)
+			{
+				wchar_t line[200];
+				swprintf_s(line, L"[GRenderer] 지형 조각 컬링 준비 (조각 %u 삼각형 · 메시 %u 삼각형 이상, 처음 상태 %s)\n",
+					kClusterTriangles, kClusterMinTriangles, impl->clusterCulling ? L"켬" : L"끔");
+				OutputDebugStringW(line);
+			}
+			else
+			{
+				if (!log.empty()) OutputDebugStringA(("[ClusterCull CS] " + log + "\n").c_str());
+				impl->clusterRootSig.Reset();
+				impl->clusterPso.Reset();
+				impl->clusterDrawSignature.Reset();
+				impl->clusterCommands.Reset();
+				impl->clusterCounters.Reset();
+				impl->clusterZero.Reset();
+				for (UINT s = 0; s < Impl::FrameCount; ++s)
+				{
+					impl->clusterInstances[s].Reset();
+					impl->clusterInstanceData[s] = nullptr;
+					impl->clusterReadback[s].Reset();
+				}
+				OutputDebugStringW(L"[GRenderer] 지형 조각 컬링 준비 실패 — 큰 메시도 통째로 그린다\n");
+			}
+		}
+
 		// ── UI 파이프라인 (로딩 화면 등) ──
 		//   b0 = 루트 상수 16개(SpriteCB) / t0 = 텍스처(디스크립터 테이블) / s0 = 정적 샘플러
 		{
@@ -4462,6 +4880,26 @@ namespace swc {
 		m.ibv.SizeInBytes = ibSize;
 		m.indexCount = UINT(icount);
 
+		// ── 지형 조각 (2026-11-17) — 큰 메시는 인덱스를 조각 순서로 다시 놓고 조각 표를 만든다 ──
+		//  같은 삼각형 집합이라 그리기 · BLAS · RT 히트(인덱스 raw SRV)는 순서만 바뀌고 결과는 같다.
+		std::vector<uint32_t> clusteredIndices;
+		std::vector<ClusterGpu> clusterRows;
+		const uint32_t* uploadIndices = indices;
+		if (impl->clusterReady && icount / 3 >= kClusterMinTriangles)
+		{
+			BuildClusters(verts, indices, icount, boundsMin, boundsMax, clusteredIndices, clusterRows, m.clusterSpheres);
+			uploadIndices = clusteredIndices.data();
+			// 2026-11-17 render/tlas-select — 메시 원점에서 가장 가까운 정점까지(가리는 공 반지름). 조각 경계 구로 어림하면
+			//  Morton 조각 가운데 행성 양쪽에 걸친 큰 조각(경계 구 수백 m)이 있어 어림이 0 아래로 떨어져 지평선 판정이 꺼졌다(실행 3).
+			float minRadius2 = (std::numeric_limits<float>::max)();
+			for (size_t i = 0; i < icount; ++i)
+			{
+				const Shared::Vec3& p = verts[indices[i]].position;
+				minRadius2 = (std::min)(minRadius2, p.x * p.x + p.y * p.y + p.z * p.z);
+			}
+			m.minOriginRadius = std::sqrt(minRadius2);
+		}
+
 		// CPU 사본은 업로드 중에만 필요하며, 정적 메시를 UPLOAD 힙에 계속 두지 않는다.
 		ComPtr<ID3D12Resource> upload;
 		D3D12_HEAP_PROPERTIES uploadHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
@@ -4479,7 +4917,7 @@ namespace swc {
 			return kInvalidMesh;
 		}
 		memcpy(mapped, verts, vbSize);
-		memcpy(mapped + static_cast<size_t>(indexOffset), indices, ibSize);
+		memcpy(mapped + static_cast<size_t>(indexOffset), uploadIndices, ibSize);
 		upload->Unmap(0, nullptr);
 
 		if (!impl->WaitForGpu()) return kInvalidMesh;
@@ -4565,6 +5003,31 @@ namespace swc {
 			};
 			m.vertexDescriptor = rawSrv(0, vbSize);
 			m.indexDescriptor = rawSrv(indexOffset, ibSize);
+		}
+
+		// 조각 표 — UPLOAD 에 한 번 쓰고 그대로 둔다(조각 4천 개 × 48 B ≈ 190 KB). 못 만들면 이 메시는 통째로 그린다.
+		if (!clusterRows.empty())
+		{
+			const UINT64 bytes = UINT64(clusterRows.size()) * sizeof(ClusterGpu);
+			D3D12_RESOURCE_DESC clusterDesc = BufferDesc(bytes);
+			void* clusterMapped = nullptr;
+			if (SUCCEEDED(impl->device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &clusterDesc,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m.clusters))) &&
+				SUCCEEDED(m.clusters->Map(0, &noRead, &clusterMapped)))
+			{
+				memcpy(clusterMapped, clusterRows.data(), size_t(bytes));
+				m.clusters->Unmap(0, nullptr);
+				m.clusterCount = uint32_t(clusterRows.size());
+				wchar_t line[160];
+				swprintf_s(line, L"[GRenderer] 메시 %zu — 삼각형 %zu 를 조각 %u 개로 나눔\n",
+					impl->meshes.size(), icount / 3, m.clusterCount);
+				OutputDebugStringW(line);
+			}
+			else
+			{
+				m.clusters.Reset();
+				m.clusterSpheres.clear();
+			}
 		}
 
 		impl->meshes.push_back(std::move(m));
@@ -4965,6 +5428,10 @@ namespace swc {
 			mesh.vbv = {};
 			mesh.ibv = {};
 			mesh.indexCount = 0;
+			mesh.clusters.Reset();   // 2026-11-17 지형 조각 표
+			mesh.clusterCount = 0;
+			std::vector<XMFLOAT4>().swap(mesh.clusterSpheres);
+			mesh.lodCount = 0;       // 2026-11-20 메시 LOD 잇기
 		}
 		for (const TextureHandle handle : textures)
 		{
@@ -4988,6 +5455,8 @@ namespace swc {
 		impl->frameOpen = true;
 		impl->stats = RenderStats{};
 		for (Impl::PassGpu& pass : impl->passes[impl->frameIndex])
+			pass.usedThisFrame = false;
+		for (Impl::PassGpu& pass : impl->listPasses[impl->frameIndex])   // 2026-11-17 추가 래스터 리스트
 			pass.usedThisFrame = false;
 		++impl->frameCounter;   // 프레임 번호 — 시간 누적 · 노이즈 시드용 자리(2026-10-27 룰렛이 빠져 지금은 읽는 곳 없음)
 		impl->commandAllocator->Reset();
@@ -5066,7 +5535,9 @@ namespace swc {
 			uint8_t* const instanceRows = impl->rtInstanceData
 				? impl->rtInstanceData + size_t(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu)
 				: nullptr;
-			for (const InstanceData& it : items)
+			// 2026-11-17 TLAS 목록 분리 — 패킷이 따로 준 TLAS 목록이 있으면 그것으로 만든다(래스터 목록과 독립).
+			const std::vector<InstanceData>& rtItems = packet.rtSeparate ? packet.rtInstances : items;
+			for (const InstanceData& it : rtItems)
 			{
 				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
 				// 2026-11-16 — kInstanceNoRayTracing(예광탄)은 래스터에만 그리고 TLAS 에는 넣지 않는다.
@@ -5125,9 +5596,12 @@ namespace swc {
 		// ── ① 그리기 묶음 — 패킷의 구성 버전이 바뀔 때만 다시 만든다 ──
 		//  정적 맵은 로드 직후 한 번만 정렬한다. 매 프레임 CPU 정렬은 하지 않는다(멀티스레딩 명세 §2 원칙 5).
 		//  묶음 = 같은 (PSO, 재질, 메시). PSO 는 재질의 양면 여부와 인스턴스의 반전 여부로 정해진다.
-		if (pass.layoutVersion != packet.layoutVersion || pass.layoutInstances != items.size())
+		//  2026-11-17 render/tlas-select — 추가 래스터 리스트(packet.instanceLists)도 같은 코드로 묶는다(리스트마다 패스 자원 따로).
+		auto buildBatches = [&](Impl::PassGpu& pass, const std::vector<InstanceData>& items, uint64_t layoutVersion)
 		{
-			pass.layoutVersion = packet.layoutVersion;
+		if (pass.layoutVersion != layoutVersion || pass.layoutInstances != items.size())
+		{
+			pass.layoutVersion = layoutVersion;
 			pass.layoutInstances = items.size();
 			pass.batches.clear();
 			pass.entryCount = 0;
@@ -5172,14 +5646,49 @@ namespace swc {
 					return x.mesh < y.mesh;
 				});
 
+			// 2026-11-20 메시 LOD — 보이는 목록 시작(first)을 컬링 항목 번호와 따로 센다. LOD 가 이어진 묶음은 닫을 때
+			//  바로 뒤에 형제 묶음(LOD1 ~)을 붙이고 단계마다 count 칸씩 잡는다(컬링 셰이더가 «LOD0 묶음 번호 + 단계» 에 넣는다).
+			//  LOD 없는 묶음만 있으면 first = 항목 시작 번호로 예전과 같다.
+			uint32_t visibleCursor = 0;
+			int64_t current = -1;
+			auto closeBatch = [&]()
+			{
+				if (current < 0) return;
+				const size_t b0 = size_t(current);
+				current = -1;
+				pass.batches[b0].first = visibleCursor;
+				visibleCursor += pass.batches[b0].count;
+				const Impl::MeshGpu& m = impl->meshes[pass.batches[b0].mesh];
+				uint32_t levels = 0;
+				while (levels < m.lodCount && impl->MeshUsable(m.lodNext[levels])) ++levels;
+				const uint32_t count = pass.batches[b0].count;
+				if (levels == 0 || pass.batches.size() + levels > Impl::MaxBatches ||
+					size_t(visibleCursor) + size_t(count) * levels > Impl::MaxVisible)
+					return;   // 이을 단계가 없거나 칸이 모자라면 LOD 없이 그린다
+				pass.batches[b0].lodLevel = 0;
+				pass.batches[b0].lodSpan = levels + 1;
+				const Impl::Batch base = pass.batches[b0];
+				for (uint32_t k = 0; k < levels; ++k)
+				{
+					Impl::Batch sibling = base;
+					sibling.mesh = m.lodNext[k];
+					sibling.first = visibleCursor;
+					sibling.count = count;
+					sibling.lodLevel = int32_t(k + 1);
+					sibling.lodSpan = 0;
+					visibleCursor += count;
+					pass.batches.push_back(sibling);
+				}
+			};
 			for (size_t k = 0; k < order.size(); ++k)
 			{
 				const InstanceData& it = items[order[k]];
 				const uint32_t pso = psoOf(it);
 				const MaterialHandle material = materialOf(it);
-				if (pass.batches.empty() || pass.batches.back().pso != pso ||
-					pass.batches.back().material != material || pass.batches.back().mesh != it.mesh)
+				if (current < 0 || pass.batches[size_t(current)].pso != pso ||
+					pass.batches[size_t(current)].material != material || pass.batches[size_t(current)].mesh != it.mesh)
 				{
+					closeBatch();
 					if (pass.batches.size() >= Impl::MaxBatches)
 					{
 						pass.dropped += order.size() - k;
@@ -5189,20 +5698,32 @@ namespace swc {
 					batch.pso = pso;
 					batch.material = material;
 					batch.mesh = it.mesh;
-					batch.first = pass.entryCount;
+					batch.firstInstance = order[k];   // 2026-11-17 조각 컬링용
 					pass.batches.push_back(batch);
+					current = int64_t(pass.batches.size() - 1);
 				}
-				++pass.batches.back().count;
-				const Impl::CullEntryGpu entry{ order[k], uint32_t(pass.batches.size() - 1) };
+				++pass.batches[size_t(current)].count;
+				const Impl::CullEntryGpu entry{ order[k], uint32_t(current) };
 				memcpy(pass.entryData + size_t(pass.entryCount) * sizeof(entry), &entry, sizeof(entry));
 				++pass.entryCount;
 			}
+			closeBatch();
 
 			for (size_t b = 0; b < pass.batches.size(); ++b)
 			{
 				const Impl::Batch& batch = pass.batches[b];
 				const Impl::MeshGpu& m = impl->meshes[batch.mesh];
-				const Impl::BatchBoundsGpu bounds{ m.boundsCenter, batch.first, m.boundsExtents, 0 };
+				Impl::BatchBoundsGpu bounds{ m.boundsCenter, batch.first, m.boundsExtents, 0 };
+				// 2026-11-20 메시 LOD — LOD0 묶음의 pad = 단계 수(LOD0 포함). 형제 1(LOD1) 칸의 경계는 컬링에 쓰이지 않으므로
+				//  «단계 판정용 물체 전체 경계»(LOD0 메시의 lodCenter · lodExtents)를 담는다 — Cull.hlsl 이 gBounds[b0 + 1] 로 읽는다.
+				if (batch.lodLevel == 0)
+					bounds.pad = batch.lodSpan;
+				else if (batch.lodLevel == 1)
+				{
+					const Impl::MeshGpu& m0 = impl->meshes[pass.batches[b - 1].mesh];
+					bounds.center = m0.lodCenter;
+					bounds.extents = m0.lodExtents;
+				}
 				memcpy(pass.boundsData + b * sizeof(bounds), &bounds, sizeof(bounds));
 				// 인스턴스 수는 0 으로 둔다 — 컬링 셰이더가 보이는 만큼 올린다.
 				const D3D12_DRAW_INDEXED_ARGUMENTS args{ m.indexCount, 0, 0, 0, 0 };
@@ -5210,6 +5731,79 @@ namespace swc {
 			}
 		}
 		impl->stats.dropped += pass.dropped;
+		};
+		buildBatches(pass, items, packet.layoutVersion);
+
+		// ── ①-2 조각 묶음 고르기 (2026-11-17 지형 조각 컬링) — 메인 패스의 «조각이 있는 메시 × 인스턴스 1개» 묶음 ──
+		//  끄고 켜는 것(SetClusterCulling)이 묶음 구성과 따로라 매 프레임 고른다(묶음 수만큼, 몇 μs).
+		if (!view.background)
+		{
+			impl->clusterDraws.clear();
+			impl->clusterSlotOfBatch.assign(pass.batches.size(), -1);
+			impl->clusterFrameSlot = impl->frameIndex;
+			if (impl->clusterReady && impl->clusterCulling)
+			{
+				uint32_t commandBase = 0;
+				for (uint32_t b = 0; b < uint32_t(pass.batches.size()); ++b)
+				{
+					const Impl::Batch& batch = pass.batches[b];
+					if (batch.count != 1 || batch.lodLevel > 0 || !impl->MeshUsable(batch.mesh)) continue;   // LOD 형제 묶음은 항목이 없다
+					const Impl::MeshGpu& mesh = impl->meshes[batch.mesh];
+					if (mesh.clusterCount == 0 || !mesh.clusters) continue;
+					if (impl->clusterDraws.size() >= Impl::kMaxClusterBatches ||
+						commandBase + mesh.clusterCount > Impl::kMaxClusterCommands)
+						break;   // 넘는 묶음은 예전처럼 통째로 그린다
+					Impl::ClusterDraw draw;
+					draw.batch = b;
+					draw.slot = uint32_t(impl->clusterDraws.size());
+					draw.commandBase = commandBase;
+					draw.clusterCount = mesh.clusterCount;
+					draw.instance = batch.firstInstance;
+					draw.triangleTotal = mesh.indexCount / 3;
+					impl->clusterSlotOfBatch[b] = int32_t(draw.slot);
+					impl->clusterDraws.push_back(draw);
+					commandBase += mesh.clusterCount;
+				}
+			}
+		}
+
+		// 가리는 공 = 행성 중심 · «지형의 가장 낮은 반지름». 지형 레이어 재질 묶음(PSO 키 8 · 9)의 조각 경계 구로 아래쪽 어림을 낸다
+		//  (경계 구 반지름만큼 낮게 잡혀 늘 땅 속이다). 지형 묶음이 없으면(평면 맵 · 게임 맵의 일반 재질 지형) 지평선 판정을 하지 않는다 —
+		//  건물 같은 큰 메시로 어림하면 공이 골짜기 위로 솟아 보이는 것을 지울 수 있다.
+		//  2026-11-17 render/tlas-select — 지형 조각(ClusterCull.hlsl)과 인스턴스(Cull.hlsl) 지평선 판정이 같이 쓴다(조각 컬링이 켜졌을 때만).
+		float occluder = 0.0f;
+		if (!view.background && view.planet.w > 0.0f)
+		{
+			float lowest = (std::numeric_limits<float>::max)();
+			for (const Impl::ClusterDraw& draw : impl->clusterDraws)
+			{
+				const Impl::Batch& batch = pass.batches[draw.batch];
+				if (batch.pso < Impl::kTerrainPsoKey) continue;
+				const XMFLOAT4X4& w = items[draw.instance].world;
+				const float scale = (std::max)({ std::sqrt(w._11 * w._11 + w._12 * w._12 + w._13 * w._13),
+					std::sqrt(w._21 * w._21 + w._22 * w._22 + w._23 * w._23),
+					std::sqrt(w._31 * w._31 + w._32 * w._32 + w._33 * w._33) });
+				// 2026-11-17 — 메시 원점이 행성 중심과 같으면(예시 행성 · 게임 맵 지형은 행성 중심 기준 glb) 가장 가까운 정점 거리를 그대로 쓴다.
+				//  아니면 예전처럼 조각 경계 구로 아래쪽 어림.
+				const Impl::MeshGpu& terrainMesh = impl->meshes[batch.mesh];
+				const float ox = w._41 - view.planet.x, oy = w._42 - view.planet.y, oz = w._43 - view.planet.z;
+				if (terrainMesh.minOriginRadius > 0.0f && ox * ox + oy * oy + oz * oz < 1.0f)
+				{
+					lowest = (std::min)(lowest, terrainMesh.minOriginRadius * scale);
+					continue;
+				}
+				for (const XMFLOAT4& s : terrainMesh.clusterSpheres)
+				{
+					const float x = s.x * w._11 + s.y * w._21 + s.z * w._31 + w._41 - view.planet.x;
+					const float y = s.x * w._12 + s.y * w._22 + s.z * w._32 + w._42 - view.planet.y;
+					const float z = s.x * w._13 + s.y * w._23 + s.z * w._33 + w._43 - view.planet.z;
+					lowest = (std::min)(lowest, std::sqrt(x * x + y * y + z * z) - s.w * scale);
+				}
+			}
+			if (lowest < (std::numeric_limits<float>::max)() && lowest > 1.0f)
+				occluder = lowest;
+		}
+		if (!view.background) impl->stats.occluderRadius = occluder;
 
 		// ── ② 인스턴스 행렬 업로드 — 패킷 순서 그대로(인스턴스 번호 = 패킷 번호) ──
 		static_assert(offsetof(InstanceData, world) == 0 && offsetof(InstanceData, prevWorld) == sizeof(XMFLOAT4X4),
@@ -5248,6 +5842,13 @@ namespace swc {
 			}
 			cull.entryCount = pass.entryCount;
 			cull.cullEnabled = frustum.valid ? 1u : 0u;
+			impl->FillLodConstants(cull, view);   // 2026-11-20 메시 LOD — 눈 위치 · 단계 거리 배수
+			// 2026-11-17 인스턴스 지평선 판정 — 조각 컬링이 켜져 가리는 공을 구했을 때만(프러스텀이 꺼지면 같이 끈다)
+			if (occluder > 0.0f && frustum.valid)
+			{
+				cull.occluderRadius = occluder;
+				cull.planetCenter = XMFLOAT3(view.planet.x, view.planet.y, view.planet.z);
+			}
 
 			commandList->SetComputeRootSignature(impl->cullRootSig.Get());
 			commandList->SetPipelineState(impl->cullPso.Get());
@@ -5268,6 +5869,162 @@ namespace swc {
 			pass.statesInitialized = true;
 			// 창 제목 통계용 — EndFrame 에서 GPU 완료를 기다린 뒤 읽는다.
 			commandList->CopyBufferRegion(pass.readback.Get(), 0, pass.args.Get(), 0, argsBytes);
+
+			// ── ③-2 지형 조각 컬링 (2026-11-17, ClusterCull.hlsl) ──
+			//  조각 묶음마다 디스패치 한 번(스레드 = 조각). 살아남은 조각의 그리기 명령과 개수를 쓴다 → [1] G-buffer 의 DrawBatches 가 그린다.
+			//  ★ 2026-11-17 render/tlas-select — 메인 패스에서만. 배경 패스(하늘 행성)는 메인보다 먼저 돌아서 clusterDraws 가
+			//    «앞 프레임 메인 패스» 의 것이다 → 그 묶음 번호로 배경 패스 묶음을 읽어 널 버퍼를 읽고 죽었다(게임 맵 → Verdant 첫 프레임).
+			if (!view.background && !impl->clusterDraws.empty())
+			{
+				impl->MarkGpuTime(L"지형 조각 컬링");
+				const UINT slot = impl->clusterFrameSlot;
+				const UINT counterBytes = UINT(impl->clusterDraws.size()) * Impl::kClusterCounterStride;
+				if (impl->clusterStatesInitialized)
+				{
+					const D3D12_RESOURCE_BARRIER toWrite[2] = {
+						Transition(impl->clusterCommands.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+						Transition(impl->clusterCounters.Get(),
+							D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST) };
+					commandList->ResourceBarrier(2, toWrite);
+				}
+				commandList->CopyBufferRegion(impl->clusterCounters.Get(), 0, impl->clusterZero.Get(), 0, counterBytes);
+				const D3D12_RESOURCE_BARRIER countersToUav = Transition(impl->clusterCounters.Get(),
+					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				commandList->ResourceBarrier(1, &countersToUav);
+
+				commandList->SetComputeRootSignature(impl->clusterRootSig.Get());
+				commandList->SetPipelineState(impl->clusterPso.Get());
+				commandList->SetComputeRootShaderResourceView(1, pass.instances->GetGPUVirtualAddress());
+				commandList->SetComputeRootUnorderedAccessView(3, impl->clusterCommands->GetGPUVirtualAddress());
+				commandList->SetComputeRootUnorderedAccessView(4, impl->clusterCounters->GetGPUVirtualAddress());
+
+				// 가리는 공(occluder)은 위 «② 인스턴스 행렬 업로드» 앞에서 구했다(인스턴스 지평선 판정과 같이 쓴다).
+				for (const Impl::ClusterDraw& draw : impl->clusterDraws)
+				{
+					const Impl::Batch& batch = pass.batches[draw.batch];
+					const Impl::MeshGpu& mesh = impl->meshes[batch.mesh];
+					const XMFLOAT4X4& w = items[draw.instance].world;
+					ClusterCullConstants cc = {};
+					for (size_t i = 0; i < frustum.planes.size(); ++i)
+					{
+						const FrustumPlane& plane = frustum.planes[i];
+						cc.planes[i] = XMFLOAT4(float(plane.x), float(plane.y), float(plane.z), float(plane.d));
+					}
+					cc.eye = view.eyePosition;
+					cc.clusterCount = draw.clusterCount;
+					cc.instance = draw.instance;
+					cc.commandBase = draw.commandBase;
+					cc.counterSlot = draw.slot;
+					cc.flags = frustum.valid ? 1u : 0u;
+					if (occluder > 0.0f)
+					{
+						cc.planetCenter = XMFLOAT3(view.planet.x, view.planet.y, view.planet.z);
+						cc.occluderRadius = occluder;
+						cc.flags |= 2u;
+					}
+					// 뒷면(원뿔, 4) 판정은 쓰지 않는다 — 11-17 측정상 효과 0 ~ 0.01M 삼각형이라 설계에서 뺐다(프러스텀 + 지평선만).
+					(void)w;
+					commandList->SetComputeRoot32BitConstants(0, sizeof(cc) / sizeof(uint32_t), &cc, 0);
+					commandList->SetComputeRootShaderResourceView(2, mesh.clusters->GetGPUVirtualAddress());
+					commandList->Dispatch((draw.clusterCount + Impl::ClusterGroupSize - 1) / Impl::ClusterGroupSize, 1, 1);
+					impl->clusterInstanceData[slot][draw.slot] = draw.instance;
+				}
+
+				const D3D12_RESOURCE_BARRIER toRead[2] = {
+					Transition(impl->clusterCommands.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT),
+					Transition(impl->clusterCounters.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+						D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | D3D12_RESOURCE_STATE_COPY_SOURCE) };
+				commandList->ResourceBarrier(2, toRead);
+				impl->clusterStatesInitialized = true;
+				commandList->CopyBufferRegion(impl->clusterReadback[slot].Get(), 0, impl->clusterCounters.Get(), 0, counterBytes);
+			}
+		}
+
+		// ── ③-3 추가 래스터 리스트 (2026-11-17 render/tlas-select, 사용자 «리스트 하나에 최대 8192로») ──
+		//  리스트마다 패스 자원 하나: 묶음은 버전이 바뀔 때만, 인스턴스 업로드도 버전이 바뀔 때만(정적 배치 오브젝트),
+		//  GPU 컬링은 매 프레임(기본 리스트와 같은 프러스텀 · 인스턴스 지평선 상수).
+		std::vector<Impl::PassGpu>& listPasses = impl->listPasses[impl->frameIndex];
+		size_t listCount = view.background ? 0 : packet.instanceLists.size();
+		while (listPasses.size() < listCount)
+		{
+			listPasses.emplace_back();
+			if (!impl->CreatePassResources(listPasses.back()))
+			{
+				listPasses.pop_back();
+				break;
+			}
+		}
+		listCount = (std::min)(listCount, listPasses.size());
+		if (listCount > 0)
+		{
+			CullConstants listCull = {};
+			const Frustum listFrustum = MakeFrustum(view.viewProj);
+			for (size_t i = 0; i < listFrustum.planes.size(); ++i)
+			{
+				const FrustumPlane& plane = listFrustum.planes[i];
+				listCull.planes[i] = XMFLOAT4(float(plane.x), float(plane.y), float(plane.z), float(plane.d));
+			}
+			listCull.cullEnabled = listFrustum.valid ? 1u : 0u;
+			impl->FillLodConstants(listCull, view);   // 2026-11-20 메시 LOD
+			if (occluder > 0.0f && listFrustum.valid)
+			{
+				listCull.occluderRadius = occluder;
+				listCull.planetCenter = XMFLOAT3(view.planet.x, view.planet.y, view.planet.z);
+			}
+			impl->MarkGpuTime(L"리스트 컬링");
+			static const std::vector<InstanceData> kNoItems;
+			for (size_t j = 0; j < listCount; ++j)
+			{
+				Impl::PassGpu& lp = listPasses[j];
+				const InstanceList& list = packet.instanceLists[j];
+				const std::vector<InstanceData>& listItems = list.items ? *list.items : kNoItems;
+				lp.usedThisFrame = true;
+				impl->stats.submitted += listItems.size();
+				buildBatches(lp, listItems, list.version);
+				if (lp.uploadedVersion != list.version || lp.uploadedCount != listItems.size())
+				{
+					const size_t count = (std::min)(listItems.size(), size_t(Impl::MaxDrawInstances));
+					for (size_t i = 0; i < count; ++i)
+						memcpy(lp.instanceData + i * sizeof(Impl::InstanceGpu), &listItems[i], sizeof(Impl::InstanceGpu));
+					lp.uploadedVersion = list.version;
+					lp.uploadedCount = listItems.size();
+				}
+				const UINT listBatches = UINT(lp.batches.size());
+				if (listBatches == 0) continue;
+				const UINT listArgsBytes = listBatches * UINT(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+				if (lp.statesInitialized)
+				{
+					const D3D12_RESOURCE_BARRIER toWrite[2] = {
+						Transition(lp.args.Get(),
+							D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | D3D12_RESOURCE_STATE_COPY_SOURCE,
+							D3D12_RESOURCE_STATE_COPY_DEST),
+						Transition(lp.visible.Get(),
+							D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS) };
+					commandList->ResourceBarrier(2, toWrite);
+				}
+				commandList->CopyBufferRegion(lp.args.Get(), 0, lp.argsTemplate.Get(), 0, listArgsBytes);
+				const D3D12_RESOURCE_BARRIER listArgsToUav = Transition(lp.args.Get(),
+					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				commandList->ResourceBarrier(1, &listArgsToUav);
+				listCull.entryCount = lp.entryCount;
+				commandList->SetComputeRootSignature(impl->cullRootSig.Get());
+				commandList->SetPipelineState(impl->cullPso.Get());
+				commandList->SetComputeRoot32BitConstants(0, sizeof(listCull) / sizeof(uint32_t), &listCull, 0);
+				commandList->SetComputeRootShaderResourceView(1, lp.instances->GetGPUVirtualAddress());
+				commandList->SetComputeRootShaderResourceView(2, lp.entries->GetGPUVirtualAddress());
+				commandList->SetComputeRootShaderResourceView(3, lp.bounds->GetGPUVirtualAddress());
+				commandList->SetComputeRootUnorderedAccessView(4, lp.args->GetGPUVirtualAddress());
+				commandList->SetComputeRootUnorderedAccessView(5, lp.visible->GetGPUVirtualAddress());
+				commandList->Dispatch((lp.entryCount + Impl::CullGroupSize - 1) / Impl::CullGroupSize, 1, 1);
+				const D3D12_RESOURCE_BARRIER listToRead[2] = {
+					Transition(lp.args.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+						D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | D3D12_RESOURCE_STATE_COPY_SOURCE),
+					Transition(lp.visible.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+						D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) };
+				commandList->ResourceBarrier(2, listToRead);
+				lp.statesInitialized = true;
+				commandList->CopyBufferRegion(lp.readback.Get(), 0, lp.args.Get(), 0, listArgsBytes);
+			}
 		}
 
 		// ── 래스터 공통 바인딩 — 배경 forward 와 메인 G-buffer 가 같은 루트 시그니처를 쓴다 ──
@@ -5326,7 +6083,21 @@ namespace swc {
 		ID3D12PipelineState* gbufferPsos[Impl::kPsoKeyCount] = {};
 		for (uint32_t key = 0; key < Impl::kPsoKeyCount; ++key)
 			gbufferPsos[key] = impl->gbufferPsos[key].Get();   // 0 ~ 7 일반 · 알파 마스크, 8 · 9 지형 레이어(2026-10-28)
-		impl->DrawBatches(pass, gbufferPsos);
+		impl->DrawBatches(pass, gbufferPsos, true);   // 2026-11-17 — 조각 묶음은 조각 명령으로
+		// 2026-11-17 render/tlas-select — 추가 래스터 리스트: 리스트마다 인스턴스 · 보이는 목록을 묶고 그린 뒤 기본 리스트로 되돌린다
+		for (size_t j = 0; j < listCount; ++j)
+		{
+			const Impl::PassGpu& lp = listPasses[j];
+			if (lp.batches.empty()) continue;
+			commandList->SetGraphicsRootShaderResourceView(4, lp.instances->GetGPUVirtualAddress());
+			commandList->SetGraphicsRootShaderResourceView(5, lp.visible->GetGPUVirtualAddress());
+			impl->DrawBatches(lp, gbufferPsos);
+		}
+		if (listCount > 0)
+		{
+			commandList->SetGraphicsRootShaderResourceView(4, pass.instances->GetGPUVirtualAddress());
+			commandList->SetGraphicsRootShaderResourceView(5, pass.visible->GetGPUVirtualAddress());
+		}
 
 		// ── [0] 의 짝 — 여기까지(프레임 시작 · 컬링 · G-buffer)를 먼저 GPU 에 보내 컴퓨트 큐의 TLAS 빌드와 겹치게 하고,
 		//    여기부터(TLAS 를 읽는 [4a])는 그 빌드가 끝난 뒤 돌게 한다. 비동기로 안 보냈으면 아무것도 안 한다.
@@ -5684,17 +6455,25 @@ namespace swc {
 		if (impl->transparentPso && impl->debugMode == 0)
 		{
 			const XMVECTOR eye = XMLoadFloat3(&view.eyePosition);
-			const size_t drawable = (std::min)(items.size(), size_t(Impl::MaxDrawInstances));
-			for (size_t i = 0; i < drawable; ++i)
+			// 2026-11-17 — 기본 리스트(0) + 추가 래스터 리스트(1 ~)의 투과 물체를 한데 모아 먼 순으로
+			auto gatherTransparent = [&](const std::vector<InstanceData>& source, uint32_t list)
 			{
-				const InstanceData& it = items[i];
-				if (!impl->MeshUsable(it.mesh) || (it.flags & kInstanceDegenerate)) continue;   // 2026-11-17 놓은 메시도 뺀다
-				const MaterialHandle material = impl->MaterialOf(it.material);
-				if (!impl->materials[material].transmissive) continue;
-				const XMVECTOR position = XMVectorSet(it.world._41, it.world._42, it.world._43, 1.0f);
-				impl->transparentDraws.push_back({ uint32_t(i), material, it.mesh,
-					XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(position, eye))) });
-			}
+				const size_t drawable = (std::min)(source.size(), size_t(Impl::MaxDrawInstances));
+				for (size_t i = 0; i < drawable; ++i)
+				{
+					const InstanceData& it = source[i];
+					if (!impl->MeshUsable(it.mesh) || (it.flags & kInstanceDegenerate)) continue;   // 2026-11-17 놓은 메시도 뺀다
+					const MaterialHandle material = impl->MaterialOf(it.material);
+					if (!impl->materials[material].transmissive) continue;
+					const XMVECTOR position = XMVectorSet(it.world._41, it.world._42, it.world._43, 1.0f);
+					impl->transparentDraws.push_back({ uint32_t(i), material, it.mesh,
+						XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(position, eye))), list });
+				}
+			};
+			gatherTransparent(items, 0);
+			for (size_t j = 0; j < listCount; ++j)
+				if (packet.instanceLists[j].items)
+					gatherTransparent(*packet.instanceLists[j].items, uint32_t(j + 1));
 			std::sort(impl->transparentDraws.begin(), impl->transparentDraws.end(),
 				[](const Impl::TransparentDraw& a, const Impl::TransparentDraw& b) { return a.distanceSq > b.distanceSq; });
 		}
@@ -5781,8 +6560,15 @@ namespace swc {
 				UINT64(impl->frameIndex % AccelStructure::kFrameSlots) * Impl::MaxInstances * sizeof(RtInstanceGpu));
 			commandList->SetGraphicsRootShaderResourceView(5, pass.instances->GetGPUVirtualAddress());
 			commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			uint32_t boundList = 0;   // 위에서 기본 리스트(pass.instances)를 묶었다
 			for (const Impl::TransparentDraw& draw : impl->transparentDraws)
 			{
+				if (draw.list != boundList)   // 2026-11-17 — 추가 래스터 리스트의 투과 물체는 그 리스트의 인스턴스 버퍼에서 읽는다
+				{
+					const Impl::PassGpu& source = draw.list == 0 ? pass : listPasses[draw.list - 1];
+					commandList->SetGraphicsRootShaderResourceView(5, source.instances->GetGPUVirtualAddress());
+					boundList = draw.list;
+				}
 				const uint32_t drawConstants[4] = { draw.instance, draw.material, 0, 0 };
 				commandList->SetGraphicsRoot32BitConstants(1, 4, drawConstants, 0);
 				const Impl::MeshGpu& m = impl->meshes[draw.mesh];
@@ -6006,7 +6792,38 @@ namespace swc {
 		// ── 통계 — GPU 컬링 결과(묶음별 인스턴스 수)를 읽는다. GPU 를 기다린 뒤라 이번 프레임 값이다 ──
 		if (!finished) return;
 		impl->CollectGpuTimes(timestampsThisFrame);
+		const bool clustersThisFrame = !impl->clusterDraws.empty() && impl->clusterFrameSlot == slot;
 		for (Impl::PassGpu& pass : impl->passes[slot])
+		{
+			if (!pass.usedThisFrame || pass.batches.empty() || !pass.statesInitialized) continue;
+			const bool mainPass = &pass == &impl->passes[slot][1];
+			const size_t bytes = pass.batches.size() * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+			D3D12_RANGE readRange = { 0, bytes };
+			void* mapped = nullptr;
+			if (FAILED(pass.readback->Map(0, &readRange, &mapped))) continue;
+			const D3D12_DRAW_INDEXED_ARGUMENTS* args = static_cast<const D3D12_DRAW_INDEXED_ARGUMENTS*>(mapped);
+			size_t visible = 0;
+			for (size_t b = 0; b < pass.batches.size(); ++b)
+			{
+				visible += args[b].InstanceCount;
+				// 2026-11-17 — 조각으로 그린 묶음의 삼각형은 아래 조각 카운터에서 센다
+				if (clustersThisFrame && mainPass && b < impl->clusterSlotOfBatch.size() && impl->clusterSlotOfBatch[b] >= 0)
+					continue;
+				impl->stats.triangles += uint64_t(args[b].IndexCountPerInstance / 3) * args[b].InstanceCount;
+				const int32_t lod = pass.batches[b].lodLevel;   // 2026-11-20 메시 LOD 단계별
+				if (lod >= 0 && lod < 4)
+				{
+					impl->stats.lodInstances[lod] += args[b].InstanceCount;
+					impl->stats.lodTriangles[lod] += uint64_t(args[b].IndexCountPerInstance / 3) * args[b].InstanceCount;
+				}
+			}
+			D3D12_RANGE noWrite = { 0, 0 };
+			pass.readback->Unmap(0, &noWrite);
+			impl->stats.instances += visible;
+			impl->stats.culled += pass.entryCount > visible ? pass.entryCount - visible : 0;
+		}
+		// 2026-11-17 추가 래스터 리스트 — 같은 방식으로 센다(조각 묶음 없음)
+		for (Impl::PassGpu& pass : impl->listPasses[slot])
 		{
 			if (!pass.usedThisFrame || pass.batches.empty() || !pass.statesInitialized) continue;
 			const size_t bytes = pass.batches.size() * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
@@ -6019,15 +6836,84 @@ namespace swc {
 			{
 				visible += args[b].InstanceCount;
 				impl->stats.triangles += uint64_t(args[b].IndexCountPerInstance / 3) * args[b].InstanceCount;
+				const int32_t lod = pass.batches[b].lodLevel;   // 2026-11-20 메시 LOD 단계별
+				if (lod >= 0 && lod < 4)
+				{
+					impl->stats.lodInstances[lod] += args[b].InstanceCount;
+					impl->stats.lodTriangles[lod] += uint64_t(args[b].IndexCountPerInstance / 3) * args[b].InstanceCount;
+				}
 			}
 			D3D12_RANGE noWrite = { 0, 0 };
 			pass.readback->Unmap(0, &noWrite);
 			impl->stats.instances += visible;
 			impl->stats.culled += pass.entryCount > visible ? pass.entryCount - visible : 0;
+			++impl->stats.instanceLists;
+		}
+
+		// ── 지형 조각 카운터 (2026-11-17) — ClusterCull.hlsl 이 센 값(그릴 조각 · 삼각형 · 판정별로 뺀 조각) ──
+		if (clustersThisFrame)
+		{
+			const size_t bytes = impl->clusterDraws.size() * Impl::kClusterCounterStride;
+			D3D12_RANGE readRange = { 0, bytes };
+			void* mapped = nullptr;
+			if (SUCCEEDED(impl->clusterReadback[slot]->Map(0, &readRange, &mapped)))
+			{
+				const uint8_t* counters = static_cast<const uint8_t*>(mapped);
+				for (const Impl::ClusterDraw& draw : impl->clusterDraws)
+				{
+					const uint32_t* c = reinterpret_cast<const uint32_t*>(counters + size_t(draw.slot) * Impl::kClusterCounterStride);
+					impl->stats.clusterTotal += draw.clusterCount;
+					impl->stats.clusterDrawn += c[0];
+					impl->stats.clusterTriangles += c[1];
+					impl->stats.clusterFrustum += c[2];
+					impl->stats.clusterHorizon += c[3];
+					impl->stats.clusterBackFacing += c[4];
+					impl->stats.clusterTrianglesTotal += draw.triangleTotal;
+					impl->stats.triangles += c[1];
+				}
+				D3D12_RANGE noWrite = { 0, 0 };
+				impl->clusterReadback[slot]->Unmap(0, &noWrite);
+			}
 		}
 	}
 
 	bool GRenderer::SupportsRaytracing() const { return impl->rtSupported; }
+	// 2026-11-17 지형 조각 컬링
+	void GRenderer::SetClusterCulling(bool enabled) { impl->clusterCulling = enabled; }
+
+	// 2026-11-20 메시 LOD (render/tlas-select 시험) — GRenderer.h 주석
+	void GRenderer::SetMeshLods(MeshHandle lod0, const MeshHandle* lods, uint32_t count,
+		const XMFLOAT3& objectCenter, const XMFLOAT3& objectExtents)
+	{
+		if (lod0 >= impl->meshes.size()) return;
+		Impl::MeshGpu& mesh = impl->meshes[lod0];
+		mesh.lodCount = 0;
+		for (uint32_t k = 0; k < count && k < 3; ++k)
+		{
+			if (!lods || lods[k] >= impl->meshes.size()) break;
+			mesh.lodNext[k] = lods[k];
+			mesh.lodCount = k + 1;
+		}
+		mesh.lodCenter = objectCenter;
+		mesh.lodExtents = objectExtents;
+		// 묶음은 구성 버전이 바뀔 때만 다시 만든다 — 이미 만든 묶음에도 잇기가 들어가게 다음 프레임에 다시 묶는다.
+		for (auto& slotPasses : impl->passes)
+			for (Impl::PassGpu& pass : slotPasses)
+				pass.layoutVersion = (std::numeric_limits<uint64_t>::max)();
+		for (auto& slotLists : impl->listPasses)
+			for (Impl::PassGpu& pass : slotLists)
+				pass.layoutVersion = (std::numeric_limits<uint64_t>::max)();
+	}
+
+	void GRenderer::SetLodSelection(bool enabled, float lod1Px, float lod2Px, float lod3Px)
+	{
+		impl->lodSelection = enabled;
+		impl->lodPx[0] = lod1Px; impl->lodPx[1] = lod2Px; impl->lodPx[2] = lod3Px;
+	}
+
+	bool GRenderer::LodSelection() const { return impl->lodSelection; }
+	bool GRenderer::ClusterCulling() const { return impl->clusterCulling && impl->clusterReady; }
+	bool GRenderer::ClusterCullingAvailable() const { return impl->clusterReady; }
 	void GRenderer::SetRayTracingParams(const RayTracingParams& p) { impl->rtParams = p; }
 	const RayTracingParams& GRenderer::GetRayTracingParams() const { return impl->rtParams; }
 	void GRenderer::SetSunDirection(const XMFLOAT3& d) { impl->sunDir = d; }
@@ -6045,6 +6931,7 @@ namespace swc {
 	size_t   GRenderer::BlasCount()           const { return impl->accel.BlasCount(); }
 	uint32_t GRenderer::TlasInstanceCount()   const { return impl->accel.InstanceCount(); }
 	uint32_t GRenderer::TlasMaxInstances()    const { return impl->accel.MaxInstances(); }
+	uint32_t GRenderer::RasterMaxInstances()  const { return Impl::MaxDrawInstances; }
 	uint32_t GRenderer::TlasDroppedInstances()const { return impl->accel.DroppedInstances(); }
 
 	// 2026-11-17 — 자동 프레임 시간 측정(Engine kAutoFrameBudget)

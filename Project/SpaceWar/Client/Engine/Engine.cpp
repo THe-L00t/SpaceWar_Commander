@@ -72,7 +72,7 @@ namespace
 	//  kFrameBudgetWarmup 초 기다리고 kFrameBudgetMeasure 초 동안 CPU 구간 시간과 GPU 구간 시간(GRenderer 의 2 초 보고)을 모아
 	//  exe 옆 frame_budget_<날짜_시각>.txt 에 쓰고 창을 닫는다. 평소에는 false — 잴 때만 켜서 빌드한다.
 	//  ★ Present(1, 0) 이라 수직 동기화가 켜져 있다 — «프레임 간격» 은 모니터 주사율에 묶이므로 실제 일은 구간 시간으로 본다.
-	constexpr bool   kAutoFrameBudget    = false;
+	constexpr bool   kAutoFrameBudget    = false;   // 2026-11-20 17:03 메시 LOD A/B 측정 끝(bench_lod_20261120) — 끔
 	constexpr double kFrameBudgetWarmup  = 6.0;    // s — 들어간 직후(오브젝트 고르기 · 업로드 · GI 수렴)를 빼려고
 	constexpr double kFrameBudgetMeasure = 10.0;   // s — GPU 보고(2 초마다)가 네댓 번 나온다
 	// 2026-11-17 사용자 «움직이면서도 한번 측정해주고» — 서 있기 측정 뒤 같은 행성에서 W + Shift(달리기)를 누른 채
@@ -83,6 +83,28 @@ namespace
 	constexpr int    kFrameBudgetOnlyPlanet = -1;
 	constexpr double kFrameBudgetMoveWarmup = 2.0;                         // s — 달리기 시작 직후
 	constexpr double kFrameBudgetTurnRate   = 10.0 * 3.14159265358979 / 180.0;   // rad/s — 10°/s (11 m/s 면 반지름 약 63 m 원)
+
+	// ── TLAS 목록 분리 (2026-11-17, 사용자 «TLAS 따로 고르는 단계 만들어» · «아예 두 묶음으로» · «렌더러 브랜치에서 새로 하나
+	//    브랜치 만들어서 바로 테스트 해. 실측하면서 답해») ──
+	//  예시 행성에서는 TLAS 를 래스터 목록(장면 노드 · StreamObjects 3,500)과 따로 만든다:
+	//   TLAS = 래스터 목록에서 배치 오브젝트를 뺀 것(지형 · 길 · 캐릭터 · 든 총 …) + PlanetDebugScene::SelectTlasObjects 가 고른 오브젝트.
+	//  kTlasSeparateDefault = 처음 상태. kFrameBudgetTlasAB 면 자동 측정이 행성마다 ① 서 있기 끔 ② 서 있기 켬 ③ 움직이며 켬 ④ 움직이며 끔.
+	constexpr bool   kTlasSeparateDefault   = true;
+	constexpr bool   kFrameBudgetTlasAB     = false;   // 2026-11-17 18:30 client1 비교 측정 — client1 과 같은 «서 있기 + 움직이며» 2단계
+	// ── 메시 LOD 시험 (2026-11-20, 사용자 «테스트 브랜치 이동해서 LOD 적용시키고 Gbuffer 측정해줘») ──
+	//  식생 9종(PlanetDebugScene kLodAssetNames)의 LOD0 ~ 3 을 렌더러 GPU 컬링이 «물체 경계 구의 화면 지름 px» 로 고른다.
+	//  문턱은 시험값(노션 「LOD 적용 준비」 8.8 3번 «허용 오차 px» 결정 전) — Resource_Work/LOD_Vegetation/렌더_20261120/목록.md 의
+	//  화면 차이 표에서 정했다: LOD1 은 원래 크기에서도 차이 2 ~ 4 → 지름 600 px 아래, LOD2 는 1/8 크기(나무 높이 약 60 px · 지름 약 90 px)
+	//  에서 6 ~ 8 → 150 px 아래, LOD3 은 1/16(지름 약 45 px)에서 7 ~ 10 → 60 px 아래. 지름은 물체 AABB 를 감싸는 구라 나무 키의 약 1.5 배다.
+	//  kFrameBudgetLodAB 면 자동 측정이 행성마다 ① 서 있기 LOD 끔 ② 서 있기 켬 ③ 움직이며 켬 ④ 움직이며 끔(같은 자리 A/B).
+	constexpr bool   kLodSelectionDefault = true;
+	constexpr bool   kFrameBudgetLodAB    = true;
+	constexpr float  kLod1Px = 600.0f;
+	constexpr float  kLod2Px = 150.0f;
+	constexpr float  kLod3Px = 60.0f;
+	// 래스터 오브젝트 예산의 여유(인스턴스) — 고른 뒤 NPC · 원격 플레이어 · 예광탄 노드가 늘어도 렌더러 상한 8,192 를 넘지 않게
+	//  (넘으면 렌더러가 패킷 뒤쪽을 버려 무엇이 빠질지 정할 수 없다). 2026-11-17 render/tlas-select 임시 값.
+	constexpr size_t kRasterReserve         = 256;
 
 	double Milliseconds(std::chrono::steady_clock::duration d)
 	{
@@ -434,6 +456,7 @@ namespace swc {
 	//   파일 I/O 스레드 → Renderer 초기화 → 로딩 씬 → (로딩 스레드에서) 게임 리소스 → 서버 접속 → 게임 루프
 	bool Engine::Initialize(HINSTANCE hInstance, int showCommand)
 	{
+		tlasSeparate = kTlasSeparateDefault;   // 2026-11-17 TLAS 목록 분리 — 처음 상태
 		// WIC(하이트맵 로더)가 COM 객체다. 이게 없으면 CO_E_NOTINITIALIZED 로 조용히 실패한다.
 		if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
 			return false;
@@ -475,6 +498,7 @@ namespace swc {
 			MessageBox(hwnd, renderer.StatusText().c_str(), L"렌더러 초기화 실패", MB_OK | MB_ICONERROR);
 			return false;
 		}
+		renderer.SetLodSelection(kLodSelectionDefault, kLod1Px, kLod2Px, kLod3Px);   // 2026-11-20 메시 LOD 시험
 
 		// 로딩 씬 — 이 이미지가 없으면 띄우지 않는다. 검은 화면으로 조용히 넘어가면
 		// «로딩이 멈췄다» 와 «로딩 화면이 안 나온다» 를 구분할 수 없다.
@@ -1181,6 +1205,7 @@ namespace swc {
 							if (!data)
 							{
 								Log(L"[디버그 행성] 오브젝트 건너뜀 — %s: %s", asset.c_str(), resources.LastError().c_str());
+								sceneManager.DebugPlanet(index).ObjectModelFinished();   // 2026-11-17 — 마지막 종류면 공간 격자(로드 때 미리)
 								return true;
 							}
 							std::wstring error;
@@ -1188,6 +1213,7 @@ namespace swc {
 								Log(L"[디버그 행성] 오브젝트 건너뜀 — %s: %s", asset.c_str(), error.c_str());
 							// GPU 업로드가 끝났으므로 CPU 메시 · 픽셀을 버린다.
 							resources.ReleaseModel(loaded.model);
+							sceneManager.DebugPlanet(index).ObjectModelFinished();   // 2026-11-17 — 마지막 종류면 공간 격자(로드 때 미리)
 							return true;
 						});
 				}
@@ -1234,7 +1260,8 @@ namespace swc {
 		renderer.SetSunDirection(SunDirectionInFront(controller.Facing(), controller.Up()));
 
 		// 스폰 자리 주변 오브젝트를 바로 고른다(이후는 UpdateDebugPlanetObjects 가 움직일 때마다).
-		target.StreamObjects(scene, controller.Position() - planet.center, true);
+		// 2026-11-17 render/tlas-select — 래스터는 장면 노드(StreamObjects) 대신 칸 리스트(BuildRasterLists)로 그린다
+		target.BuildRasterLists(controller.Position() - planet.center, true);
 		terrainStatus = DebugPlanetStatus(index, target);
 
 		activeDebugPlanet = index;
@@ -1478,13 +1505,27 @@ namespace swc {
 		}
 	}
 
+	// 래스터 오브젝트 예산 (2026-11-17 render/tlas-select, 사용자 «레스터 제한 풀어버려») —
+	//  고정 3,500 대신 렌더러 래스터 상한(패스당 인스턴스 8,192 — 넘으면 렌더러가 버린다)에서
+	//  예시 행성 장면의 다른 래스터 몫(지형 · 길 · 캐릭터 · 총 · NPC · 예광탄 노드 …, 앞 프레임에 센 값)과 여유를 뺀 값.
+	size_t Engine::RasterObjectBudget() const
+	{
+		const size_t cap = renderer.RasterMaxInstances();
+		const size_t reserved = rasterOthers + kRasterReserve;
+		return cap > reserved ? cap - reserved : 0;
+	}
+
 	// 플레이어 주변 배치 오브젝트를 다시 고른다 — 15 m 움직일 때마다(PlanetDebugScene::StreamObjects).
 	void Engine::UpdateDebugPlanetObjects()
 	{
 		if (!InDebugPlanet()) return;
 		PlanetDebugScene& target = sceneManager.DebugPlanet(activeDebugPlanet);
-		if (target.StreamObjects(scene, controller.Position() - planet.center, false))
+		const auto streamStart = std::chrono::steady_clock::now();
+		// 2026-11-17 render/tlas-select — 칸 리스트: 플레이어 칸이 바뀔 때만 다시 만든다(StreamObjects 는 더 부르지 않는다)
+		if (target.BuildRasterLists(controller.Position() - planet.center, false))
 		{
+			// 2026-11-17 render/tlas-select — 래스터 고르기 한 번의 시간(자동 측정)
+			budgetStreamMax = (std::max)(budgetStreamMax, Milliseconds(std::chrono::steady_clock::now() - streamStart));
 			terrainStatus = DebugPlanetStatus(activeDebugPlanet, target);
 			++budgetRestreams;   // 2026-11-17 자동 측정 — 움직이며 잴 때 다시 고른 횟수
 		}
@@ -1957,6 +1998,51 @@ namespace swc {
 		packet.view.eyePosition = camera.EyePosition();
 		// 2026-10-27 렌더 6단계 — 하늘 · 해 높이의 기준(행성 위 플레이어 자리의 위)
 		packet.view.up = XMFLOAT3(float(controller.Up().x), float(controller.Up().y), float(controller.Up().z));
+		// 2026-11-17 TLAS 목록 분리 — 예시 행성이면 TLAS 를 래스터 목록과 따로 만든다(kTlasSeparateDefault · 자동 측정 A/B).
+		//  기본 목록 = 래스터 목록에서 배치 오브젝트 · 예광탄 · 크기 0 을 뺀 것(지형 · 길 · 착륙장 · 캐릭터 · 든 총 …).
+		//  남는 자리(TLAS 상한 − 기본 목록) = 오브젝트 몫 → SelectTlasObjects 가 정한 규칙으로 고른 메시를 덧붙인다.
+		packet.rtInstances.clear();
+		packet.rtSeparate = false;
+		// 2026-11-17 래스터 예산 — 예시 행성 장면에서 배치 오브젝트가 아닌 래스터 몫을 센다(다음 StreamObjects 의 예산, RasterObjectBudget)
+		if (InDebugPlanet() && sceneManager.DebugPlanet(activeDebugPlanet).Loaded())
+		{
+			const PlanetDebugScene& rasterTarget = sceneManager.DebugPlanet(activeDebugPlanet);
+			size_t others = 0;
+			for (const InstanceData& it : packet.instances)
+				if (!rasterTarget.IsObjectMesh(it.mesh)) ++others;
+			rasterOthers = others;
+		}
+		if (tlasSeparate && InDebugPlanet())
+		{
+			PlanetDebugScene& target = sceneManager.DebugPlanet(activeDebugPlanet);
+			if (target.Loaded())
+			{
+				for (const InstanceData& it : packet.instances)
+					if (!target.IsObjectMesh(it.mesh) && !(it.flags & (kInstanceNoRayTracing | kInstanceDegenerate)))
+						packet.rtInstances.push_back(it);
+				const size_t cap = renderer.TlasMaxInstances();
+				const size_t budget = cap > packet.rtInstances.size() ? cap - packet.rtInstances.size() : 0;
+				if (target.SelectTlasObjects(controller.Position() - planet.center, budget, false))
+				{
+					++budgetTlasReselects;
+					budgetTlasSelectSum += target.LastTlasSelectMs();
+					budgetTlasSelectMax = (std::max)(budgetTlasSelectMax, target.LastTlasSelectMs());
+					budgetTlasExamined = target.LastTlasExamined();
+				}
+				const std::vector<InstanceData>& objects = target.TlasObjects();
+				packet.rtInstances.insert(packet.rtInstances.end(), objects.begin(), objects.end());
+				packet.rtSeparate = true;
+			}
+		}
+		lastRtSeparate = packet.rtSeparate;
+		lastRtCount = packet.rtSeparate ? packet.rtInstances.size() : packet.instances.size();
+		// 2026-11-17 래스터 칸 리스트 — 예시 행성의 배치 오브젝트는 장면 노드가 아니라 이 리스트들로 그린다(공유 배열, 복사 없음)
+		packet.instanceLists.clear();
+		if (InDebugPlanet() && sceneManager.DebugPlanet(activeDebugPlanet).Loaded())
+			packet.instanceLists = sceneManager.DebugPlanet(activeDebugPlanet).RasterLists();
+		// 2026-11-17 래스터 컬링(지형 조각 · 인스턴스 지평선) — 행성 중심. 평면 맵이면 0(판정 안 함).
+		if constexpr (!Shared::kUsePlanarMap)
+			packet.view.planet = XMFLOAT4(float(planet.center.x), float(planet.center.y), float(planet.center.z), 1.0f);
 		// 2026-11-17 피격 파티클 — 알파 묶음(먼 것부터) + 가산 묶음. 렌더러 [7b] 가 이 배열만 본다(명세 7절 Particle[]).
 		{
 			const XMFLOAT3& e = packet.view.eyePosition;
@@ -2190,7 +2276,27 @@ namespace swc {
 				renderer.SupportsRaytracing() && renderer.GetRayTracingParams().enabled ? L"켬" : L"끔",
 				kFrameBudgetWarmup, kFrameBudgetMoveWarmup, kFrameBudgetMeasure, kFrameBudgetTurnRate * 180.0 / 3.14159265358979);
 			budgetText += head;
-			budgetText += kFrameBudgetOnlyPlanet >= 0 ? L"행성: 하나만(다른 예시 행성은 올리지 않음)\n" : L"행성: 1 ~ 5 차례로(올린 행성은 쌓인다)\n";
+			budgetText += kFrameBudgetOnlyPlanet >= 0 ? L"행성: 하나만(다른 예시 행성은 올리지 않음)\n"
+				: L"행성: 1 ~ 5 차례로(지금 + 바로 전 행성만 남기고 더 오래된 행성은 놓는다)\n";
+			if (kFrameBudgetTlasAB)
+			{
+				budgetText += L"A/B (render/tlas-select, kFrameBudgetTlasAB): 행성마다 ① 서 있기 끔 ② 서 있기 켬 ③ 움직이며 켬 ④ 움직이며 끔\n"
+					L"  끔 = TLAS = 래스터 목록(점수 순, 래스터 예산 = 8,192 − 다른 몫 − 여유 — TLAS 4,096 을 넘는 뒤쪽은 버려짐) · 지형 통째로 · 인스턴스 지평선 판정 없음\n"
+					L"  켬 = TLAS 목록 분리(단계 · 조준 32 px · 남는 자리 채움, 상한 4,096) + 래스터 컬링(지형 조각 프러스텀 · 지평선 + 인스턴스 지평선)\n";
+				if (!renderer.ClusterCullingAvailable())
+					budgetText += L"  ★ 렌더러가 지형 조각 컬링을 못 만들었다 — 켬에서도 지형은 통째로 그린다(출력 창 «지형 조각 컬링 준비» 줄 확인)\n";
+				tlasSeparate = false;
+				renderer.SetClusterCulling(false);
+			}
+			if (kFrameBudgetLodAB)
+			{
+				wchar_t lodHead[400];
+				swprintf_s(lodHead, L"A/B 메시 LOD (render/tlas-select 2026-11-20, kFrameBudgetLodAB): 행성마다 ① 서 있기 끔 ② 서 있기 켬 ③ 움직이며 켬 ④ 움직이며 끔\n"
+					L"  켬 = 식생 9종 LOD0 ~ 3 을 GPU 컬링이 고름(물체 경계 구 화면 지름 < %.0f px → LOD1 · < %.0f → LOD2 · < %.0f → LOD3) · 끔 = 늘 LOD0. TLAS 는 둘 다 LOD0\n",
+					double(kLod1Px), double(kLod2Px), double(kLod3Px));
+				budgetText += lodHead;
+				renderer.SetLodSelection(false, kLod1Px, kLod2Px, kLod3Px);
+			}
 			const int first = kFrameBudgetOnlyPlanet >= 0 ? kFrameBudgetOnlyPlanet : 0;
 			budgetStage = first + 1;
 			ResetFrameBudgetStage();
@@ -2211,6 +2317,11 @@ namespace swc {
 			budgetSkipFirstReport = true;
 			budgetLastPos = controller.Position();
 			budgetRestreams = 0;
+			budgetTlasWarmupMax = (std::max)(budgetTlasWarmupMax, budgetTlasSelectMax);   // 예열 중 고르기(들어간 직후 첫 고르기 포함)
+			budgetTlasReselects = 0;
+			budgetTlasSelectMax = 0.0;
+			budgetTlasSelectSum = 0.0;
+			budgetStreamMax = 0.0;
 			return;
 		}
 
@@ -2237,11 +2348,14 @@ namespace swc {
 		const double n = budgetFrames > 0 ? double(budgetFrames) : 1.0;
 		const RenderStats& s = renderer.Stats();
 		wchar_t line[640];
-		if (budgetPhase == 0)
-			swprintf_s(line, L"\n== 예시 행성 %d %s · 서 있기 — 측정 %u 프레임\n", budgetStage, PlanetDebugScene::Name(target), budgetFrames);
+		const wchar_t* abLabel = kFrameBudgetLodAB ? (renderer.LodSelection() ? L" · LOD 켬" : L" · LOD 끔")
+			: !kFrameBudgetTlasAB ? L"" : (tlasSeparate ? L" · 켬(TLAS 분리 + 래스터 컬링)" : L" · 끔(지금)");
+		if (!budgetMoving)
+			swprintf_s(line, L"\n== 예시 행성 %d %s · 서 있기%s — 측정 %u 프레임\n",
+				budgetStage, PlanetDebugScene::Name(target), abLabel, budgetFrames);
 		else
-			swprintf_s(line, L"\n== 예시 행성 %d %s · 움직이며 — 측정 %u 프레임 · 이동 %.0f m · 다시 고르기 %u 회\n",
-				budgetStage, PlanetDebugScene::Name(target), budgetFrames, budgetDistance, budgetRestreams);
+			swprintf_s(line, L"\n== 예시 행성 %d %s · 움직이며%s — 측정 %u 프레임 · 이동 %.0f m · 다시 고르기 %u 회\n",
+				budgetStage, PlanetDebugScene::Name(target), abLabel, budgetFrames, budgetDistance, budgetRestreams);
 		budgetText += line;
 		swprintf_s(line,
 			L"CPU(ms): 프레임 간격 평균 %.3f (%.1f fps) · 게임 갱신 평균 %.3f / 최대 %.3f · 렌더 기록 평균 %.3f / 최대 %.3f · "
@@ -2253,6 +2367,41 @@ namespace swc {
 			renderer.TlasInstanceCount(), renderer.TlasMaxInstances(), renderer.TlasDroppedInstances(),
 			s.submitted, s.instances, s.drawCalls, s.culled, s.dropped, double(s.triangles) / 1000000.0);
 		budgetText += line;
+		{
+			// 2026-11-17 render/tlas-select — 래스터 칸 리스트 · TLAS 고르기(마지막 프레임 값 + 측정 구간 시간)
+			const PlanetDebugScene& listScene = sceneManager.DebugPlanet(target);
+			swprintf_s(line, L"래스터 칸 리스트: %zu개(이번 프레임 %zu) · 메시 작은 %zu · 큰 %zu · 임시 %zu · 큰 것 잘림 %zu · 다시 만들기 측정 구간 %u 회 최대 %.3f ms · 마지막 %.3f ms\n",
+				listScene.RasterLists().size(), s.instanceLists, listScene.RasterSmallMeshes(), listScene.RasterBigMeshes(),
+				listScene.RasterTempMeshes(), listScene.RasterCutBigMeshes(), budgetRestreams, budgetStreamMax, listScene.LastRasterBuildMs());
+			budgetText += line;
+			swprintf_s(line, L"TLAS 고르기: 측정 구간 %u 회 평균 %.3f / 최대 %.3f ms · 예열 중 최대 %.3f ms · 지형 조각 그림 %zu / %zu · 가리는 공 %.1f m\n",
+				budgetTlasReselects, budgetTlasReselects > 0 ? budgetTlasSelectSum / double(budgetTlasReselects) : 0.0, budgetTlasSelectMax,
+				budgetTlasWarmupMax, s.clusterDrawn, s.clusterTotal, double(s.occluderRadius));
+			budgetText += line;
+			// 2026-11-20 메시 LOD — 마지막 프레임의 단계별 인스턴스 · 삼각형(LOD 가 이어진 묶음만)
+			swprintf_s(line, L"메시 LOD: %s · 이은 종류 %zu (LOD0 메시 %zu) · 단계별 인스턴스 %zu / %zu / %zu / %zu · 삼각형 %.2fM / %.2fM / %.2fM / %.2fM\n",
+				renderer.LodSelection() ? L"켬" : L"끔", listScene.LodObjectTypes(), listScene.LodObjectMeshes(),
+				s.lodInstances[0], s.lodInstances[1], s.lodInstances[2], s.lodInstances[3],
+				double(s.lodTriangles[0]) / 1e6, double(s.lodTriangles[1]) / 1e6, double(s.lodTriangles[2]) / 1e6, double(s.lodTriangles[3]) / 1e6);
+			budgetText += line;
+		}
+		if (kFrameBudgetTlasAB)
+		{
+			// 2026-11-17 TLAS 목록 분리 · 래스터 컬링 — 마지막 프레임 값 + 측정 구간 고르기 시간
+			const PlanetDebugScene& planetScene = sceneManager.DebugPlanet(target);
+			swprintf_s(line, L"TLAS 목록: %s · 패킷 TLAS 목록 %zu (오브젝트 메시 %zu) · 후보 메시 %zu · 훑은 배치 %zu / %zu\n",
+				lastRtSeparate ? L"따로" : L"래스터 목록과 같음", lastRtCount, planetScene.TlasObjects().size(),
+				planetScene.LastTlasCandidateMeshes(), budgetTlasExamined, planetScene.StaticObjects().size());
+			budgetText += line;
+			swprintf_s(line, L"고르기(ms): TLAS 고르기 측정 구간 %u 회 평균 %.3f / 최대 %.3f · 예열 중 최대 %.3f · 래스터 고르기(StreamObjects) 측정 구간 최대 %.3f\n",
+				budgetTlasReselects, budgetTlasReselects > 0 ? budgetTlasSelectSum / double(budgetTlasReselects) : 0.0, budgetTlasSelectMax,
+				budgetTlasWarmupMax, budgetStreamMax);
+			budgetText += line;
+			swprintf_s(line, L"래스터 컬링: 가리는 공 반지름 %.1f m(0 = 지평선 판정 안 함) · 지형 조각 판정 %zu · 그림 %zu · 뺌(프러스텀 %zu · 지평선 %zu) · 조각 삼각형 %.2fM / 전체 %.2fM\n",
+				double(s.occluderRadius), s.clusterTotal, s.clusterDrawn, s.clusterFrustum, s.clusterHorizon,
+				double(s.clusterTriangles) / 1000000.0, double(s.clusterTrianglesTotal) / 1000000.0);
+			budgetText += line;
+		}
 		budgetText += L"장면: " + terrainStatus + L"\n";
 		{
 			uint64_t vramUsage = 0, vramBudget = 0, sharedUsage = 0;   // 2026-11-17 — 행성을 쌓으면 VRAM 이 넘치나
@@ -2265,16 +2414,30 @@ namespace swc {
 		}
 		for (const std::wstring& report : budgetGpuReports)
 			budgetText += report + L"\n";
-		Log(L"[측정] 예시 행성 %d %s %s 끝 — %u 프레임", budgetStage, PlanetDebugScene::Name(target),
-			budgetPhase == 0 ? L"서 있기" : L"움직이며", budgetFrames);
+		Log(L"[측정] 예시 행성 %d %s %s%s 끝 — %u 프레임", budgetStage, PlanetDebugScene::Name(target),
+			budgetMoving ? L"움직이며" : L"서 있기", abLabel, budgetFrames);
 
-		if (budgetPhase == 0)
+		// 다음 단계 — A/B 면 ① 서 있기 끔 ② 서 있기 켬 ③ 움직이며 켬 ④ 움직이며 끔, 아니면 ① 서 있기 ② 움직이며.
+		const int phaseCount = (kFrameBudgetTlasAB || kFrameBudgetLodAB) ? 4 : 2;
+		if (budgetPhase + 1 < phaseCount)
 		{
-			// ② 같은 행성에서 움직이며 — 달리기 키를 누른 채로 두고 UpdatePlayer 가 카메라를 돌린다.
-			budgetPhase = 1;
-			budgetMoving = true;
-			input.SetForcedKey('W', true);
-			input.SetForcedKey(VK_SHIFT, true);
+			++budgetPhase;
+			const bool moving = (kFrameBudgetTlasAB || kFrameBudgetLodAB) ? budgetPhase >= 2 : budgetPhase == 1;
+			if (kFrameBudgetLodAB)   // 2026-11-20 — ① 끔 ② 켬 ③ 켬(움직이며) ④ 끔(움직이며)
+				renderer.SetLodSelection(budgetPhase == 1 || budgetPhase == 2, kLod1Px, kLod2Px, kLod3Px);
+			if (moving && !budgetMoving)
+			{
+				// 같은 행성에서 움직이며 — 달리기 키를 누른 채로 두고 UpdatePlayer 가 카메라를 돌린다.
+				budgetMoving = true;
+				input.SetForcedKey('W', true);
+				input.SetForcedKey(VK_SHIFT, true);
+			}
+			if (kFrameBudgetTlasAB)
+			{
+				const bool on = budgetPhase == 1 || budgetPhase == 2;
+				tlasSeparate = on;
+				renderer.SetClusterCulling(on);
+			}
 			ResetFrameBudgetStage();
 			return;
 		}
@@ -2282,6 +2445,13 @@ namespace swc {
 		budgetMoving = false;
 		input.SetForcedKey('W', false);
 		input.SetForcedKey(VK_SHIFT, false);
+		if (kFrameBudgetTlasAB)
+		{
+			tlasSeparate = false;
+			renderer.SetClusterCulling(false);
+		}
+		if (kFrameBudgetLodAB)
+			renderer.SetLodSelection(false, kLod1Px, kLod2Px, kLod3Px);   // 다음 행성 ① 은 끔
 		++budgetStage;
 		ResetFrameBudgetStage();
 		if (kFrameBudgetOnlyPlanet < 0 && budgetStage <= int(PlanetDebugScene::kCount))
@@ -2307,6 +2477,11 @@ namespace swc {
 		budgetDistance = 0.0;
 		budgetLastPos = controller.Position();
 		budgetRestreams = 0;
+		budgetTlasReselects = 0;   // 2026-11-17 TLAS 목록 분리
+		budgetTlasSelectMax = 0.0;
+		budgetTlasSelectSum = 0.0;
+		budgetTlasWarmupMax = 0.0;
+		budgetStreamMax = 0.0;
 	}
 
 	// exe 옆 frame_budget_<날짜_시각>.txt 에 UTF-8 로 쓴다(2026-11-17).

@@ -27,7 +27,11 @@
 //  ★ 오브젝트는 «화면에 크게 보이는 것부터» 예산만큼만 장면에 올린다 (StreamObjects)
 //    행성마다 8만 ~ 37만 개인데 렌더러 상한이 패스당 인스턴스 8192 · TLAS 4096 이다(GRenderer.cpp Impl).
 //    전부 넣으면 상한을 넘는 것은 버려지고(RT 에서는 4096 뒤가 사라짐), 노드 수백만 개를 매 프레임 훑게 된다.
-//    그래서 점수 = 반지름 × 배율 ÷ 거리(화면 크기 근사)가 큰 순으로 메시 kObjectMeshBudget 개까지만 놓는다.
+//    그래서 점수 = 반지름 × 배율 ÷ 거리(화면 크기 근사)가 큰 순으로 메시 예산(budget)까지만 놓는다.
+//    ★ 2026-11-17 render/tlas-select — 고정 3,500(kObjectMeshBudget)을 없앴다(사용자 «레스터 제한 풀어버려»).
+//      예산 = 렌더러 래스터 상한(패스당 8,192) − 다른 래스터 몫 − 여유(Engine 이 넘긴다). TLAS 는 SelectTlasObjects 가 따로 고른다.
+//    ★ 2026-11-17 — 래스터 순서도 TLAS 와 같은 순위(RankObjects: 60 m 안 전부 + 조준 32 px → 단계 → px)로 바꿨다
+//      (사용자 «우선 TLAS 하되, 컬링은 그대로 유지해줘»). 위 «점수» 순서는 더 쓰지 않는다. 공간 격자는 로드 때 만든다.
 //    큰 건물 · 바위는 멀리서도, 풀은 가까이서만 보인다. kRestreamDistance 만큼 움직이면 다시 고른다.
 //    한 번 만든 노드는 종류별로 숨겨 두었다가 다시 쓴다(LegacyScene 에 노드 삭제가 없다).
 //  ★ 게임 씬과 같은 플레이어 · 카메라 · LegacyScene 을 쓴다
@@ -93,8 +97,7 @@ namespace swc {
 	public:
 		static constexpr size_t kCount = 5;
 
-		// 장면에 올리는 오브젝트 메시 노드 상한. TLAS 4096 에서 맵(최대 약 90) · 캐릭터 · 예광탄 몫을 뺀 값.
-		static constexpr size_t kObjectMeshBudget = 3500;
+		// (2026-11-17 render/tlas-select — 고정 상한 kObjectMeshBudget = 3500 은 없앴다. StreamObjects 의 budget 인자.)
 		// 마지막으로 고른 자리에서 이만큼(m) 움직이면 다시 고른다.
 		static constexpr double kRestreamDistance = 15.0;
 
@@ -130,11 +133,52 @@ namespace swc {
 		std::wstring ObjectAsset(size_t type) const;
 		// 종류 하나의 모델을 GPU 에 올린다. 실패한 종류의 인스턴스는 놓지 않는다.
 		bool AddObjectModel(size_t type, const ModelData& data, GRenderer& renderer, std::wstring& error);
+		// 2026-11-17 — 종류 하나의 로드가 끝났다(올렸든 못 올렸든). 마지막 종류면 공간 격자를 만든다(로드 때 미리).
+		void ObjectModelFinished();
 
 		// 매 프레임. eye = 행성 중심 기준 위치(glTF 좌표 = 월드 − 행성 중심).
 		// 처음 · force · kRestreamDistance 이상 움직였을 때만 다시 고른다. 다시 골랐으면 true.
 		// ★ 2026-11-16 — 눈의 반대편 반구(행성 중심 기준 내적 < 0)에 있는 오브젝트는 고르지 않는다(사용자 지시).
-		bool StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force);
+		// ★ 2026-11-17 — budget = 메시 노드 상한(Engine: 래스터 상한 − 다른 몫 − 여유). 줄어 넘치거나 64 이상 늘어도 다시 고른다.
+		bool StreamObjects(LegacyScene& scene, const Vec3d& eye, bool force, size_t budget);
+		size_t StreamBudget() const { return lastStreamBudget; }
+
+		// ── 래스터 칸 리스트 (2026-11-17 render/tlas-select — StreamObjects 대신, 장면 노드 없이) ──
+		//  사용자: «재구성 범위 단위별로 리스트 만들어 두고, 해당 리스트들만 불러오는건» · «플레이어 기준 먼 격자는 px기준으로
+		//  조금씩 잘라서» · «임시 리스트 하나 둬서 플레이어가 속한 격자인데 안그려지는거는 임시 리스트에 전부» · «문턱은 4m» ·
+		//  «리스트 하나에 최대 8192» + 결정(칸 거리마다 문턱 올리기 · 앞쪽 반구 전체 · 큰 것은 px 로 자른 뒤 8,192 까지).
+		//  공간 격자(128 m 칸)로 앞쪽 반구 전체를 본다. 링 = 플레이어 칸과의 칸 거리(0 = 플레이어 칸).
+		//   링별 px 문턱(조준 기준): 0 · 8 · 16 · 그 밖 32 — 밑은 그리지 않는다.
+		//   지름 4 m 미만 → 링 리스트(링마다 메시 8,192 씩), 4 m 이상 → 큰 리스트(px 큰 순 8,192 까지).
+		//   임시 리스트 = 플레이어 칸에서 칸 리스트가 8,192 를 넘어 못 넣은 것 + 큰 리스트에서 잘린 큰 것.
+		//  플레이어 칸이 바뀌었거나 force 일 때만 다시 만든다(만들었으면 true). 리스트는 렌더러가 패스 자원 하나씩으로 그린다.
+		bool BuildRasterLists(const Vec3d& eye, bool force);
+		const std::vector<InstanceList>& RasterLists() const { return rasterLists; }
+		size_t RasterSmallMeshes() const { return rasterSmallMeshes; }
+		size_t RasterBigMeshes() const { return rasterBigMeshes; }
+		size_t RasterTempMeshes() const { return rasterTempMeshes; }
+		size_t RasterCutBigMeshes() const { return rasterCutBigMeshes; }
+		double LastRasterBuildMs() const { return lastRasterBuildMs; }
+		// 2026-11-20 메시 LOD 시험 — 단계를 이은 오브젝트 종류 수 · LOD0 메시 수(측정 로그)
+		size_t LodObjectTypes() const { size_t n = 0; for (const ObjectType& t : objectTypes) n += t.lodMeshes > 0 ? 1 : 0; return n; }
+		size_t LodObjectMeshes() const { size_t n = 0; for (const ObjectType& t : objectTypes) n += t.lodMeshes; return n; }
+
+		// ── TLAS 목록 (2026-11-17, 사용자 «TLAS 따로 고르는 단계 만들어» · «아예 두 묶음으로 다르게») ──
+		//  래스터(StreamObjects · 장면 노드)와 따로, TLAS 에 넣을 배치 오브젝트를 고른다. 장면 노드 없이 메시마다 월드 행렬을
+		//  계산해 둔다(TlasObjects). 규칙(11-16 · 11-17 사용자 결정):
+		//   앞쪽 반구(행성 중심 기준 내적 ≥ 0) · 60 m 안 전부 + 조준 기준 화면 지름 32 px 이상 →
+		//   단계(60 m 안 0 · 120 m 안 1 · 밖 2, 32 px 이상 −1 · 128 px 이상 −2) 낮은 것부터, 같은 단계는 px 큰 것부터.
+		//   자리가 남으면 32 px 밑을 px 큰 순으로 마저 채운다. budget = 메시 수 상한(TLAS 4,096 − 다른 몫, Engine 이 넘긴다).
+		//  공간 격자(128 m 칸 × 크기 묶음)로 훑는다(11-17 결정). 처음 · force · kRestreamDistance 이상 움직였을 때 ·
+		//  budget 이 줄어 넘치거나 64 이상 늘었을 때만 다시 고른다. 다시 골랐으면 true.
+		bool SelectTlasObjects(const Vec3d& eye, size_t budget, bool force);
+		const std::vector<InstanceData>& TlasObjects() const { return tlasObjects; }
+		// 이 행성 배치 오브젝트의 GPU 메시인가 — 래스터 목록(패킷)에서 오브젝트를 빼고 TLAS 기본 목록을 만들 때 쓴다.
+		bool IsObjectMesh(MeshHandle mesh) const { return mesh < objectMesh.size() && objectMesh[mesh] != 0; }
+		// 마지막 고르기 — 훑은 배치 수 · 후보(60 m 안 + 32 px 이상) 메시 수 · 걸린 시간(ms). 자동 측정 · 창 제목용.
+		size_t LastTlasExamined() const { return lastTlasExamined; }
+		size_t LastTlasCandidateMeshes() const { return lastTlasCandidateMeshes; }
+		double LastTlasSelectMs() const { return lastTlasSelectMs; }
 
 		// ── 지형 레이어 (2026-10-28) ──
 		// 읽을 DDS 의 exe 옆 assets\ 기준 경로 17개 — 색 4 · 노멀 4 · ORM 4 · 높이 4(각각 마스크 R G B A 순) + 마스크.
@@ -169,7 +213,8 @@ namespace swc {
 			std::string             file;
 			Model                   model;
 			float                   radius = 0.0f;     // 모델 바운드의 반지름(m) — 점수에 쓴다
-			uint32_t                meshCount = 0;     // 인스턴스 하나가 차지하는 메시 노드 수
+			uint32_t                meshCount = 0;     // 인스턴스 하나가 차지하는 메시 노드 수(2026-11-20 — LOD0 노드만)
+			uint32_t                lodMeshes = 0;     // 2026-11-20 메시 LOD — 렌더러에 단계를 이은 LOD0 메시 수(0 = LOD 없음)
 			bool                    loaded = false;
 			std::vector<NodeHandle> freeSlots;         // 숨겨 둔 인스턴스 루트(다시 쓴다)
 		};
@@ -203,8 +248,49 @@ namespace swc {
 		std::vector<std::pair<float, uint32_t>> scratch;       // (점수, 인스턴스) — 고를 때마다 다시 쓴다
 		Vec3d                                   lastStreamEye;
 		bool                                    streamed = false;
-		size_t                                  selectedMeshes = 0;        // 2026-11-16 마지막으로 고른 메시 노드 수(≤ kObjectMeshBudget, 창 제목)
+		size_t                                  selectedMeshes = 0;        // 2026-11-16 마지막으로 고른 메시 노드 수(≤ 예산, 창 제목)
+		size_t                                  lastStreamBudget = 0;      // 2026-11-17 마지막 고르기의 메시 예산(StreamObjects budget)
 		size_t                                  farHemisphereSkipped = 0;  // 2026-11-16 마지막 고르기에서 반대편 반구라 뺀 오브젝트 수(창 제목)
+
+		// ── TLAS 목록 (2026-11-17) ──
+		struct GridBucket                                      // 공간 격자 한 칸의 크기 묶음
+		{
+			Vec3d    center{};                                 // 칸 가운데(행성 중심 기준)
+			float    maxDiameter = 0.0f;                       // 묶음 안 가장 큰 지름(m) — 화면 지름 상한
+			uint32_t first = 0;                                // gridItems 안 시작
+			uint32_t count = 0;
+		};
+		void BuildObjectGrid();
+		// 2026-11-17 — 순위(TLAS · 래스터 공용): tlasPrimary · tlasFill 을 채운다. 눈 1 m 안 · 예산 이하면 앞 순위를 다시 쓴다.
+		void RankObjects(const Vec3d& eye, size_t budget);
+		Vec3d                                   rankEye;
+		size_t                                  rankBudget = 0;
+		bool                                    rankValid = false;
+		size_t                                  objectModelsFinished = 0;   // ObjectModelFinished 센 수(마지막 종류 뒤 격자)
+		// 래스터 칸 리스트 (2026-11-17)
+		std::vector<InstanceList>               rasterLists;
+		bool                                    rasterBuilt = false;
+		int64_t                                 rasterCell[3] = { 0, 0, 0 };   // 마지막으로 만든 때의 플레이어 칸
+		uint64_t                                rasterVersion = 0;
+		size_t                                  rasterSmallMeshes = 0;
+		size_t                                  rasterBigMeshes = 0;
+		size_t                                  rasterTempMeshes = 0;
+		size_t                                  rasterCutBigMeshes = 0;    // 큰 리스트에서 잘린 것(플레이어 칸 밖 — 그리지 않음)
+		double                                  lastRasterBuildMs = 0.0;
+		std::vector<GridBucket>                 gridBuckets;
+		std::vector<uint32_t>                   gridItems;     // 묶음별로 모은 배치 번호
+		bool                                    gridBuilt = false;
+		std::vector<uint8_t>                    objectMesh;    // MeshHandle → 배치 오브젝트 메시면 1
+		std::vector<InstanceData>               tlasObjects;   // 고른 오브젝트의 메시마다 한 줄(월드 행렬)
+		std::vector<std::pair<float, uint32_t>> tlasPrimary;   // (정렬 키 = 단계 × 1e6 − px, 배치) — 후보
+		std::vector<std::pair<float, uint32_t>> tlasFill;      // (px, 배치) — 32 px 밑 채움 후보
+		std::vector<uint8_t>                    bucketExamined;
+		Vec3d                                   lastTlasEye;
+		size_t                                  lastTlasBudget = 0;
+		bool                                    tlasSelected = false;
+		size_t                                  lastTlasExamined = 0;
+		size_t                                  lastTlasCandidateMeshes = 0;
+		double                                  lastTlasSelectMs = 0.0;
 	};
 
 } // namespace swc
