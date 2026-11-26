@@ -36,6 +36,7 @@
 #include "Shared/GameLogic/PlayerMovement.h"    // Shared::MoveWorld
 #include "Shared/GameLogic/ShotTrace.h"         // Shared::ShotHit — 2026-11-16 TraceVisibleShot
 #include "Client/Effects/ParticleSystem.h"      // 2026-11-17 피격 파티클
+#include "Client/UI/Hud.h"                      // 2026-11-26 기본 HUD(체력 · 방탄판 · 장탄수 · 나침반)
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -263,6 +264,10 @@ namespace swc {
 		//  서버가 «내 발이 NPC 에 맞았다»(Network::TakeNpcHits)고 알리면 hitMarkerTimer 를 kHitMarkerSeconds 로 채운다.
 		TextureHandle           hitMarkerTexture = kInvalidTexture;
 		float                   hitMarkerTimer = 0.0f;   // 남은 표시 시간(s). 0 이면 그리지 않는다
+		// 기본 HUD (2026-11-26) — 체력 · 방탄판 · 장탄수 · 나침반(Client/UI/Hud.h). 게임 씬이 아직 Engine 에 있어 크로스헤어처럼 여기 둔다.
+		//  만들기 = 게임 리소스 로드 끝(크로스헤어와 같은 자리), 값 채우기 = UpdateHud(메인), 그리기 = RenderFrame 의 UI 몫.
+		Hud                     hud;
+		void UpdateHud();
 
 		FramePacket               packet;       // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫

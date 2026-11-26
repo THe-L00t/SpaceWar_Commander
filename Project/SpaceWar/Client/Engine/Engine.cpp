@@ -763,6 +763,14 @@ namespace swc {
 				hitMarkerTexture = renderer.CreateTexture(MakeHitMarkerTexture());
 				if (hitMarkerTexture == kInvalidTexture)
 					Log(L"[UI] 명중 표시 텍스처를 만들지 못했다 — %s", renderer.StatusText().c_str());
+				// 기본 HUD (2026-11-26) — 글자 그림판(TTF) · 기호 · 흰 사각형. 못 만들면 HUD 만 빠지고 게임은 돈다.
+				{
+					std::wstring hudWarning;
+					if (!hud.Initialize(renderer, resources, &AssetPath, renderer.Width(), renderer.Height(), hudWarning))
+						Log(L"[UI] HUD 를 만들지 못했다 — %s", hudWarning.c_str());
+					else if (!hudWarning.empty())
+						Log(L"[UI] HUD 일부 빠짐 — %s", hudWarning.c_str());
+				}
 				return true;
 			});
 
@@ -852,6 +860,7 @@ namespace swc {
 			UpdateNetwork(dt);
 			// 2026-11-17 피격 파티클 — 이번 프레임에 만든 것(내 발 · 서버 확인)까지 넣고 움직인다. 렌더 추출은 RenderFrame.
 			particles.Update(dt, planet);
+			UpdateHud();   // 2026-11-26 기본 HUD 값 — 이번 프레임 카메라 · 받은 체력까지 끝난 뒤
 
 			// 애니메이션 포즈 — 게임 단계의 «출력» 이다 (멀티스레딩 명세 3.2 ③).
 			//  총구 위치·히트박스가 포즈를 쓰므로 렌더보다 먼저, 상태가 다 정해진 뒤에 돌린다.
@@ -1947,6 +1956,17 @@ namespace swc {
 		}
 	}
 
+	// 기본 HUD 값 (2026-11-26) — 메인. 그리기는 RenderFrame 의 UI 몫(Hud::Extract).
+	//  체력 = 서버가 알려 준 값(Network::MyHealth, 모르면 최대값). 최대값 · 방탄판 · 장탄수 = HudState 기본값(사용자 «UI만, 값은 임시»).
+	//   ★ 최대 체력을 Shared::kMaxHealth 에서 읽지 않는다 — 클라는 GameLogic.h 를 포함하지 않는다(그 파일 머리 2026-09-24).
+	//  나침반 = 카메라 접평면 앞(Camera::Forward) · 이 자리의 위 — 북쪽 정의는 Hud::HeadingDegrees.
+	void Engine::UpdateHud()
+	{
+		HudState& state = hud.State();
+		state.health = network.MyHealth() >= 0.0f ? network.MyHealth() : state.maxHealth;
+		state.headingDegrees = Hud::HeadingDegrees(controller.Up(), camera.Forward(), state.headingDegrees);
+	}
+
 	// 렌더 추출(멀티스레딩 3.2 ④) → Renderer
 	void Engine::RenderFrame()
 	{
@@ -1965,6 +1985,9 @@ namespace swc {
 
 		uiSprites.clear();
 		sceneManager.ExtractUI(uiSprites);
+
+		// 기본 HUD (2026-11-26) — 크로스헤어 아래에 깔린다(먼저 넣은 것이 뒤).
+		hud.Extract(uiSprites);
 
 		// 임시 크로스헤어 (2026-11-14) — 화면 한가운데 = 조준선(명세 20절). 텍스처 1 텍셀 = 화면 1 px.
 		if (crosshairTexture != kInvalidTexture)

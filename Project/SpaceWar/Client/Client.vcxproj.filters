@@ -143,6 +143,12 @@
     <ClCompile Include="UI\UI.cpp">
       <Filter>클래스 목록\UI</Filter>
     </ClCompile>
+    <ClCompile Include="UI\FontAtlas.cpp">
+      <Filter>클래스 목록\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Hud.cpp">
+      <Filter>클래스 목록\UI</Filter>
+    </ClCompile>
     <ClCompile Include="Bridge\ClassBridge.cpp">
       <Filter>클래스 목록\ClassBridge</Filter>
     </ClCompile>
@@ -245,6 +251,12 @@
       <Filter>클래스 목록\Scene</Filter>
     </ClInclude>
     <ClInclude Include="UI\UI.h">
+      <Filter>클래스 목록\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\FontAtlas.h">
+      <Filter>클래스 목록\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Hud.h">
       <Filter>클래스 목록\UI</Filter>
     </ClInclude>
     <ClInclude Include="Bridge\ClassBridge.h">
