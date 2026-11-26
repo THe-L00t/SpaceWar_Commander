@@ -23,7 +23,8 @@
 //  ★ 실행 위치 — 상태는 메인(Engine 이 State 를 채운다), 그리기는 렌더 추출 ④ 때 UISprite 로 복사(Extract).
 //    명세 5절 «UI 도 Scene 에 귀속» — 게임 씬은 아직 Engine 이 직접 돌아서(SceneManager.h) 크로스헤어처럼 Engine 이 든다.
 //  ★ «값은 임시»(2026-11-26 사용자) — 방탄판 · 장탄수는 게임에 아직 값이 없어 HudState 기본값(팀원 runtime-state 예시)을 보인다.
-//    체력만 서버 값을 쓴다(Network::MyHealth — 모르면 최대값).
+//    체력 · 최대 체력은 내 Player(Shared::DynamicObject health · maxHealth — Engine::localPlayer)를 쓴다(2026-11-26).
+//    health = 서버가 판정한 값(모르면 최대값), maxHealth = Shared::Player 기본값 100(서버 Shared::kMaxHealth 와 같은 한 값 — 서버가 따로 보내지 않는다).
 // ============================================================
 
 namespace swc {
@@ -36,7 +37,7 @@ namespace swc {
 	struct HudState
 	{
 		float    health = 100.0f;
-		float    maxHealth = 100.0f;          // ★ 임시 — 서버가 최대 체력을 보내지 않는다(서버 Shared::kMaxHealth 와 같은 100)
+		float    maxHealth = 100.0f;          // 2026-11-26 — Engine 이 매 프레임 내 Player 의 maxHealth 로 덮는다(이 기본값은 덮기 전 값)
 		float    armor = 64.0f;           // ★ 임시 — 게임에 방탄판이 없다
 		float    maxArmor = 100.0f;
 		uint32_t ammo = 8;                // ★ 임시 — 탄창 · 예비탄을 아직 쓰지 않는다(탄 무한, Shared/GameObject/Weapon.h)

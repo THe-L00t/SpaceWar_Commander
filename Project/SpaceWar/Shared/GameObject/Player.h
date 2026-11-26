@@ -10,6 +10,10 @@ namespace Shared {
 	class Player : public DynamicObject
 	{
 	public:
+		// 2026-11-26 기본 체력 100 (사용자 «플레이어 기본 100으로 해줘») — health · maxHealth 둘 다 Shared::kMaxHealth(GameLogic.h —
+		//  서버의 시작 · 회복 체력과 같은 한 값). 값은 Player.cpp 에서 넣는다 — 이 헤더는 GameLogic.h 를 포함하지 않는다
+		//  (클라 코드는 그 파일을 포함하지 않는다, GameLogic.h 머리 2026-09-24).
+		Player();
 		~Player() override;
 
 		Weapon weapon;   // 빈손이면 weapon.Held() == false

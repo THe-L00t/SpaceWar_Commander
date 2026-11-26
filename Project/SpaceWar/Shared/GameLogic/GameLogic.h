@@ -28,7 +28,10 @@ namespace Shared {
 	//  ★ 2026-11-15 — 사격 판정은 든 총의 표(Shared/GameObject/Weapon.cpp kSpecs: 발 간격 · 피해 · 사거리)를 쓴다.
 	//    아래 kShotDamage · kFireRange · kFireInterval 은 더 이상 판정에 쓰지 않는다(11-15 까지 권총 줄과 같던 값 — 기록으로 남김.
 	//    사거리는 11-16 부터 표가 130 m).
-	inline constexpr float kMaxHealth = 100.0f;    // 시작·회복 체력
+	inline constexpr float kMaxHealth = 100.0f;    // 플레이어 시작·회복 체력 (Shared::Player 기본값 — Player.cpp)
+	// 2026-11-27 몬스터(NPC) 시작·재등장 체력 (사용자 «몬스터는 200정도로 해줘») — Shared::NPC 기본값(NPC.cpp), 서버 NpcWorld 가 이 값으로 세운다.
+	//  이 날 전까지 NPC 도 kMaxHealth(100)였다. 권총 25 기준 4발 → 8발.
+	inline constexpr float kNpcMaxHealth = 200.0f;
 	inline constexpr float kShotDamage = 25.0f;    // 한 발 (4발이면 쓰러진다)
 	inline constexpr float kFireRange = 300.0f;    // 사거리 (m). 지평선 125m 보다 넉넉히
 	inline constexpr float kFireInterval = 0.2f;   // 연사 제한 (s)

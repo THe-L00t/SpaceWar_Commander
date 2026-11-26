@@ -10,6 +10,9 @@ namespace Shared {
 	class NPC : public DynamicObject
 	{
 	public:
+		// 2026-11-27 기본 체력 200 (사용자 «몬스터는 200정도로 해줘») — health · maxHealth 둘 다 Shared::kNpcMaxHealth(GameLogic.h).
+		//  값은 NPC.cpp 에서 넣는다 — 이 헤더는 GameLogic.h 를 포함하지 않는다(Player.h 와 같다).
+		NPC();
 		~NPC() override;
 	};
 

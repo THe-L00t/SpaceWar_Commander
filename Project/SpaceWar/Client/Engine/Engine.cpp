@@ -588,6 +588,7 @@ namespace swc {
 	bool Engine::Initialize(HINSTANCE hInstance, int showCommand)
 	{
 		tlasSeparate = kTlasSeparateDefault;   // 2026-11-17 TLAS 목록 분리 — 처음 상태
+		// 내 Player 체력의 처음 값(가득 100)은 Shared::Player 생성자가 넣는다(2026-11-26 «플레이어 기본 100»).
 		// WIC(하이트맵 로더)가 COM 객체다. 이게 없으면 CO_E_NOTINITIALIZED 로 조용히 실패한다.
 		if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
 			return false;
@@ -1111,6 +1112,9 @@ namespace swc {
 			UpdateWeapons(dt);   // 2026-11-15 — 든 총 · 바닥 총 · E 줍기 · G 떨구기. 이번 프레임 든 총으로 UpdateFire 가 쏜다
 			UpdateFire(dt);
 			UpdateNetwork(dt);
+			// 2026-11-26 내 Player 체력 ← 서버가 판정한 값(Network::MyHealth — 명세 6.13 · 18절 원칙 4). 모르면(접속 전 · 끊김 · 첫 알림 전) 최대값.
+			//  UpdateNetwork 밖에 둔다 — 끊겼을 때 그 함수는 일찍 돌아가지만, 그때도 «모름 → 최대값» 이어야 한다(예전 HUD 와 같다).
+			localPlayer.health = network.MyHealth() >= 0.0f ? network.MyHealth() : localPlayer.maxHealth;
 			// 2026-11-17 피격 파티클 — 이번 프레임에 만든 것(내 발 · 서버 확인)까지 넣고 움직인다. 렌더 추출은 RenderFrame.
 			particles.Update(dt, planet);
 			UpdateHud();   // 2026-11-26 기본 HUD 값 — 이번 프레임 카메라 · 받은 체력까지 끝난 뒤
@@ -2339,13 +2343,15 @@ namespace swc {
 	}
 
 	// 기본 HUD 값 (2026-11-26) — 메인. 그리기는 RenderFrame 의 UI 몫(Hud::Extract).
-	//  체력 = 서버가 알려 준 값(Network::MyHealth, 모르면 최대값). 최대값 · 방탄판 · 장탄수 = HudState 기본값(사용자 «UI만, 값은 임시»).
-	//   ★ 최대 체력을 Shared::kMaxHealth 에서 읽지 않는다 — 클라는 GameLogic.h 를 포함하지 않는다(그 파일 머리 2026-09-24).
+	//  체력 · 최대 체력 = 내 Player(DynamicObject health · maxHealth, 2026-11-26 사용자 «다이나믹 클래스에 체력 만들고 UI에 체력바 연동»).
+	//   health 는 메인 루프가 UpdateNetwork 뒤에 서버 값으로 채우고, maxHealth 는 Shared::Player 기본값 100(Shared::kMaxHealth).
+	//  방탄판 · 장탄수 = HudState 기본값(사용자 «UI만, 값은 임시»).
 	//  나침반 = 카메라 접평면 앞(Camera::Forward) · 이 자리의 위 — 북쪽 정의는 Hud::HeadingDegrees.
 	void Engine::UpdateHud()
 	{
 		HudState& state = hud.State();
-		state.health = network.MyHealth() >= 0.0f ? network.MyHealth() : state.maxHealth;
+		state.health = localPlayer.health;
+		state.maxHealth = localPlayer.maxHealth;
 		state.headingDegrees = Hud::HeadingDegrees(controller.Up(), camera.Forward(), state.headingDegrees);
 	}
 

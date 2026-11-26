@@ -307,7 +307,7 @@ namespace srv {
 			e.group = firstGroup + uint32_t(i / groupSize);
 			e.npc.position = PickMemberPosition(e.group);
 			e.npc.speed = kNpcSpeed;
-			e.npc.health = Shared::kMaxHealth;
+			e.npc.health = e.npc.maxHealth;   // 2026-11-27 몬스터 체력 200(Shared::NPC 기본값 = kNpcMaxHealth). 전엔 플레이어와 같은 kMaxHealth(100)
 			e.ctx.npc = e.npcId;
 			e.ctx.Allocate(nodeCount);
 
@@ -374,7 +374,7 @@ namespace srv {
 				if (e.respawnTimer > 0.0f) continue;
 
 				e.npc.position = PickMemberPosition(e.group);
-				e.npc.health = Shared::kMaxHealth;
+				e.npc.health = e.npc.maxHealth;   // 2026-11-27 가득(200) 으로 다시 선다
 				e.hitStunTicks = 0;
 				e.alive = true;
 				continue;

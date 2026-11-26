@@ -40,6 +40,7 @@
 #include "Client/Effects/ParticleTexture.h"     // 2026-11-24 파티클 낱장 텍스처
 #include "Shared/World/WorldCatalog.h"          // 2026-11-19 — NPC 모델 주인 = 맵 번호(kWorldCount)
 #include "Client/UI/Hud.h"                      // 2026-11-26 기본 HUD(체력 · 방탄판 · 장탄수 · 나침반)
+#include "Shared/GameObject/Player.h"           // 2026-11-26 내 Player(명세 6.6) — 지금은 체력 · 최대 체력만 채운다
 
 // ============================================================
 //  Client/Engine/Engine.h — 아키텍처 명세서 1절 · 2절
@@ -194,6 +195,10 @@ namespace swc {
 		Camera                 camera;            // 명세 1절에 자리가 없다
 		PlayerController       controller;        // → Player(6.6) · Game Logic(8절). 입력은 Class Bridge 경유(6.6.3)
 		NodeHandle             player = kInvalidNode;
+		// 2026-11-26 내 Player(명세 6.6 · DynamicObject 6.4.2) — 사용자 «다이나믹 클래스에 체력 만들고 UI에 체력바 연동 시켜줘».
+		//  지금은 health · maxHealth 만 쓴다: health = 서버가 판정한 값(Network::MyHealth, 6.13 · 18절 원칙 4), maxHealth = Shared::Player 기본값 100(Shared::kMaxHealth — Player.cpp).
+		//  HUD 체력바는 이 값을 읽는다(UpdateHud). 위치 · 이동은 아직 controller · player 노드가 든다(다른 것은 옮기지 않았다).
+		Shared::Player         localPlayer;
 		Vec3d                  spawnPosition;     // 접지 보정한 시작 위치. 표시 시 재조회하지 않는다.
 
 		// 캐릭터 모델. 플레이어·원격 플레이어·NPC 가 같은 메시·재질을 공유한다.
