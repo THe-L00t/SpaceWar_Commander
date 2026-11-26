@@ -64,6 +64,13 @@ namespace swc {
 		//  없으면 예전처럼 카메라를 보는 사각형(축 = 카메라 오른쪽 · 위를 rotation 만큼 돌린 것).
 		kParticleFixedAxes = 1u << 2,
 	};
+	// ── 2026-11-26 [0b] 파티클 빛 고정 열쇠 — flags 위 비트(ParticleSystem::Extract 가 채운다 · ParticleCommon.hlsli 와 같은 값) ──
+	//  사용자 «사라지기 전까지는 주변광 값 고정 하면 안돼?» · «파티클 가림도 없애줘 … 임시니까 진행해줘»(나중에 갓레이를 정하며 다시 고친다).
+	//  패킷은 프레임마다 거리로 정렬돼 번호가 바뀌므로, 같은 파티클을 알아볼 풀 칸 번호와 «그 칸의 몇 번째 파티클인지» 를 싣는다.
+	//  ParticleLight.hlsl 은 칸에 적어 둔 열쇠가 다르면(새로 태어남) 한 번 재서 적고, 같으면 적어 둔 값을 그대로 쓴다.
+	inline constexpr uint32_t kParticleLightKeyShift = 4;       // 4 ~ 15 비트 — 그 칸에 태어난 차례(12비트, 4096 에서 돌아감)
+	inline constexpr uint32_t kParticleSlotShift     = 16;      // 16 ~ 27 비트 — 풀 칸 번호(ParticleSystem::kSpritePool 4096 까지)
+	inline constexpr uint32_t kParticleKeyMask       = 0xFFFu;  // 두 칸 모두 12비트
 	// 레이(그림자 · AO · GI · 반사)가 파티클 구 하나에서 받는 평균 불투명도 몫의 기본값 — 둥근 모양 (1 − r²)² 의 원판 평균 1/3.
 	//  플립북은 FlipbookSettings::rayCoverage 로 바꾼다(2026-11-25 — 피 시트는 칸 평균 0.02 ~ 0.05).
 	inline constexpr float kParticleRayCoverageRound = 0.33f;

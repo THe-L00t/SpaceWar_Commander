@@ -42,7 +42,16 @@ namespace swc {
 
 	void ParticleSystem::Clear()
 	{
-		sprites.assign(kSpritePool, Sprite{});
+		// 2026-11-26 — 칸마다 빛 고정 열쇠(Sprite::lightKey)는 남긴다(GPU 칸 기록과 어긋나지 않게).
+		if (sprites.size() != kSpritePool)
+			sprites.assign(kSpritePool, Sprite{});
+		else
+			for (Sprite& s : sprites)
+			{
+				const uint16_t key = s.lightKey;
+				s = Sprite{};
+				s.lightKey = key;
+			}
 		freeSlots.clear();
 		freeSlots.reserve(kSpritePool);
 		for (size_t i = kSpritePool; i-- > 0; )
@@ -64,19 +73,25 @@ namespace swc {
 	ParticleSystem::Sprite& ParticleSystem::Allocate()
 	{
 		if (!initialized) Clear();
+		// 2026-11-26 — 칸에 새로 태어날 때마다 빛 고정 열쇠를 올린다 → [0b] 가 «새 파티클» 로 보고 한 번 잰다.
+		auto renew = [](Sprite& s) -> Sprite&
+		{
+			s.lightKey = uint16_t((uint32_t(s.lightKey) + 1u) & kParticleKeyMask);
+			return s;
+		};
 		if (!freeSlots.empty())
 		{
 			Sprite& s = sprites[freeSlots.back()];
 			freeSlots.pop_back();
 			++liveCount;
-			return s;
+			return renew(s);
 		}
 		// 풀이 찼다 — 가장 오래된 것(나이가 가장 큰 것)을 다시 쓴다(노션 10.3).
 		size_t oldest = 0;
 		for (size_t i = 1; i < sprites.size(); ++i)
 			if (sprites[i].age > sprites[oldest].age) oldest = i;
 		++recycled;
-		return sprites[oldest];
+		return renew(sprites[oldest]);
 	}
 
 	void ParticleSystem::EmitLayer(Layer layer, const Vec3d& position, const Vec3d& normal, const Vec3d& up)
@@ -431,6 +446,8 @@ namespace swc {
 			const Sprite& s = sprites[i];
 			if (!s.alive || (s.flags & kParticleAdditive)) continue;
 			spriteScratch.push_back(toSprite(s));
+			// 2026-11-26 [0b] 빛 고정 — 정렬과 상관없는 칸 번호 · 그 칸의 열쇠(ParticleLight.hlsl 이 칸 기록과 맞춰 본다)
+			spriteScratch.back().flags |= (uint32_t(s.lightKey) << kParticleLightKeyShift) | (i << kParticleSlotShift);
 			const Vec3d d = sortCenter(spriteScratch.back()) - eye;
 			sortScratch.emplace_back(float(Dot(d, d)), uint32_t(spriteScratch.size() - 1));
 		}

@@ -24,6 +24,11 @@ struct ParticleSprite
 static const uint kParticleAdditive  = 1u;   // 가산(섬광 · 불꽃 — 스스로 빛남)
 static const uint kParticleLit       = 2u;   // 해 · 하늘 빛을 받는다(먼지 · 연기 · 피)
 static const uint kParticleFixedAxes = 4u;   // 2026-11-25 — 카메라를 보지 않고 axisX · Y · Z 로 고정된 사각형
+// 2026-11-26 [0b] 빛 고정 열쇠 — flags 위 비트(InstanceData.h kParticleLightKeyShift · kParticleSlotShift · kParticleKeyMask 와 같다).
+//  4 ~ 15 비트 = 그 풀 칸에 태어난 차례(12비트), 16 ~ 27 비트 = 풀 칸 번호(0 ~ 4095). 다른 flags 검사는 비트 단위라 영향이 없다.
+static const uint kParticleLightKeyShift = 4u;
+static const uint kParticleSlotShift     = 16u;
+static const uint kParticleKeyMask       = 0xFFFu;
 
 // 레이가 보는 구의 가운데 — 고정 사각형은 기준점에서 사각형 가운데로 옮긴다.
 //  카메라를 보는 사각형은 레이 쪽에서 카메라 축을 모르므로 기준점 그대로(offset 이 있으면 그만큼 어긋난다).

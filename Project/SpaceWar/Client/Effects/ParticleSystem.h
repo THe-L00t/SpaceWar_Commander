@@ -128,8 +128,13 @@ namespace swc {
 			GroundRule ground = GroundRule::Ignore;
 			Layer    layer = Layer::Flash;   // 2026-11-23 — 붙은 플립북 · 낱장 텍스처를 찾는 데 쓴다
 			uint16_t image = kNoImage;       // 2026-11-24 — 태어날 때 고른 그림(layerImages[layer] 의 번호, kNoImage = 둥근 모양)
+			// 2026-11-26 [0b] 빛 고정 열쇠 — 이 칸에 태어난 차례(Allocate 가 하나씩 올린다, kParticleKeyMask 에서 돌아감).
+			//  Extract 가 칸 번호와 함께 flags 위 비트에 싣는다(InstanceData.h kParticleLightKeyShift). Clear 도 지우지 않는다 —
+			//  GPU 의 칸 기록(ParticleLight.hlsl)이 맵을 바꿔도 남아 있어, 0 부터 다시 세면 앞 파티클의 값을 이어 쓸 수 있다.
+			uint16_t lightKey = 0;
 			bool     alive = false;
 		};
+		static_assert(kSpritePool <= size_t(kParticleKeyMask) + 1, "풀 칸 번호는 flags 의 12비트(kParticleSlotShift)에 들어가야 한다");
 
 		// 그림 한 장(가리키기만) · 텍스처에 곱할 색. flipbook · texture 중 하나만 채운다(2026-11-24 texture 추가).
 		struct LayerImage

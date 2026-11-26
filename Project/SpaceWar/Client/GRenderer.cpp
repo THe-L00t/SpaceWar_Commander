@@ -488,7 +488,7 @@ namespace swc {
 		XMFLOAT3 sunDir;       uint32_t count;        // 해 → 장면 방향 · 이번 프레임 파티클 수
 		XMFLOAT3 planetUp;     uint32_t outputUav;    // 카메라 자리의 위(AO 반구 축) · 결과 UAV(바인드리스)
 		float    maxDistance;  float    aoRadius;     // 해 쪽 레이 길이(m) · AO 반경(m)
-		uint32_t firstOutput;  uint32_t pad0;         // 결과 버퍼에서 이번 슬롯의 첫 칸
+		uint32_t firstOutput;  uint32_t firstState;   // 결과 버퍼에서 이번 슬롯의 첫 칸 · 2026-11-26 풀 칸 기록의 첫 칸(빛 고정)
 	};
 	static_assert(sizeof(ParticleLightConstants) == 48, "ParticleLightCB 는 48바이트");
 
@@ -1300,6 +1300,7 @@ namespace swc {
 		//  컴퓨트 큐(UAV) · 그래픽 큐(VS · GS 읽기)가 각자 암묵 승격으로 쓴다 — 그래픽 큐는 asFence 를 기다린 뒤 읽는다.
 		ComPtr<ID3D12PipelineState> particleLightPso;       // cs_6_6 CSParticleLight (컴퓨트 공용 루트)
 		ComPtr<ID3D12Resource>      particleLightBuffer;    // DEFAULT, 슬롯 2벌 × MaxParticles × float4 (해 가시도 RGB, AO)
+		                                                    //  + 2026-11-26 풀 칸 기록 MaxParticles × float4 2개(태어날 때 잰 값 · 열쇠 — 사라질 때까지 고정, 임시)
 		ComPtr<ID3D12Resource>      particleLightCB;        // UPLOAD, 슬롯 2벌 × 256 B
 		uint8_t*                    particleLightCBData = nullptr;
 		bool                        particleLightLive = false;   // 이번 프레임에 빛 패스를 넣었나([7b] 가 t1 을 읽을지)
@@ -1943,6 +1944,7 @@ namespace swc {
 			lc.maxDistance = kShadowMaxDistance;   // [4a] 와 같은 해 쪽 레이 길이
 			lc.aoRadius = kAoRadius;               // [2] 와 같은 AO 반경
 			lc.firstOutput = slot * MaxParticles;
+			lc.firstState = AccelStructure::kFrameSlots * MaxParticles;   // 2026-11-26 — 두 슬롯 뒤(슬롯과 무관하게 하나)
 			memcpy(particleLightCBData + size_t(slot) * 256, &lc, sizeof(lc));
 			particleLightLive = true;
 		}
@@ -4404,7 +4406,10 @@ namespace swc {
 			if (impl->particleRtReady && impl->particleLightPso)
 			{
 				D3D12_HEAP_PROPERTIES heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-				D3D12_RESOURCE_DESC lightDesc = BufferDesc(UINT64(AccelStructure::kFrameSlots) * Impl::MaxParticles * 16);
+				// 2026-11-26 — 뒤에 풀 칸 기록(MaxParticles × 2 칸)을 붙인다. 0 으로 만들어진다(커밋 자원 · CREATE_NOT_ZEROED 안 씀) = 한 번도 안 잰 칸.
+				//  ★ 칸 번호 = ParticleSystem 풀 칸(kSpritePool 4096) — MaxParticles 와 같아야 한다.
+				constexpr UINT kLightElements = (AccelStructure::kFrameSlots + 2) * Impl::MaxParticles;
+				D3D12_RESOURCE_DESC lightDesc = BufferDesc(UINT64(kLightElements) * 16);
 				lightDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 				D3D12_HEAP_PROPERTIES upload = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
 				const D3D12_RESOURCE_DESC cbDesc = BufferDesc(UINT64(AccelStructure::kFrameSlots) * 256);
@@ -4421,7 +4426,7 @@ namespace swc {
 					uav.Format = DXGI_FORMAT_UNKNOWN;
 					uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
 					uav.Buffer.FirstElement = 0;
-					uav.Buffer.NumElements = AccelStructure::kFrameSlots * Impl::MaxParticles;
+					uav.Buffer.NumElements = kLightElements;   // 2026-11-26 두 슬롯 + 풀 칸 기록
 					uav.Buffer.StructureByteStride = 16;
 					impl->device->CreateUnorderedAccessView(impl->particleLightBuffer.Get(), nullptr, &uav,
 						impl->BindlessCpu(Impl::BindlessParticleLightUav));
