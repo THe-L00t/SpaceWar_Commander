@@ -53,6 +53,14 @@
 //     반대로 예전 규칙은 조작된 클라에게 평균 1.33 배까지 허용했다.)
 constexpr double kFireBurstShots = 3.0;			//한꺼번에 받아 주는 발 수 — 클라 Engine.cpp kMaxShotsPerFrame 과 같게
 
+// ── 탄 · 장전 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») ──────────
+//  · 든 총의 탄 상태(Shared::Weapon — 현재 탄수 magazine · 장전 남은 시간)는 세션이 들고 틱 스레드만 바꾼다(줍기 · 떨구기와 같은 규칙).
+//  · 한 발 = 판정(ResolveFire) 직전에 Weapon::ConsumeShot — 빈 탄창 · 장전 중 · 쏜 뒤 총이 바뀌었으면 그 발은 버린다.
+//  · 장전 = 클라의 WeaponReload → 틱 스레드가 Weapon::StartReload, 틱마다 AdvanceReload(흐른 시간), 다 되면 탄창을 가득 채운다.
+//    예비탄은 없다 — 몇 번이고 장전된다(같은 날 사용자 «예비탄없애고 … 몇 번이고 장전가능하게 할거야»). 로그의 «탄 a / b» = 현재 / 최대 장탄수.
+//  · 바뀔 때마다 당사자에게 WeaponAmmo(SendAmmo). 클라는 그 값으로 HUD 를 그리고 빈 탄창이면 쏘지 않는다.
+//  · 바닥 총도 탄 상태를 든다 — 떨군 총을 다시 주우면 남은 탄 그대로(장전은 취소), 공중 진열에서 주우면 가득.
+
 // ── 맵 번호 (2026-11-01, 사용자 «맵번호 적용해줘») ────────────────────
 //  세션마다 맵 번호(0 = 게임 맵, 1 ~ 5 = 예시 행성, Shared/World/WorldCatalog.h)를 들고,
 //  같은 맵에 있는 사람끼리만 판정 · 송신한다(이동 · 사격 · 체력 · 위치). NPC 도 맵마다 따로 있다(2026-11-19 — 전에는 게임 맵에만).
@@ -235,21 +243,38 @@ public:
 		::LeaveCriticalSection(&m_csInput);
 	}
 
-	//틱 스레드 — 워커가 남긴 줍기 · 떨구기 요청을 가져간다.
-	void TakeWeaponRequests(bool &bPickup, uint8_t &source, uint32_t &id, bool &bDrop)
+	//워커 — WeaponReload 를 받았다(2026-11-27 장전).
+	void RequestReload()
+	{
+		::EnterCriticalSection(&m_csInput);
+		m_bHasReload = true;
+		::LeaveCriticalSection(&m_csInput);
+	}
+
+	//틱 스레드 — 워커가 남긴 줍기 · 떨구기 · 장전 요청을 가져간다.
+	void TakeWeaponRequests(bool &bPickup, uint8_t &source, uint32_t &id, bool &bDrop, bool &bReload)
 	{
 		::EnterCriticalSection(&m_csInput);
 		bPickup = m_bHasPickup;
 		source = m_pickupSource;
 		id = m_pickupId;
 		bDrop = m_bHasDrop;
+		bReload = m_bHasReload;
 		m_bHasPickup = false;
 		m_bHasDrop = false;
+		m_bHasReload = false;
 		::LeaveCriticalSection(&m_csInput);
 	}
 
 	Shared::WeaponType HeldWeapon() const				{ return (Shared::WeaponType)m_heldType.load(); }
-	void SetHeldWeapon(Shared::WeaponType type)			{ m_heldType = (uint8_t)type; }		//틱 스레드만
+	//든 총을 바꾼다(탄 상태째, 2026-11-27). 빈손 = Shared::Weapon{}. 틱 스레드만.
+	void SetHeldWeapon(const Shared::Weapon &weapon)
+	{
+		m_weapon = weapon;
+		m_heldType = (uint8_t)weapon.type;
+	}
+	//든 총의 탄 상태(현재 탄수 · 장전) — 틱 스레드만 읽고 바꾼다(ResolveFire 의 한 발 · 장전).
+	Shared::Weapon &HeldWeaponState()					{ return m_weapon; }
 
 	//판정한 이동 상태 — 떨군 총의 손 자리를 구한다. 틱 스레드만.
 	const Shared::MoveState &Move() const { return m_move; }
@@ -489,6 +514,12 @@ private:
 				RequestDrop();
 			break;
 
+		//장전(2026-11-27) — 줍기 · 떨구기와 같이 요청만 남긴다. 되는지(탄창 · 이미 장전 중)는 틱 스레드가 본다.
+		case Shared::PacketType::WeaponReload:
+			if (nSize == (int)sizeof(Shared::WeaponReloadPacket))
+				RequestReload();
+			break;
+
 		default:
 			break;		//모르는 종류는 크기만큼 건너뛴다
 		}
@@ -612,12 +643,14 @@ private:
 	double		m_fFireBudgetMs;	//연사 예산(ms) — 흐른 시간만큼 차고(상한 kFireBurstShots × 간격) 한 발에 간격만큼 쓴다. 〃
 
 	// ── 총 (2026-11-15 줍기 · 떨구기) ──
-	std::atomic<uint8_t>	m_heldType{ (uint8_t)Shared::WeaponType::None };	//든 총 — 틱 스레드가 쓰고 워커(사격 검사)가 읽는다. 접속하면 빈손
+	std::atomic<uint8_t>	m_heldType{ (uint8_t)Shared::WeaponType::None };	//든 총 종류 — m_weapon.type 의 사본. 틱 스레드가 쓰고 워커(사격 검사)가 읽는다. 접속하면 빈손
+	Shared::Weapon			m_weapon;							//든 총의 탄 상태(2026-11-27) — 틱 스레드만
 	std::atomic<bool>		m_bNeedsWeaponSnapshot{ true };		//그 맵 바닥 총 · 남이 든 총을 보내야 한다 — 접속 직후 true
 	bool					m_bHasPickup = false;				//워커가 받은 WeaponPickup — 잠금 안에서만
 	uint8_t					m_pickupSource = 0;					//〃
 	uint32_t				m_pickupId = 0;						//〃
 	bool					m_bHasDrop = false;					//워커가 받은 WeaponDrop — 잠금 안에서만
+	bool					m_bHasReload = false;				//워커가 받은 WeaponReload — 잠금 안에서만(2026-11-27)
 
 	IO_CONTEXT	m_recvCtx;
 };
@@ -671,6 +704,7 @@ struct ServerWorld
 		uint32_t			id;
 		Shared::WeaponType	type;
 		Shared::WeaponDrop	drop;			//손 → 누운 자세(새로 들어온 사람에게는 누운 자세만)
+		Shared::Weapon		weapon;			//떨군 때의 탄 상태(2026-11-27) — 다시 주우면 이대로 든다(장전은 취소)
 	};
 	std::vector<GroundWeapon>		ground;						//바닥 총 — 떨군 순서(앞이 가장 오래됨)
 	uint32_t						nextGroundId = 1;
@@ -1225,6 +1259,21 @@ void SendNpcHit(const SessionPtr &pShooter, UINT32 nNpcId)
 	pShooter->Send(&pkt, (int)sizeof(pkt));
 }
 
+//당사자에게만 — 내 든 총의 탄 상태(2026-11-27 탄 · 장전). ★ 틱 스레드에서만 부른다(탄 상태를 바꾸는 쪽과 같다).
+//  클라는 이 값으로 HUD 장탄수 · 장전 표시를 그리고, 빈 탄창 · 장전 중이면 쏘지 않는다.
+void SendAmmo(const SessionPtr &pSession)
+{
+	const Shared::Weapon &weapon = pSession->HeldWeaponState();
+	Shared::WeaponAmmoPacket pkt = {};
+	pkt.header.size = (uint16_t)sizeof(pkt);
+	pkt.header.type = Shared::PacketType::WeaponAmmo;
+	pkt.weaponType = (uint8_t)weapon.type;
+	pkt.magazine = weapon.magazine;
+	pkt.reloadLeft = weapon.reloadLeft;
+
+	pSession->Send(&pkt, (int)sizeof(pkt));
+}
+
 /////////////////////////////////////////////////////////////////////////
 //  한 발을 판정한다. ★ 행동 스레드에서만 부른다.
 //
@@ -1247,6 +1296,12 @@ void ResolveFire(const FireRequest &req, const std::vector<SessionPtr> &list)
 	const Shared::WeaponType weaponType = (Shared::WeaponType)req.weaponType;
 	if (!Shared::IsWeaponType(weaponType)) return;
 	const Shared::WeaponSpec &spec = Shared::SpecOf(weaponType);
+
+	//1-1) 탄(2026-11-27) — 받은 순간의 총을 지금도 들고 있고 · 장전 중이 아니고 · 탄창에 탄이 있어야 한다. 아니면 이 발은 없던 것으로 한다.
+	//     한 발 빼고 쏜 사람에게 남은 탄을 알린다(막히든 빗나가든 탄은 쓴다).
+	Shared::Weapon &weapon = pShooter->HeldWeaponState();
+	if (weapon.type != weaponType || !weapon.ConsumeShot()) return;
+	SendAmmo(pShooter);
 
 	//2) 방향. 길이가 0 이면 버린다.
 	const double dx = req.dir[0], dy = req.dir[1], dz = req.dir[2];
@@ -1426,6 +1481,8 @@ void DropHeldWeapon(const SessionPtr &pSession, uint32_t nWorld)
 	g.id = world.nextGroundId++;
 	g.type = held;
 	g.drop = Shared::SettleDroppedWeapon(world.move, held, move.position, move.up, move.facing);
+	g.weapon = pSession->HeldWeaponState();		//남은 탄째 떨군다(2026-11-27) — 하던 장전은 취소, 탄은 그대로
+	g.weapon.CancelReload();
 	world.ground.push_back(g);
 
 	while (world.ground.size() > Shared::kMaxGroundWeapons)
@@ -1437,42 +1494,39 @@ void DropHeldWeapon(const SessionPtr &pSession, uint32_t nWorld)
 	const Shared::GroundWeaponSpawnPacket spawn = MakeGroundSpawn(g, false);
 	SendToWorld(nWorld, &spawn, (int)sizeof(spawn), 0);
 
-	pSession->SetHeldWeapon(Shared::WeaponType::None);
-	printf("[총] 플레이어 %u : %s 떨굼 (바닥 총 %u, 맵 %u, %.2fs 떨어짐)\n",
-		pSession->PlayerId(), Shared::SpecOf(held).name, g.id, nWorld, g.drop.fallSeconds);
+	pSession->SetHeldWeapon(Shared::Weapon{});
+	printf("[총] 플레이어 %u : %s 떨굼 (바닥 총 %u, 맵 %u, %.2fs 떨어짐, 탄 %u / %u)\n",
+		pSession->PlayerId(), Shared::SpecOf(held).name, g.id, nWorld, g.drop.fallSeconds,
+		(unsigned)g.weapon.magazine, (unsigned)g.weapon.Spec().magazineSize);
 }
 
-//워커가 남긴 줍기 · 떨구기 요청을 처리한다. 같은 틱에 둘 다 왔으면 떨구기 → 줍기 순서.
-void HandleWeaponRequests(const SessionPtr &pSession)
+//장전 요청(2026-11-27) — 되면(Weapon::StartReload) 당사자에게 «장전 중» 을 알린다. 안 되면(탄창 가득 · 이미 장전 중 · 빈손) 무시.
+void HandleReloadRequest(const SessionPtr &pSession)
 {
-	bool bPickup = false, bDrop = false;
-	uint8_t source = 0;
-	uint32_t id = 0;
-	pSession->TakeWeaponRequests(bPickup, source, id, bDrop);
-	if (!bPickup && !bDrop) return;
-	if (!pSession->InWorld() || !pSession->HasPos()) return;
+	Shared::Weapon &weapon = pSession->HeldWeaponState();
+	if (!weapon.StartReload()) return;
+	SendAmmo(pSession);
+	printf("[탄] 플레이어 %u : %s 장전 시작 (%.1fs, 탄 %u / %u)\n", pSession->PlayerId(), weapon.Spec().name,
+		weapon.Spec().reloadSeconds, (unsigned)weapon.magazine, (unsigned)weapon.Spec().magazineSize);
+}
 
-	const uint32_t nWorld = pSession->World();
+//줍기 요청 — 진열(게임 맵) 또는 바닥 총. 거리를 다시 재고, 들고 있으면 떨군 뒤 바꿔 든다.
+//  (2026-11-27 HandleWeaponRequests 에서 떼어 냈다 — 동작 같음, 탄 상태만 더함)
+void HandlePickupRequest(const SessionPtr &pSession, uint32_t nWorld, uint8_t source, uint32_t id)
+{
 	ServerWorld &world = g_worlds[nWorld];
 	const UINT32 nPlayerId = pSession->PlayerId();
 
-	if (bDrop && Shared::IsWeaponType(pSession->HeldWeapon()))
-	{
-		DropHeldWeapon(pSession, nWorld);
-		const Shared::WeaponEquipPacket equip = MakeEquip(nPlayerId, Shared::WeaponType::None);
-		SendToWorld(nWorld, &equip, (int)sizeof(equip), 0);
-	}
-
-	if (!bPickup) return;
-
-	//줍는 총 — 진열(게임 맵) 또는 바닥 총
+	//줍는 총 — 진열(게임 맵) 또는 바닥 총. 탄 상태 = 진열이면 가득, 바닥 총이면 떨군 때 그대로(2026-11-27).
 	Shared::WeaponType type = Shared::WeaponType::None;
+	Shared::Weapon picked;
 	Shared::Vec3d where{};
 	size_t nGroundIndex = (size_t)-1;
 	if (source == Shared::kPickupFromShowcase)
 	{
 		if (!world.hasShowcase || id >= Shared::kWeaponShowcaseSlotCount) return;
 		type = world.showcase[id].type;
+		picked = Shared::Weapon(type);
 		where = world.showcase[id].position;
 	}
 	else if (source == Shared::kPickupFromGround)
@@ -1482,12 +1536,13 @@ void HandleWeaponRequests(const SessionPtr &pSession)
 			if (world.ground[i].id != id) continue;
 			nGroundIndex = i;
 			type = world.ground[i].type;
+			picked = world.ground[i].weapon;
 			where = world.ground[i].drop.rest.position;
 			break;
 		}
 		if (nGroundIndex == (size_t)-1) return;		//그 사이 누가 주웠다
 	}
-	if (!Shared::IsWeaponType(type)) return;
+	if (!Shared::IsWeaponType(type) || picked.type != type) return;
 
 	//거리 — 서버가 아는 위치에서 다시 잰다(클라 예측과 조금 다를 수 있어 여유를 둔다)
 	const Shared::Vec3d body = pSession->Move().position;
@@ -1514,11 +1569,41 @@ void HandleWeaponRequests(const SessionPtr &pSession)
 		}
 	}
 
-	pSession->SetHeldWeapon(type);
+	pSession->SetHeldWeapon(picked);
 	const Shared::WeaponEquipPacket equip = MakeEquip(nPlayerId, type);
 	SendToWorld(nWorld, &equip, (int)sizeof(equip), 0);
-	printf("[총] 플레이어 %u : %s 주움 (%s, %.1fm)\n", nPlayerId, Shared::SpecOf(type).name,
-		source == Shared::kPickupFromShowcase ? "공중 진열" : "바닥", fDist);
+	SendAmmo(pSession);		//그 총의 탄 상태(2026-11-27) — 든 총(WeaponEquip) 뒤에 보낸다
+	printf("[총] 플레이어 %u : %s 주움 (%s, %.1fm, 탄 %u / %u)\n", nPlayerId, Shared::SpecOf(type).name,
+		source == Shared::kPickupFromShowcase ? "공중 진열" : "바닥", fDist,
+		(unsigned)picked.magazine, (unsigned)picked.Spec().magazineSize);
+}
+
+//워커가 남긴 줍기 · 떨구기 · 장전 요청을 처리한다. 같은 틱에 여럿 왔으면 떨구기 → 줍기 → 장전 순서.
+void HandleWeaponRequests(const SessionPtr &pSession)
+{
+	bool bPickup = false, bDrop = false, bReload = false;
+	uint8_t source = 0;
+	uint32_t id = 0;
+	pSession->TakeWeaponRequests(bPickup, source, id, bDrop, bReload);
+	if (!bPickup && !bDrop && !bReload) return;
+	if (!pSession->InWorld() || !pSession->HasPos()) return;
+
+	const uint32_t nWorld = pSession->World();
+	const UINT32 nPlayerId = pSession->PlayerId();
+
+	if (bDrop && Shared::IsWeaponType(pSession->HeldWeapon()))
+	{
+		DropHeldWeapon(pSession, nWorld);
+		const Shared::WeaponEquipPacket equip = MakeEquip(nPlayerId, Shared::WeaponType::None);
+		SendToWorld(nWorld, &equip, (int)sizeof(equip), 0);
+		SendAmmo(pSession);		//빈손(2026-11-27)
+	}
+
+	if (bPickup)
+		HandlePickupRequest(pSession, nWorld, source, id);
+
+	if (bReload)
+		HandleReloadRequest(pSession);
 }
 
 //그 맵에 새로 들어온 사람에게 — 바닥 총 전부(누운 자세) · 다른 사람이 든 총 · 자기 총.
@@ -1542,6 +1627,9 @@ void SendWeaponSnapshot(const SessionPtr &pSession, const std::vector<SessionPtr
 		const Shared::WeaponEquipPacket equip = MakeEquip(list[i]->PlayerId(), held);
 		pSession->Send(&equip, (int)sizeof(equip));
 	}
+
+	//자기 총의 탄 상태(2026-11-27) — 접속 직후 · 맵을 바꾼 뒤. 자기 총(WeaponEquip, 위 반복)보다 뒤에.
+	SendAmmo(pSession);
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -1673,11 +1761,20 @@ DWORD WINAPI ThreadNpcTick(LPVOID pParam)
 
 			//0-2) 총 (2026-11-15) — 그 맵에 새로 들어온 사람에게 바닥 총 · 든 총을 보내고, 줍기 · 떨구기 요청을 처리한다.
 			//     ★ 이동 판정 뒤 — 떨군 총의 손 자리 · 줍기 거리를 이번 틱 위치로 잰다.
+			//     ★ 2026-11-27 장전 — 하던 장전의 시간을 흐른 만큼 줄이고, 다 되면 채워서 알린다. 이번 틱에 시작한 장전은 다음 틱부터 줄인다
+			//       (요청 처리보다 먼저). 맵을 바꾸는 중(맵 밖)에는 시계가 멈춘다.
 			for (size_t i = 0; i < list.size(); ++i)
 			{
 				if (!list[i]->InWorld()) continue;
 				if (list[i]->TakeWeaponSnapshot())
 					SendWeaponSnapshot(list[i], list);
+				Shared::Weapon &weapon = list[i]->HeldWeaponState();
+				if (weapon.AdvanceReload((float)elapsed))
+				{
+					SendAmmo(list[i]);
+					printf("[탄] 플레이어 %u : %s 장전 끝 (탄 %u / %u)\n", list[i]->PlayerId(), weapon.Spec().name,
+						(unsigned)weapon.magazine, (unsigned)weapon.Spec().magazineSize);
+				}
 				HandleWeaponRequests(list[i]);
 			}
 

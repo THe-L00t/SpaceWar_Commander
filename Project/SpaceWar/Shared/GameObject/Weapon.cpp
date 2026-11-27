@@ -69,13 +69,14 @@ namespace Shared {
 		constexpr WeaponSpec kSpecs[kWeaponTypeCount] =
 		{
 		//  총구 = 3인칭 glb 의 Muzzle 노드 translation(2026-11-15 파일에서 읽음 — 1인칭과 같은 자리).
-			// 이름          1인칭 glb                                      3인칭 glb                                      모드              탄               간격    피해   사거리  탄창  예비탄          장전   예광  눕힌 높이  총구 (x, y, z)                충돌 상자
-			{ "Pistol",     L"model\\weapon\\Pistol\\Pistol_FP.glb",         L"model\\weapon\\Pistol\\Pistol_TP.glb",         FireMode::Single, AmmoKind::Bullet, 0.20f, 25.0f, 130.0f,  12, kInfiniteAmmo, 1.5f, 0, 0.0162f, { 0.0f, 0.0349f, 0.1590f }, kPistolBoxes,     BoxCount(kPistolBoxes) },
-			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 15.0f, 130.0f,  10,  40,           2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
-			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 10.5f, 130.0f, 100, 200,           4.5f, 0, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
+			//  예비탄 열은 2026-11-27 뺐다(사용자 «예비탄없애고 … 몇 번이고 장전가능하게 할거야» — 그 전 권총 무한 · 라이플 40 · 기관총 200).
+			// 이름          1인칭 glb                                      3인칭 glb                                      모드              탄               간격    피해   사거리  탄창  장전   예광  눕힌 높이  총구 (x, y, z)                충돌 상자
+			{ "Pistol",     L"model\\weapon\\Pistol\\Pistol_FP.glb",         L"model\\weapon\\Pistol\\Pistol_TP.glb",         FireMode::Single, AmmoKind::Bullet, 0.20f, 25.0f, 130.0f,  12, 1.5f, 0, 0.0162f, { 0.0f, 0.0349f, 0.1590f }, kPistolBoxes,     BoxCount(kPistolBoxes) },
+			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 15.0f, 130.0f,  10, 2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
+			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 10.5f, 130.0f, 100, 4.5f, 0, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
 		};
 
-		constexpr WeaponSpec kNoSpec = { "", L"", L"", FireMode::Single, AmmoKind::Bullet, 0.0f, 0.0f, 0.0f, 0, 0, 0.0f, 1, 0.0f, { 0.0f, 0.0f, 0.0f }, nullptr, 0 };
+		constexpr WeaponSpec kNoSpec = { "", L"", L"", FireMode::Single, AmmoKind::Bullet, 0.0f, 0.0f, 0.0f, 0, 0.0f, 1, 0.0f, { 0.0f, 0.0f, 0.0f }, nullptr, 0 };
 
 	} // namespace
 
@@ -87,8 +88,61 @@ namespace Shared {
 	Weapon::Weapon(WeaponType weaponType)
 		: type(weaponType)
 		, magazine(SpecOf(weaponType).magazineSize)
-		, reserve(SpecOf(weaponType).reserveAmmo)
 	{
+	}
+
+	// ── 탄 · 장전 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») ──
+	//  서버 판정(Server/main.cpp ResolveFire · HandleWeaponRequests · 틱 루프)과 오프라인 클라(Engine)가 같은 함수를 부른다.
+
+	bool Weapon::CanFire() const
+	{
+		return Held() && !Reloading() && magazine > 0;
+	}
+
+	bool Weapon::ConsumeShot()
+	{
+		if (!CanFire()) return false;
+		--magazine;
+		return true;
+	}
+
+	bool Weapon::CanReload() const
+	{
+		return Held() && !Reloading() && magazine < Spec().magazineSize;   // 예비탄 없음 — 몇 번이고 된다(2026-11-27)
+	}
+
+	bool Weapon::StartReload()
+	{
+		if (!CanReload()) return false;
+		reloadLeft = Spec().reloadSeconds;
+		if (reloadLeft <= 0.0f)
+			FinishReload();
+		return true;
+	}
+
+	bool Weapon::AdvanceReload(float seconds)
+	{
+		if (!Reloading()) return false;
+		reloadLeft -= seconds;
+		if (reloadLeft > 0.0f) return false;
+		FinishReload();
+		return true;
+	}
+
+	float Weapon::ReloadProgress() const
+	{
+		const float duration = Spec().reloadSeconds;
+		if (!Reloading() || duration <= 0.0f) return 0.0f;
+		const float progress = 1.0f - reloadLeft / duration;
+		return progress < 0.0f ? 0.0f : (progress > 1.0f ? 1.0f : progress);
+	}
+
+	// 탄창을 가득 채운다 — 예비탄이 없어 늘 최대 장탄수(magazineSize)까지(2026-11-27 사용자 «몇 번이고 장전가능하게 할거야»).
+	//  (그 전 팀원 명세 transfer = min(capacity − ammo, reserve) 는 같은 날 뺐다.)
+	void Weapon::FinishReload()
+	{
+		reloadLeft = 0.0f;
+		magazine = Spec().magazineSize;
 	}
 
 } // namespace Shared

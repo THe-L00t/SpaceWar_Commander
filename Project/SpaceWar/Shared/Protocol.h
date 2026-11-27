@@ -42,6 +42,10 @@ enum class PacketType : uint16_t {
 
     // ── NPC 명중 표시 (2026-11-16) — ★ 끝에 붙인다 ──
     NpcHit,              // 서버 -> 쏜 사람 : 네 발이 이 NPC 에 맞았다(쓰러뜨린 발 포함)
+
+    // ── 탄 · 장전 (2026-11-27, Shared/GameObject/Weapon.h) — ★ 끝에 붙인다 ──
+    WeaponReload,        // 클라 -> 서버 : 장전한다(장전 키)
+    WeaponAmmo,          // 서버 -> 당사자 : 내 든 총의 현재 탄수 · 장전 남은 시간
 };
 
 // 모든 패킷 공통 헤더
@@ -260,6 +264,28 @@ struct NpcHitPacket {
     uint32_t     npcId;
 };
 
+// ── 탄 · 장전 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») ──────
+//  ★ 서버 권위 — 한 발마다 탄을 빼고(빈 탄창 · 장전 중이면 그 발을 버린다) 장전 시간을 재는 것은 서버다(명세 18절 원칙 4).
+//    클라는 장전 키를 «요청» 만 하고, 받은 탄 수로 HUD 를 그리고 빈 탄창이면 쏘지 않는다. 규칙 = Shared::Weapon(Weapon.h).
+
+// 클라 -> 서버 : 장전한다. 서버가 Weapon::StartReload 로 되는지 본다(탄창이 가득 · 이미 장전 중 · 빈손이면 무시 — 예비탄은 없다).
+struct WeaponReloadPacket {
+    PacketHeader header;
+    uint32_t     reserved;
+};
+
+// 서버 -> 당사자 : 내 든 총의 탄 상태. 바뀔 때마다 — 받아 준 발 · 장전 시작 · 장전 끝 · 줍기 · 떨구기 · 맵에 들어올 때.
+//  weaponType 이 지금 든 총(WeaponEquip)과 다르면 앞 총의 것이다 — 클라는 같은 총일 때만 쓴다.
+//  장전 남은 시간은 보낸 순간의 값이다. 클라는 받은 뒤 흐른 시간만큼 줄여 진행률을 그리고, 끝은 서버의 다음 알림으로 안다.
+//  ★ 예비탄 칸은 2026-11-27 뺐다(사용자 «클래스에서도 예비탄 부분 빼») — 16 B → 12 B. 최대 장탄수는 총 종류 표(WeaponSpec::magazineSize)에 있다.
+struct WeaponAmmoPacket {
+    PacketHeader header;
+    uint8_t      weaponType;    // Shared::WeaponType (0xFF = 빈손)
+    uint8_t      pad0;
+    uint16_t     magazine;      // 현재 탄수(탄창에 남은 탄)
+    float        reloadLeft;    // 장전 남은 시간 (s). 0 = 장전 중 아님
+};
+
 // ── 크기 확인 ────────────────────────────────────────────────
 //  구조체를 그대로 바이트로 보내므로 크기가 어긋나면 좌표가 통째로 깨진다.
 //  런타임에 이상한 값이 나오는 것보다 컴파일이 실패하는 편이 낫다.
@@ -282,5 +308,7 @@ static_assert(sizeof(WeaponEquipPacket)       == 12, "WeaponEquipPacket 크기 �
 static_assert(sizeof(GroundWeaponSpawnPacket) == 88, "GroundWeaponSpawnPacket 크기 변경됨");
 static_assert(sizeof(GroundWeaponRemovePacket) == 8, "GroundWeaponRemovePacket 크기 변경됨");
 static_assert(sizeof(NpcHitPacket)            ==  8, "NpcHitPacket 크기 변경됨");
+static_assert(sizeof(WeaponReloadPacket)      ==  8, "WeaponReloadPacket 크기 변경됨");
+static_assert(sizeof(WeaponAmmoPacket)        == 12, "WeaponAmmoPacket 크기 변경됨");
 
 } // namespace Shared
