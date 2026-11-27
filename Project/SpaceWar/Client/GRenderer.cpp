@@ -5688,7 +5688,7 @@ namespace swc {
 			for (const InstanceData& it : rtItems)
 			{
 				// 행렬식 ≈ 0 인 인스턴스는 래스터처럼 RT 에서도 뺀다.
-				// 2026-11-16 — kInstanceNoRayTracing(예광탄)은 래스터에만 그리고 TLAS 에는 넣지 않는다.
+				// 2026-11-16 — kInstanceNoRayTracing(레이저탄)은 래스터에만 그리고 TLAS 에는 넣지 않는다.
 				// 2026-11-17 — 놓은 메시(GRenderer::Release)도 뺀다.
 				if (!impl->MeshUsable(it.mesh) || (it.flags & (kInstanceDegenerate | kInstanceNoRayTracing))) continue;
 				const Impl::MeshGpu& mesh = impl->meshes[it.mesh];

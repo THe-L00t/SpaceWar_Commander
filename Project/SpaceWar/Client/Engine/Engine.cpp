@@ -48,14 +48,22 @@ namespace
 	// 행성 모델 GPU 업로드처럼 무거운 것이 한 프레임에 겹치지 않게 1 로 둔다.
 	constexpr size_t kLoadFinishesPerFrame = 1;
 
-	// ── 사격 효과 (임시) ───────────────────────────────────
-	//  판정과 무관한 «보이는 것» 이다. 어디에 맞았는지는 서버만 아므로 길이는 고정이다.
+	// ── 레이저탄 (임시) ───────────────────────────────────
+	//  2026-11-27 사용자 «예광빔 그 녀석을 레이저탄으로 목적을 수정해줘» — 예광탄(총알 길 표시)이 아니라
+	//  레이저 라이플이 쏘는 «레이저탄» 자체다(AmmoKind::Laser — 빔 자체가 보인다). 색 = 앰버(같은 날).
+	//  판정과 무관한 «보이는 것» 이다. 맞았는지는 서버가 정한다 — 길이는 클라가 처음 닿는 곳까지 잰다.
 	//  맞은 표시·총구 화염·소리는 없다.
-	constexpr float  kTracerLife = 0.06f;     // 보이는 시간 (s)
-	constexpr float  kTracerStart = 0.05f;    // 총구 앞에서 시작 (m) — 2026-11-15 원점이 몸통 중심 → 든 총의 총구로 바뀌어 1.5 → 0.05
-	constexpr float  kTracerLength = 120.0f;  // 가장 긴 길이 (m) — 지평선이 125m 다. 2026-11-16 부터 그 전에 닿으면 거기까지만
-	constexpr float  kTracerMinLength = 0.05f; // 이보다 짧으면 그리지 않는다(총구가 벽 · 땅에 붙어 있을 때)
-	constexpr size_t kTracerPool = 4;         // 동시에 보일 수 있는 수
+	//  ★ 2026-11-27 사용자 «apex속도로 작업해줘봐바» — 맞은 곳까지 한 번에 그려 0.06 s 뒤 끄던 막대(kLaserBoltLife) →
+	//    짧은 토막이 발사선을 따라 날아간다(Apex L-STAR 볼트 610 m/s). 판정은 그대로 히트스캔(쏜 순간 서버가 정한다) —
+	//    날아가는 것은 꾸밈이라, 맞은 곳 파티클 · 히트마커가 토막보다 먼저 보일 수 있다(60 m 면 약 0.1 s).
+	constexpr float  kLaserBoltSpeed = 610.0f;   // 날아가는 속도 (m/s) — Apex L-STAR(apexlegends.wiki.gg L-STAR_EMG)
+	constexpr float  kLaserBoltSegment = 10.0f;  // 토막 길이 (m) — 610 m/s ÷ 60 fps ≈ 10 m(한 프레임에 가는 거리). 이보다 짧으면 프레임 사이가 빈다(임시 값)
+	constexpr float  kLaserBoltStart = 0.05f;    // 총구 앞에서 시작 (m) — 2026-11-15 원점이 몸통 중심 → 든 총의 총구로 바뀌어 1.5 → 0.05
+	constexpr float  kLaserBoltLength = 120.0f;  // 가장 멀리 가는 거리 (m) — 지평선이 125m 다. 2026-11-16 부터 그 전에 닿으면 거기까지만
+	constexpr float  kLaserBoltMinLength = 0.05f; // 이보다 짧으면 그리지 않는다(총구가 벽 · 땅에 붙어 있을 때)
+	//  동시에 보일 수 있는 수. 날아 있는 수 ≈ 초당 9발 × (120 + 10) m ÷ 610 m/s ≈ 2 → 4 면 넉넉하다.
+	//  속도를 낮추면 늘릴 것 — 모자라면 가장 오래된 토막을 공중에서 빼 다시 쓴다(날던 토막이 사라진다).
+	constexpr size_t kLaserBoltPool = 4;
 	// ── 피를 서버 확인 뒤에 띄울지 (2026-11-17 사용자 피 위치 «이것도 구현만 하고 아직 적용은 하지 마») ──
 	//  false(지금) = 내 발이 몸에 맞은 그 프레임에 바로 피. true = 맞은 자리를 기억해 두었다가(ParticleSystem::RememberBodyHit)
 	//  서버가 NpcHit 로 «맞았다» 고 알리면 그 자리에 피(ConfirmNpcHits). 플레이어 몸은 아직 확인을 잇지 않았다(PlayerHealth 연결 전).
@@ -233,7 +241,7 @@ namespace
 	constexpr float  kLod1Px = 600.0f;
 	constexpr float  kLod2Px = 150.0f;
 	constexpr float  kLod3Px = 60.0f;
-	// 래스터 오브젝트 예산의 여유(인스턴스) — 고른 뒤 NPC · 원격 플레이어 · 예광탄 노드가 늘어도 렌더러 상한 8,192 를 넘지 않게
+	// 래스터 오브젝트 예산의 여유(인스턴스) — 고른 뒤 NPC · 원격 플레이어 · 레이저탄 노드가 늘어도 렌더러 상한 8,192 를 넘지 않게
 	//  (넘으면 렌더러가 패킷 뒤쪽을 버려 무엇이 빠질지 정할 수 없다). 2026-11-17 render/tlas-select 임시 값.
 	constexpr size_t kRasterReserve         = 256;
 
@@ -669,7 +677,7 @@ namespace swc {
 	//                       → (메인) 지형 연결 · GPU 업로드 · 씬 배치 · RAM 사본 해제
 	//         (로딩 스레드) 하늘 행성 LOD2·LOD3   → (메인) LOD 마다 GPU 업로드 · RAM 사본 해제
 	//         (로딩 스레드) 캐릭터 모델 파싱       → (메인) GPU 업로드 · 애니메이션 · RAM 사본 해제
-	//  단계 1 (메인)        예광탄 · 플레이어 노드 · 스폰(지형을 쓰므로 단계 0 뒤) · 서버 접속
+	//  단계 1 (메인)        레이저탄 · 플레이어 노드 · 스폰(지형을 쓰므로 단계 0 뒤) · 서버 접속
 	//
 	//  ★ GPU 업로드는 메인에서 한다 — 렌더 몫(명세 ⑥). 한 프레임에 하나씩(kLoadFinishesPerFrame).
 	//  ★ 접지면은 로딩 스레드가 «자기 결과 슬롯» 에 만든다 (onParsed 훅, 2026-10-11)
@@ -982,25 +990,26 @@ namespace swc {
 		batch.Add(L"씬 구성", nullptr,
 			[this](bool)
 			{
-				// 예광탄 — +Z 로 1m 길이. 쏠 때 Z 만 늘려 발사선에 놓는다.
-				MeshData tracerData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.85f, 0.30f });
-				tracerMesh = renderer.CreateMesh(
-					tracerData.vertices.data(), tracerData.vertices.size(),
-					tracerData.indices.data(), tracerData.indices.size());
+				// 레이저탄(2026-11-27 예광탄 → 레이저탄) — +Z 로 1m 길이. Z 만 토막 길이로 늘려 발사선 위를 날린다(같은 날 610 m/s 토막).
+				// 2026-11-27 사용자 «레이저 메쉬 색을 노랑 주황 사이로» — { 1.00, 0.85, 0.30 } → 앰버 { 1.00, 0.65, 0.10 }
+				MeshData laserBoltData = MakeBox(0.10f, 0.10f, 1.0f, { 1.00f, 0.65f, 0.10f });
+				laserBoltMesh = renderer.CreateMesh(
+					laserBoltData.vertices.data(), laserBoltData.vertices.size(),
+					laserBoltData.indices.data(), laserBoltData.indices.size());
 
 				// 모델은 루트(이동) + 표시 보정 + OBJ 오브젝트 노드로 펼쳐진다. 반환값이 이동 루트다.
 				// 화면 밖으로 치울 때도 이 루트만 옮기면 자식이 따라온다.
 				player = characterModel.Instantiate(scene);
 
-				// 예광탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
-				freeTracerNodes.reserve(kTracerPool);
-				for (size_t i = 0; i < kTracerPool; ++i)
+				// 레이저탄 노드는 미리 만들어 화면 밖에 치워 둔다. 쏠 때 하나 꺼내 쓰고 되돌린다.
+				freeLaserBoltNodes.reserve(kLaserBoltPool);
+				for (size_t i = 0; i < kLaserBoltPool; ++i)
 				{
-					const NodeHandle tracer = scene.AddNode(kInvalidNode, tracerMesh, 0);
-					scene.SetLocalTransform(tracer, ParkedTransform());
+					const NodeHandle bolt = scene.AddNode(kInvalidNode, laserBoltMesh, 0);
+					scene.SetLocalTransform(bolt, ParkedTransform());
 					// 2026-11-16 사용자 «예광탄 빼. 총알이 날아가는 경로에 그림자 생겨서 이상해» — TLAS 에서 뺀다(화면에는 그린다).
-					scene.SetRayTracingExcluded(tracer, true);
-					freeTracerNodes.push_back(tracer);
+					scene.SetRayTracingExcluded(bolt, true);
+					freeLaserBoltNodes.push_back(bolt);
 				}
 
 				// 공통 시작 방향(Landing L1)을 사용하고 실제 지면·플랫폼 높이에 맞춘다 (client2 2f15728).
@@ -1867,7 +1876,7 @@ namespace swc {
 
 	// 래스터 오브젝트 예산 (2026-11-17 render/tlas-select, 사용자 «레스터 제한 풀어버려») —
 	//  고정 3,500 대신 렌더러 래스터 상한(패스당 인스턴스 8,192 — 넘으면 렌더러가 버린다)에서
-	//  예시 행성 장면의 다른 래스터 몫(지형 · 길 · 캐릭터 · 총 · NPC · 예광탄 노드 …, 앞 프레임에 센 값)과 여유를 뺀 값.
+	//  예시 행성 장면의 다른 래스터 몫(지형 · 길 · 캐릭터 · 총 · NPC · 레이저탄 노드 …, 앞 프레임에 센 값)과 여유를 뺀 값.
 	size_t Engine::RasterObjectBudget() const
 	{
 		const size_t cap = renderer.RasterMaxInstances();
@@ -1993,21 +2002,22 @@ namespace swc {
 	//  ★ 2026-11-15 든 총으로만 쏜다 — 단발(권총 · 레이저 라이플) = 누른 순간, 연발(기관총) = 누르고 있는 동안 발 간격마다.
 	//    빈손이면 쏘지 않는다. (그 전: 총 없이 누른 순간 한 발, 몸통 중심에서)
 	//  ★ 클라는 «어디서 어디로» 만 보낸다. 맞았는지는 서버가 정한다 (명세 18절 원칙 4).
-	//    그래서 예광탄은 «맞은 곳» 이 아니라 고정 길이로 그린다. 서버 판정과 무관하다.
+	//    그래서 레이저탄은 서버 답을 기다리지 않고 클라가 잰 «처음 닿는 곳» 까지 그린다. 서버 판정과 무관하다.
 	//    총구 = 손에 든 총의 Muzzle 자리. 1인칭으로 바꾸면 이 원점만 눈 위치로 옮기면 된다.
 	void Engine::UpdateFire(float dt)
 	{
-		// 1) 보이는 예광탄의 수명을 줄이고, 끝난 것은 치운다.
-		for (size_t i = 0; i < tracers.size(); )
+		// 1) 날아가는 레이저탄을 앞으로 옮기고, 맞은 곳으로 다 들어간 것은 치운다.
+		//  ★ 2026-11-27 — 수명(0.06 s)을 줄이던 것 → 앞 끝을 kLaserBoltSpeed × dt 만큼 민다(PlaceLaserBolt 가 자리를 잡는다).
+		for (size_t i = 0; i < laserBolts.size(); )
 		{
-			tracers[i].life -= dt;
-			if (tracers[i].life > 0.0f) { ++i; continue; }
+			laserBolts[i].head += double(kLaserBoltSpeed) * double(dt);
+			if (PlaceLaserBolt(laserBolts[i])) { ++i; continue; }
 
-			scene.SetLocalTransform(tracers[i].node, ParkedTransform());
-			freeTracerNodes.push_back(tracers[i].node);
+			scene.SetLocalTransform(laserBolts[i].node, ParkedTransform());
+			freeLaserBoltNodes.push_back(laserBolts[i].node);
 
-			tracers[i] = tracers.back();
-			tracers.pop_back();
+			laserBolts[i] = laserBolts.back();
+			laserBolts.pop_back();
 		}
 
 		// 2) 이번 프레임에 쐈는가.
@@ -2053,17 +2063,18 @@ namespace swc {
 		// 효과는 접속 여부와 무관하게 보인다. 판정만 서버 몫이다.
 		// 서버가 지금 맵에 넣어 준 뒤에만 보낸다(2026-11-01 맵 번호) — 들어가는 중 · 서버에 맵이 없으면 판정할 곳이 없다.
 		const bool send = network.Connected() && network.JoinedWorld() == CurrentWorld();
-		// 예광탄 — 그 총의 tracerEvery 발마다 하나, 0 이면 없음(2026-11-15 세 총 모두 매 발 → 2026-11-20 라이플만, 권총 · 기관총 0)
+		// 레이저탄 — 그 총의 laserBoltEvery 발마다 하나, 0 이면 없음(2026-11-15 세 총 모두 매 발 → 2026-11-20 라이플만, 권총 · 기관총 0
+		//  → 2026-11-27 예광탄 → 레이저탄: 레이저 라이플의 탄 자체. 권총 · 기관총은 총알이라 보이지 않는다)
 		//  ★ 2026-11-16 사용자 «예광탄은 여전히 언덕을 뚫고 생기는데 이것도 수정해줘» — 예전에는 늘 120 m 막대라
 		//    겨눈 점이 언덕 · 벽이어도 그 너머까지 그려졌다. 이제 총구에서 이 발의 선(총구 → 겨눈 점)이 처음 닿는 곳까지만 —
 		//    서버 판정과 같은 함수(TraceShot)로 같은 원점 · 방향을 본다. 몸이면 몸통 중심 가까이까지. 한 프레임의 발은 원점 · 방향이 같아 한 번만 잰다.
-		const uint32_t every = spec.tracerEvery;
+		const uint32_t every = spec.laserBoltEvery;
 		const Shared::ShotHit along = TraceVisibleShot(muzzle, aim,
-			(std::min)(double(spec.range), double(kTracerStart) + double(kTracerLength)), 0.0);
-		const double tracerEnd = along.distance;   // 2026-11-25 — 몸이면 충돌체에 닿은 점(예전 구 대역 때는 몸통 중심에 가장 가까운 점)
-		const float tracerLength = float((std::min)(double(kTracerLength), tracerEnd - double(kTracerStart)));
+			(std::min)(double(spec.range), double(kLaserBoltStart) + double(kLaserBoltLength)), 0.0);
+		const double laserBoltEnd = along.distance;   // 2026-11-25 — 몸이면 충돌체에 닿은 점(예전 구 대역 때는 몸통 중심에 가장 가까운 점)
+		const float laserBoltLength = float((std::min)(double(kLaserBoltLength), laserBoltEnd - double(kLaserBoltStart)));
 
-		// ── 피격 파티클 (2026-11-17) — 예광탄과 같은 선이 처음 닿는 곳. 내 발은 서버를 기다리지 않고 이 프레임에 만든다 ──
+		// ── 피격 파티클 (2026-11-17) — 레이저탄과 같은 선이 처음 닿는 곳. 내 발은 서버를 기다리지 않고 이 프레임에 만든다 ──
 		//  튀는 쪽: 지면이면 그 자리의 행성 위쪽, 나머지는 쏜 방향의 반대(Shared::ShotHit 에 표면 법선이 아직 없다).
 		//  몸이면 맞은 NPC 번호도 알아 둔다 — TraceVisibleShot 의 몸 목록은 «원격 플레이어 → NPC» 순서다.
 		ParticleSystem::Surface impactSurface = ParticleSystem::Surface::Ground;
@@ -2094,7 +2105,7 @@ namespace swc {
 			if (send)
 				network.SendFire(origin, dir);
 			if (every > 0 && shotsFired++ % every == 0)
-				SpawnTracer(muzzle, aim, tracerLength);
+				SpawnLaserBolt(muzzle, aim, laserBoltLength);
 			if (impact)
 			{
 				if (impactSurface == ParticleSystem::Surface::Body && kBloodWaitsForServer)
@@ -2166,24 +2177,26 @@ namespace swc {
 		return Shared::TraceShot(world, origin, direction, maxDistance, targets.data(), targets.size(), options);
 	}
 
-	// 발사선 위에 상자를 놓는다. +Z 를 조준 방향에 맞추고 Z 만 길이만큼 늘린다.
-	//  2026-11-16 — 길이는 부르는 쪽이 정한다(처음 닿는 곳까지, kTracerLength 까지). 너무 짧으면 그리지 않는다.
-	void Engine::SpawnTracer(const Vec3d& muzzle, const Vec3d& aim, float length)
+	// 레이저탄 — 발사선 위에 상자 토막을 놓고 날린다. +Z 를 조준 방향에 맞추고 Z 만 토막 길이만큼 늘린다.
+	//  2026-11-16 — 길이는 부르는 쪽이 정한다(처음 닿는 곳까지, kLaserBoltLength 까지). 너무 짧으면 그리지 않는다.
+	//  ★ 2026-11-27 — 길이만큼 한 번에 그리던 막대 → 그 길이 끝(처음 닿는 곳)까지 날아가는 토막(kLaserBoltSpeed · kLaserBoltSegment).
+	//    쏜 프레임에는 앞 끝이 총구라 보이지 않고, 다음 프레임부터 날아간다(UpdateFire 1).
+	void Engine::SpawnLaserBolt(const Vec3d& muzzle, const Vec3d& aim, float length)
 	{
-		if (tracerMesh == kInvalidMesh || !(length >= kTracerMinLength)) return;
+		if (laserBoltMesh == kInvalidMesh || !(length >= kLaserBoltMinLength)) return;
 
 		NodeHandle node = kInvalidNode;
 
-		if (!freeTracerNodes.empty())
+		if (!freeLaserBoltNodes.empty())
 		{
-			node = freeTracerNodes.back();
-			freeTracerNodes.pop_back();
+			node = freeLaserBoltNodes.back();
+			freeLaserBoltNodes.pop_back();
 		}
-		else if (!tracers.empty())
+		else if (!laserBolts.empty())
 		{
 			// 풀이 다 차 있다 = 가장 오래된 것을 빼서 다시 쓴다.
-			node = tracers.front().node;
-			tracers.erase(tracers.begin());
+			node = laserBolts.front().node;
+			laserBolts.erase(laserBolts.begin());
 		}
 		else
 		{
@@ -2199,22 +2212,48 @@ namespace swc {
 		const Vec3d xAxis = Normalize(xRaw);
 		const Vec3d yAxis = Cross(zAxis, xAxis);
 
-		const Vec3d center = muzzle + aim * (double(kTracerStart) + double(length) * 0.5);
+		LaserBolt bolt;
+		bolt.node = node;
+		bolt.origin = muzzle;
+		bolt.dir = zAxis;
+		bolt.side = xAxis;
+		bolt.lift = yAxis;
+		bolt.head = double(kLaserBoltStart);                   // 아직 총구 — 다음 프레임부터 민다
+		bolt.end = double(kLaserBoltStart) + double(length);   // 처음 닿는 곳
+		PlaceLaserBolt(bolt);   // 쏜 프레임은 길이 0 → 숨긴다(풀이 차서 다시 쓴 노드가 예전 자리에 남지 않게)
+		laserBolts.push_back(bolt);
+	}
+
+	// 레이저탄 토막 하나를 지금 자리에 놓는다(2026-11-27 날아가는 토막).
+	//  앞 끝 = bolt.head 를 처음 닿는 곳(bolt.end)에서 멈추고, 꼬리 = 앞 끝 − kLaserBoltSegment(총구 앞 kLaserBoltStart 보다 뒤로는 안 감).
+	//  그래서 맞은 곳에 닿으면 앞부터 멈추고 꼬리가 따라 들어가며 짧아진다. 꼬리까지 들어가면 false(부르는 쪽이 치운다).
+	bool Engine::PlaceLaserBolt(const LaserBolt& bolt)
+	{
+		const double tail = (std::max)(double(kLaserBoltStart), bolt.head - double(kLaserBoltSegment));
+		const double head = (std::min)(bolt.head, bolt.end);
+		if (tail >= bolt.end) return false;   // 다 들어갔다
+
+		const double length = head - tail;
+		if (length < double(kLaserBoltMinLength))
+		{
+			// 쏜 프레임(앞 끝이 아직 총구) 또는 꼬리가 거의 다 들어갔을 때 — 숨겨만 둔다
+			scene.SetLocalTransform(bolt.node, ParkedTransform());
+			return true;
+		}
+
+		const Vec3d center = bolt.origin + bolt.dir * ((tail + head) * 0.5);
+		const float scale = float(length);
 
 		XMMATRIX m;
-		m.r[0] = XMVectorSet(float(xAxis.x), float(xAxis.y), float(xAxis.z), 0.0f);
-		m.r[1] = XMVectorSet(float(yAxis.x), float(yAxis.y), float(yAxis.z), 0.0f);
-		m.r[2] = XMVectorSet(float(zAxis.x) * length,
-			float(zAxis.y) * length,
-			float(zAxis.z) * length, 0.0f);
+		m.r[0] = XMVectorSet(float(bolt.side.x), float(bolt.side.y), float(bolt.side.z), 0.0f);
+		m.r[1] = XMVectorSet(float(bolt.lift.x), float(bolt.lift.y), float(bolt.lift.z), 0.0f);
+		m.r[2] = XMVectorSet(float(bolt.dir.x) * scale,
+			float(bolt.dir.y) * scale,
+			float(bolt.dir.z) * scale, 0.0f);
 		m.r[3] = XMVectorSet(float(center.x), float(center.y), float(center.z), 1.0f);
 
-		scene.SetLocalTransform(node, m);
-
-		Tracer t;
-		t.node = node;
-		t.life = kTracerLife;
-		tracers.push_back(t);
+		scene.SetLocalTransform(bolt.node, m);
+		return true;
 	}
 
 	// ★ 게임 로직 — 명세 2절상 Engine 몫이 아니다.
@@ -2454,7 +2493,7 @@ namespace swc {
 		// 2026-10-27 렌더 6단계 — 하늘 · 해 높이의 기준(행성 위 플레이어 자리의 위)
 		packet.view.up = XMFLOAT3(float(controller.Up().x), float(controller.Up().y), float(controller.Up().z));
 		// 2026-11-17 TLAS 목록 분리 — 예시 행성이면 TLAS 를 래스터 목록과 따로 만든다(kTlasSeparateDefault · 자동 측정 A/B).
-		//  기본 목록 = 래스터 목록에서 배치 오브젝트 · 예광탄 · 크기 0 을 뺀 것(지형 · 길 · 착륙장 · 캐릭터 · 든 총 …).
+		//  기본 목록 = 래스터 목록에서 배치 오브젝트 · 레이저탄 · 크기 0 을 뺀 것(지형 · 길 · 착륙장 · 캐릭터 · 든 총 …).
 		//  남는 자리(TLAS 상한 − 기본 목록) = 오브젝트 몫 → SelectTlasObjects 가 정한 규칙으로 고른 메시를 덧붙인다.
 		packet.rtInstances.clear();
 		packet.rtSeparate = false;

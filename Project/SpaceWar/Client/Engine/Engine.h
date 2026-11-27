@@ -106,13 +106,14 @@ namespace swc {
 		void UpdatePlayer(float);
 		void UpdateWeapons(float);     // 2026-11-15 — 바닥 총 소식 · 든 총 그리기 · 줍기 대상 · E 줍기 · G 떨구기
 		void UpdateFire(float);
-		// length = 총구 앞 kTracerStart 부터 그릴 길이(m). 2026-11-16 — 처음 닿는 곳까지만(언덕 · 벽을 뚫지 않게).
-		void SpawnTracer(const Vec3d& muzzle, const Vec3d& aim, float length);
+		// length = 총구 앞 kLaserBoltStart 부터 날아갈 거리(m). 2026-11-16 — 처음 닿는 곳까지만(언덕 · 벽을 뚫지 않게).
+		//  2026-11-27 — 막대를 한 번에 놓던 것 → 토막이 그 거리 끝까지 날아간다(PlaceLaserBolt).
+		void SpawnLaserBolt(const Vec3d& muzzle, const Vec3d& aim, float length);
 		// 2026-11-15 크로스헤어 맞추기 — 카메라 눈에서 화면 가운데(조준선)로 그은 선이 처음 닿는 곳(겨눈 점)을 찾아
 		//  총구에서 그 점으로 가는 방향을 돌려준다. 겨눌 것이 없으면 사거리 끝 점. range = 든 총의 사거리(m).
 		Vec3d AimDirection(const Vec3d& muzzle, double range) const;
 		// 2026-11-16 — 클라에서 한 발이 처음 닿는 곳(Shared::TraceShot). 몸 = 연결돼 있을 때 그려진 원격 · NPC 자리,
-		//  충돌체 · 지형 = 지금 맵, 지형 허용 0(실제 지면). 겨눈 점(AimDirection) · 예광탄 길이(UpdateFire)가 같이 쓴다.
+		//  충돌체 · 지형 = 지금 맵, 지형 허용 0(실제 지면). 겨눈 점(AimDirection) · 레이저탄 길이(UpdateFire)가 같이 쓴다.
 		Shared::ShotHit TraceVisibleShot(const Vec3d& origin, const Vec3d& direction, double maxDistance, double minDistance) const;
 		void UpdateNetwork(float);
 		void RenderFrame();
@@ -238,19 +239,27 @@ namespace swc {
 		const Shared::CollisionWorld* NpcBodyCollision() const;
 		void         ReleaseNpcNodes(uint32_t owner);     // 그 주인의 NPC 노드를 장면에서 비운다(LegacyScene::ClearSubtree — 다시 쓰지 않는다)
 
-		// ── 사격 효과 (임시) ────────────────────────────────
-		//  얇고 긴 상자를 발사선에 잠깐 놓는 것뿐이다. 명세에는 이펙트 자리가 없다 —
-		//  나중에 Scene 의 표시 요소나 파티클(설계 v1)로 옮긴다.
+		// ── 레이저탄 (임시) ────────────────────────────────
+		//  2026-11-27 예광탄 → 레이저탄(사용자 «예광빔 그 녀석을 레이저탄으로 목적을 수정해줘») — 레이저 라이플이 쏘는 탄 자체.
+		//  얇은 상자 토막이 발사선을 따라 날아가는 것뿐이다(2026-11-27 — 그 전에는 맞은 곳까지 막대를 0.06 s 놓았다).
+		//  명세에는 이펙트 자리가 없다 — 나중에 Scene 의 표시 요소나 파티클(설계 v1)로 옮긴다.
 		//  노드는 원격 플레이어와 같은 방식으로 재사용한다(Scene 에 삭제 API 가 없다).
-		struct Tracer
+		struct LaserBolt
 		{
 			NodeHandle node = kInvalidNode;
-			float      life = 0.0f;      // 남은 시간 (s)
+			Vec3d      origin{};       // 쏜 순간의 총구
+			Vec3d      dir{};          // 날아가는 방향(단위) = 상자 Z 축
+			Vec3d      side{};         // 상자 X 축(쏜 순간에 정한다)
+			Vec3d      lift{};         // 상자 Y 축
+			double     head = 0.0;     // 앞 끝이 총구에서 간 거리 (m) — 2026-11-27 남은 시간(life) 대신
+			double     end = 0.0;      // 처음 닿는 곳까지 거리 (m) — 앞 끝이 여기서 멈추고 꼬리가 따라 들어간다
 		};
 
-		MeshHandle              tracerMesh = kInvalidMesh;
-		std::vector<Tracer>     tracers;
-		std::vector<NodeHandle> freeTracerNodes;
+		MeshHandle              laserBoltMesh = kInvalidMesh;
+		std::vector<LaserBolt>  laserBolts;
+		std::vector<NodeHandle> freeLaserBoltNodes;
+		// 2026-11-27 — 토막 하나를 지금 자리(앞 끝 · 꼬리)에 놓는다. 꼬리까지 맞은 곳에 들어갔으면 false(치울 것).
+		bool PlaceLaserBolt(const LaserBolt& bolt);
 
 		// ── 피격 파티클 (2026-11-17, Client/Effects/ParticleSystem.h · 명세 21절) ──
 		//  UpdateFire 가 내 발이 처음 닿는 곳에 효과를 만들고, Run 이 매 프레임 움직이고(UpdateNetwork 뒤), RenderFrame 이 패킷에 담는다.
@@ -301,7 +310,7 @@ namespace swc {
 		};
 		PickupTarget              pickupTarget;     // 지금 E 로 주울 총(가장 가까운 것, Shared::kWeaponPickupRange 안)
 		float                     fireCooldown = 0.0f;   // 다음 발까지 남은 시간(s) — 든 총의 발 간격. 0 이면 «게이트가 열림»
-		uint32_t                  shotsFired = 0;        // 예광탄 간격(WeaponSpec::tracerEvery) 세기
+		uint32_t                  shotsFired = 0;        // 레이저탄 간격(WeaponSpec::laserBoltEvery) 세기
 		Shared::WeaponType HeldWeapon() const;           // 지금 든 총 종류 = localPlayer.weapon.type(접속 = 서버 값, 오프라인 = 직접)
 		Shared::MoveWorld  WeaponMoveWorld() const;      // 떨군 자리 · 진열 자리 계산용(planet · 지형)
 		void FindPickupTarget();
