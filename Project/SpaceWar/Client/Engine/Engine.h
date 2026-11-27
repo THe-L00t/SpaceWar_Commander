@@ -198,6 +198,7 @@ namespace swc {
 		// 2026-11-26 내 Player(명세 6.6 · DynamicObject 6.4.2) — 사용자 «다이나믹 클래스에 체력 만들고 UI에 체력바 연동 시켜줘».
 		//  지금은 health · maxHealth 만 쓴다: health = 서버가 판정한 값(Network::MyHealth, 6.13 · 18절 원칙 4), maxHealth = Shared::Player 기본값 100(Shared::kMaxHealth — Player.cpp).
 		//  HUD 체력바는 이 값을 읽는다(UpdateHud). 위치 · 이동은 아직 controller · player 노드가 든다(다른 것은 옮기지 않았다).
+		//  2026-11-27 든 총(weapon — 종류 · 현재 탄수 · 장전)도 여기 — 접속 중 = 서버 값(Network::MyWeaponState), 오프라인 = 직접. HUD 장탄수가 읽는다.
 		Shared::Player         localPlayer;
 		Vec3d                  spawnPosition;     // 접지 보정한 시작 위치. 표시 시 재조회하지 않는다.
 
@@ -282,9 +283,13 @@ namespace swc {
 		//  사용자: «주우면 애니메이션 시에 적절한 위치에 총을 고정시키고, 쏠 수 있도록 해줘. 줍기, 떨구기 둘 다 구현하면 되는거야.
 		//          이때 공중에 있는것을 줍고, 떨구면 땅바닥에 떨어지도록. 공중에 있는 총은 사라지지 않게»
 		//  접속 중 = 서버가 정한 것(network.MyWeapon · WeaponOf · 바닥 총 소식), 오프라인 = 아래 offline* 로 혼자 처리.
+		//  ★ 2026-11-27 내 든 총 = localPlayer.weapon(Shared::Weapon — 종류 · 현재 탄수 · 장전).
+		//    접속 중 = 매 프레임 서버 값으로 채운다(Network::MyWeaponState, 메인 루프 UpdateNetwork 뒤), 오프라인 = 여기서 직접 바꾼다.
+		//    (그 전에는 오프라인 든 총 종류만 offlineHeld 로 따로 들었다 — 지웠다)
 		WeaponScene               weaponScene;
-		Shared::WeaponType        offlineHeld = Shared::WeaponType::None;   // 오프라인일 때 든 총
 		uint32_t                  offlineNextGroundId = 1;
+		std::unordered_map<uint32_t, Shared::Weapon> offlineGroundAmmo;     // 오프라인 바닥 총 번호 → 떨군 때의 탄 상태(2026-11-27, 서버 GroundWeapon::weapon 과 같은 규칙)
+		float                     reloadRequestTimer = 0.0f;   // 접속 중 장전 요청을 보낸 뒤 서버 답을 기다리는 남은 시간(s) — 그동안 쏘지 않는다(Engine.cpp kReloadRequestTimeout)
 		std::vector<GroundWeaponEvent> groundEventScratch;                   // 네트워크에서 꺼낸 바닥 총 소식(매 프레임 재사용)
 		struct PickupTarget
 		{
@@ -297,7 +302,7 @@ namespace swc {
 		PickupTarget              pickupTarget;     // 지금 E 로 주울 총(가장 가까운 것, Shared::kWeaponPickupRange 안)
 		float                     fireCooldown = 0.0f;   // 다음 발까지 남은 시간(s) — 든 총의 발 간격. 0 이면 «게이트가 열림»
 		uint32_t                  shotsFired = 0;        // 예광탄 간격(WeaponSpec::tracerEvery) 세기
-		Shared::WeaponType HeldWeapon() const;           // 지금 든 총(접속 = 서버 값, 오프라인 = offlineHeld)
+		Shared::WeaponType HeldWeapon() const;           // 지금 든 총 종류 = localPlayer.weapon.type(접속 = 서버 값, 오프라인 = 직접)
 		Shared::MoveWorld  WeaponMoveWorld() const;      // 떨군 자리 · 진열 자리 계산용(planet · 지형)
 		void FindPickupTarget();
 		void OfflinePickup(const PickupTarget& target);
@@ -312,7 +317,8 @@ namespace swc {
 		// 기본 HUD (2026-11-26) — 체력 · 방탄판 · 장탄수 · 나침반(Client/UI/Hud.h). 게임 씬이 아직 Engine 에 있어 크로스헤어처럼 여기 둔다.
 		//  만들기 = 게임 리소스 로드 끝(크로스헤어와 같은 자리), 값 채우기 = UpdateHud(메인), 그리기 = RenderFrame 의 UI 몫.
 		Hud                     hud;
-		void UpdateHud();
+		float                   hudSeconds = 0.0f;   // HUD 시계 — 장전 안내 깜빡임(2026-11-27, 팀원 명세 timeSeconds)
+		void UpdateHud(float);
 
 		FramePacket               packet;       // 렌더 추출 ④ — 매 프레임 다시 채우고 메모리는 재사용한다
 		std::vector<UISprite>     uiSprites;    // 렌더 추출 ④ 의 UI 몫

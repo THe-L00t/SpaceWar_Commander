@@ -280,6 +280,15 @@ namespace
 	constexpr float kHitMarkerOuter   = 11.0f;   // 대각선 바깥 끝 (px)
 	constexpr float kHitMarkerSeconds = 0.25f;   // 마지막 명중부터 보이는 시간(s) — 그동안 점점 흐려진다(UISprite tint a)
 
+	// ── 탄 · 장전 키 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») ──
+	//  장전 = R — 팀원 HUD 명세 기본 키(hud-theme.json reload.defaultKey «R»). HUD 키캡도 이 값을 그린다(명세 «R 을 그림으로 고정하지 않는다»).
+	//  ★ 그래서 RT 켜기 · 끄기(2026-10 부터 R)를 T 로 옮겼다(제가 고른 키 — 비어 있던 글자 키).
+	constexpr int   kReloadKey = 'R';
+	constexpr int   kRayTracingToggleKey = 'T';
+	//  접속 중 장전 요청을 보낸 뒤 서버가 «장전 중» 을 알릴 때까지 쏘지 않는다 — 이 사이에 쏜 발은 서버가 장전 중이라 버린다.
+	//  알림이 이만큼 안 오면(요청이 거절됐다 — 탄창이 가득 · 이미 장전 중) 다시 쏠 수 있다. 값은 제가 고른 것(서버 틱 33 ms + 왕복보다 넉넉히).
+	constexpr float kReloadRequestTimeout = 0.5f;
+
 	// ── 서버 전송 주기 ──────────────────────────────────────
 	//  2026-10-29 B안 — 좌표(1/30초) 대신 고정 틱 입력을 보낸다. 주기는 이동 틱(Shared::PlayerMovement::kTickSeconds = 1/60초)이고
 	//  렌더 프레임률과는 이미 분리돼 있다(PlayerController::Update 가 틱을 센다). 그래서 여기 따로 주기를 두지 않는다.
@@ -1115,9 +1124,13 @@ namespace swc {
 			// 2026-11-26 내 Player 체력 ← 서버가 판정한 값(Network::MyHealth — 명세 6.13 · 18절 원칙 4). 모르면(접속 전 · 끊김 · 첫 알림 전) 최대값.
 			//  UpdateNetwork 밖에 둔다 — 끊겼을 때 그 함수는 일찍 돌아가지만, 그때도 «모름 → 최대값» 이어야 한다(예전 HUD 와 같다).
 			localPlayer.health = network.MyHealth() >= 0.0f ? network.MyHealth() : localPlayer.maxHealth;
+			// 2026-11-27 내 든 총(종류 · 현재 탄수 · 장전) ← 서버가 판정한 값(Network::MyWeaponState). 오프라인이면 Engine 이 직접 바꾼 값 그대로.
+			//  다음 프레임의 UpdateWeapons · UpdateFire 가 이 값을 본다(그 전에는 HeldWeapon 이 network.MyWeapon 을 바로 읽었다 — 같은 값).
+			if (network.Connected())
+				localPlayer.weapon = network.MyWeaponState();
 			// 2026-11-17 피격 파티클 — 이번 프레임에 만든 것(내 발 · 서버 확인)까지 넣고 움직인다. 렌더 추출은 RenderFrame.
 			particles.Update(dt, planet);
-			UpdateHud();   // 2026-11-26 기본 HUD 값 — 이번 프레임 카메라 · 받은 체력까지 끝난 뒤
+			UpdateHud(dt);   // 2026-11-26 기본 HUD 값 — 이번 프레임 카메라 · 받은 체력 · 탄까지 끝난 뒤
 
 			// 애니메이션 포즈 — 게임 단계의 «출력» 이다 (멀티스레딩 명세 3.2 ③).
 			//  총구 위치·히트박스가 포즈를 쓰므로 렌더보다 먼저, 상태가 다 정해진 뒤에 돌린다.
@@ -1170,12 +1183,12 @@ namespace swc {
 			suppressFire = true;   // 이 클릭은 «잡기» 였다. 총알이 나가면 안 된다
 		}
 
-		// V = 디버그 뷰 순환, R = RT 토글
+		// V = 디버그 뷰 순환, T = RT 토글(2026-11-27 R → T — R 은 장전, kReloadKey)
 		//  (2026-10-27 렌더 2단계 — 룰렛 무릎점 [ ] 키는 RayTracingParams 에서 룰렛이 빠져 없앴다)
 		// 11번째(10) 는 재질 확인용 — 거칠기·금속성
 		if (input.WasPressed('V'))
 			renderer.SetDebugMode((renderer.DebugMode() + 1) % 14);   // Lighting.hlsl · Forward.hlsl 디버그 뷰 0~13 (6단계: 11 주변광, 7단계: 12 GI 프로브 사용, 8단계: 13 AO)
-		if (input.WasPressed('R'))
+		if (input.WasPressed(kRayTracingToggleKey))
 		{
 			RayTracingParams p = renderer.GetRayTracingParams();
 			p.enabled = !p.enabled;
@@ -1670,7 +1683,8 @@ namespace swc {
 	//  사용자: «주우면 애니메이션 시에 적절한 위치에 총을 고정시키고, 쏠 수 있도록 해줘. 줍기, 떨구기 둘 다 구현하면 되는거야.
 	//          이때 공중에 있는것을 줍고, 떨구면 땅바닥에 떨어지도록. 공중에 있는 총은 사라지지 않게»
 	//  ★ 접속 중이면 서버가 정한다 — E · G 는 요청만 보내고, 든 총 · 바닥 총은 서버가 알려 준 것으로 그린다(Network).
-	//    오프라인이면 같은 Shared 계산으로 혼자 처리한다(offlineHeld · 바닥 총 번호를 클라가 센다).
+	//    오프라인이면 같은 Shared 계산으로 혼자 처리한다(localPlayer.weapon · 바닥 총 번호를 클라가 센다).
+	//  ★ 2026-11-27 탄 · 장전 — 든 총 = localPlayer.weapon(탄 상태째). R 장전도 같은 규칙: 접속 중 = 요청만, 오프라인 = Shared::Weapon 함수로 직접.
 
 	Shared::MoveWorld Engine::WeaponMoveWorld() const
 	{
@@ -1684,7 +1698,7 @@ namespace swc {
 
 	Shared::WeaponType Engine::HeldWeapon() const
 	{
-		return network.Connected() ? network.MyWeapon() : offlineHeld;
+		return localPlayer.weapon.type;
 	}
 
 	// 가장 가까운 총 — 공중 진열(게임 맵에 있을 때) · 바닥 총. 몸통 중심에서 총 원점까지 kWeaponPickupRange 안.
@@ -1714,34 +1728,71 @@ namespace swc {
 	}
 
 	// 오프라인 떨구기 — 손 자리에서 떨어져 바로 아래 지면에 눕는다(서버 DropHeldWeapon 과 같은 계산).
+	//  2026-11-27 — 남은 탄째 떨군다(하던 장전은 취소). 다시 주우면 이 탄 그대로(offlineGroundAmmo).
 	void Engine::OfflineDrop()
 	{
-		if (!Shared::IsWeaponType(offlineHeld)) return;
-		const Shared::WeaponDrop drop = Shared::SettleDroppedWeapon(WeaponMoveWorld(), offlineHeld,
+		Shared::Weapon& held = localPlayer.weapon;
+		if (!held.Held()) return;
+		const Shared::WeaponDrop drop = Shared::SettleDroppedWeapon(WeaponMoveWorld(), held.type,
 			controller.Position(), controller.Up(), controller.Facing());
-		weaponScene.SpawnGround(offlineNextGroundId++, offlineHeld, drop.start, drop.rest, drop.fallSeconds);
+		const uint32_t groundId = offlineNextGroundId++;
+		weaponScene.SpawnGround(groundId, held.type, drop.start, drop.rest, drop.fallSeconds);
+		held.CancelReload();
+		offlineGroundAmmo[groundId] = held;
 		while (weaponScene.GroundWeapons().size() > Shared::kMaxGroundWeapons)
+		{
+			offlineGroundAmmo.erase(weaponScene.GroundWeapons().front().id);
 			weaponScene.RemoveGround(weaponScene.GroundWeapons().front().id);
-		Log(L"[총] %S 떨굼(오프라인) — %.2fs 떨어져 눕는다", Shared::SpecOf(offlineHeld).name, drop.fallSeconds);
-		offlineHeld = Shared::WeaponType::None;
+		}
+		Log(L"[총] %S 떨굼(오프라인) — %.2fs 떨어져 눕는다, 탄 %u / %u", held.Spec().name, drop.fallSeconds,
+			unsigned(held.magazine), unsigned(held.Spec().magazineSize));
+		held = Shared::Weapon{};
 	}
 
 	// 오프라인 줍기 — 들고 있으면 먼저 떨군다(한 번에 한 자루). 진열은 그대로, 바닥 총은 없어진다.
+	//  2026-11-27 — 진열에서 주우면 탄 가득, 바닥 총이면 떨군 때의 탄 그대로(서버 HandlePickupRequest 와 같은 규칙).
 	void Engine::OfflinePickup(const PickupTarget& target)
 	{
 		if (!target.valid || !Shared::IsWeaponType(target.type)) return;
+		Shared::Weapon picked(target.type);
+		if (target.source == Shared::kPickupFromGround)
+		{
+			const auto found = offlineGroundAmmo.find(target.id);
+			if (found != offlineGroundAmmo.end() && found->second.type == target.type)
+				picked = found->second;
+		}
 		OfflineDrop();
 		if (target.source == Shared::kPickupFromGround)
+		{
 			weaponScene.RemoveGround(target.id);
-		offlineHeld = target.type;
-		Log(L"[총] %S 주움(오프라인, %s)", Shared::SpecOf(target.type).name,
-			target.source == Shared::kPickupFromShowcase ? L"공중 진열" : L"바닥");
+			offlineGroundAmmo.erase(target.id);
+		}
+		localPlayer.weapon = picked;
+		Log(L"[총] %S 주움(오프라인, %s) — 탄 %u / %u", Shared::SpecOf(target.type).name,
+			target.source == Shared::kPickupFromShowcase ? L"공중 진열" : L"바닥",
+			unsigned(picked.magazine), unsigned(picked.Spec().magazineSize));
 	}
 
 	// 매 프레임 — UpdatePlayer 뒤 · UpdateFire 앞(이번 프레임 든 총으로 쏜다).
 	void Engine::UpdateWeapons(float dt)
 	{
 		const bool online = network.Connected();
+
+		// 0) 장전 시계 (2026-11-27) — 오프라인이면 여기서 직접 줄이고 다 되면 채운다(서버 틱 루프와 같은 Shared::Weapon::AdvanceReload).
+		//    접속 중이면 서버가 잰다 — 장전 요청의 답(«장전 중»)을 기다리는 시간만 센다. 답이 왔거나 총이 바뀌면 기다림을 끝낸다.
+		if (!online)
+		{
+			reloadRequestTimer = 0.0f;
+			if (localPlayer.weapon.AdvanceReload(dt))
+				Log(L"[탄] %S 장전 끝(오프라인) — 탄 %u / %u", localPlayer.weapon.Spec().name,
+					unsigned(localPlayer.weapon.magazine), unsigned(localPlayer.weapon.Spec().magazineSize));
+		}
+		else if (reloadRequestTimer > 0.0f)
+		{
+			reloadRequestTimer -= dt;
+			if (localPlayer.weapon.Reloading() || !localPlayer.weapon.Held())
+				reloadRequestTimer = 0.0f;
+		}
 
 		// 1) 서버가 보낸 바닥 총 소식(받은 순서대로). 맵을 바꾸면 Clear 가 먼저 온다.
 		if (online)
@@ -1797,6 +1848,20 @@ namespace swc {
 		{
 			if (judged) network.SendPickup(pickupTarget.source, pickupTarget.id);
 			else if (!online) OfflinePickup(pickupTarget);
+		}
+
+		// 5) R 장전 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») — 되는 때만(Shared::Weapon::CanReload:
+		//    든 총 · 장전 중 아님 · 탄창이 덜 참 — 예비탄은 없어 몇 번이고 된다). 탄창이 비어도 저절로 장전하지 않는다 — HUD 가 «[R] 재장전» 을 띄운다(팀원 명세).
+		//    접속 중 = 요청만(서버가 시간을 재고 채운다), 오프라인 = 바로 시작.
+		if (input.WasPressed(kReloadKey) && localPlayer.weapon.CanReload())
+		{
+			if (judged)
+			{
+				network.SendReload();
+				reloadRequestTimer = kReloadRequestTimeout;
+			}
+			else if (!online && localPlayer.weapon.StartReload())
+				Log(L"[탄] %S 장전 시작(오프라인, %.1fs)", localPlayer.weapon.Spec().name, localPlayer.weapon.Spec().reloadSeconds);
 		}
 	}
 
@@ -1953,7 +2018,11 @@ namespace swc {
 		//      발 간격이 프레임 수로 올림돼 느려졌다(기관총 0.08 s → 60 fps 0.083 · 30 fps 0.1 s, 라이플 0.25 → 30 fps 0.267 s).
 		//      이제 프레임마다 간격은 들쭉날쭉해도 평균은 표의 간격과 같다. 프레임이 간격보다 길면 한 프레임에 여러 발(kMaxShotsPerFrame 까지).
 		//      손을 떼면 시간을 모아 두지 않는다(0 에서 멈춘다) — 쉬었다가 몰아 쏘기는 안 된다.
-		//    서버도 같은 평균으로 걸러 낸다(Server OnPlayerFire 연사 예산). 탄창 · 장전은 아직 없다(탄 무한).
+		//    서버도 같은 평균으로 걸러 낸다(Server OnPlayerFire 연사 예산).
+		//    ★ 2026-11-27 탄 — 탄창이 비었거나 장전 중이면 쏘지 않는다(Shared::Weapon::CanFire). 한 발마다 localPlayer.weapon 에서 하나 뺀다.
+		//      오프라인 = 이것이 원본. 접속 중 = 서버가 원본이라 이 프레임 안에서만 센다(한 프레임 여러 발이 탄창을 넘지 않게) —
+		//      UpdateNetwork 뒤 서버 값으로 다시 채운다. 서버 알림은 틱(33 ms) + 왕복만큼 늦어, 가장 짧은 발 간격(기관총 91 ms)보다 빠르다.
+		//      장전 요청을 보내고 서버 답을 기다리는 동안(reloadRequestTimer)도 쏘지 않는다 — 그 사이 발은 서버가 장전 중이라 버린다.
 		//    ★ 같은 날 사용자 «권총은 자동 발사 없애주고, 클릭 시에만 발사. 그리고 연속 클릭이 들어오면 0.2초마다 게이트를 열어서
 		//      딜레이를 줄 수 있게해줘» — 권총만 단발(Single)로 되돌림. 단발은 «게이트»:
 		//      · 게이트가 열려 있으면(대기 0) 클릭한 프레임에 바로 한 발, 그리고 게이트를 발 간격(권총 0.2 s) 동안 닫는다.
@@ -1963,8 +2032,10 @@ namespace swc {
 		const Shared::WeaponType held = HeldWeapon();
 		const Shared::WeaponSpec& spec = Shared::SpecOf(held);   // 빈손이면 모든 값이 0 인 빈 줄
 		const bool trigger = spec.fireMode == Shared::FireMode::Auto ? input.MouseDown(0) : input.MouseWasPressed(0);
+		Shared::Weapon& weapon = localPlayer.weapon;   // 2026-11-27 탄 — 든 총의 현재 탄수 · 장전
 		if (!Shared::IsWeaponType(held) || spec.fireInterval <= 0.0f ||
-			!input.Captured() || suppressFire || !trigger || fireCooldown > kFireGateTolerance)   // 게이트가 닫혀 있으면 이번 클릭은 버려진다
+			!input.Captured() || suppressFire || !trigger || fireCooldown > kFireGateTolerance ||   // 게이트가 닫혀 있으면 이번 클릭은 버려진다
+			!weapon.CanFire() || reloadRequestTimer > 0.0f)                                         // 빈 탄창 · 장전 중 · 장전 답 기다림
 		{
 			fireCooldown = (std::max)(0.0f, fireCooldown);
 			return;
@@ -2013,6 +2084,7 @@ namespace swc {
 		const uint32_t maxShots = spec.fireMode == Shared::FireMode::Auto ? kMaxShotsPerFrame : 1u;
 		for (uint32_t shot = 0; shot < maxShots && fireCooldown <= kFireGateTolerance; ++shot)
 		{
+			if (!weapon.ConsumeShot()) break;   // 2026-11-27 — 탄창이 이 프레임에 비면 남은 발은 나가지 않는다
 			// 연발은 남은 시간을 이어 쓴다(평균 = 표의 간격). 단발은 쏜 순간부터 꼭 간격만큼 닫는다 —
 			//  클릭은 «게이트가 열린 뒤» 언제 와도 되므로 이어 쓸 시간이 없고, 이어 쓰면 프레임 하나만큼 일찍 열린다(0.2 → 0.194 s).
 			if (spec.fireMode == Shared::FireMode::Auto)
@@ -2345,13 +2417,29 @@ namespace swc {
 	// 기본 HUD 값 (2026-11-26) — 메인. 그리기는 RenderFrame 의 UI 몫(Hud::Extract).
 	//  체력 · 최대 체력 = 내 Player(DynamicObject health · maxHealth, 2026-11-26 사용자 «다이나믹 클래스에 체력 만들고 UI에 체력바 연동»).
 	//   health 는 메인 루프가 UpdateNetwork 뒤에 서버 값으로 채우고, maxHealth 는 Shared::Player 기본값 100(Shared::kMaxHealth).
-	//  방탄판 · 장탄수 = HudState 기본값(사용자 «UI만, 값은 임시»).
+	//  방탄판 = HudState 기본값(사용자 «UI만, 값은 임시»).
+	//  장탄수 · 장전 표시 = 내 든 총(localPlayer.weapon — 현재 탄수 · 장전, 2026-11-27 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결»).
+	//   장탄수 = «현재 장탄수 / 최대 장탄수»(magazine / magazineSize — 같은 날 사용자 «예비탄없애고 최대 장탄수만 나오게 해»).
+	//   장전 키 이름 = 실제 키(kReloadKey) — 팀원 명세 «키캡에도 동일한 매핑 값을 표시».
 	//  나침반 = 카메라 접평면 앞(Camera::Forward) · 이 자리의 위 — 북쪽 정의는 Hud::HeadingDegrees.
-	void Engine::UpdateHud()
+	void Engine::UpdateHud(float dt)
 	{
 		HudState& state = hud.State();
 		state.health = localPlayer.health;
 		state.maxHealth = localPlayer.maxHealth;
+
+		const Shared::Weapon& weapon = localPlayer.weapon;
+		const Shared::WeaponSpec& spec = weapon.Spec();   // 빈손이면 모든 값이 0 인 빈 줄
+		state.hasWeapon = weapon.Held();
+		state.ammo = weapon.magazine;
+		state.magazineSize = spec.magazineSize;
+		state.reloading = weapon.Reloading();
+		state.reloadDuration = spec.reloadSeconds;
+		state.reloadElapsed = state.reloading ? (std::max)(0.0f, spec.reloadSeconds - weapon.reloadLeft) : 0.0f;
+		state.reloadKey = std::wstring(1, wchar_t(kReloadKey));
+		hudSeconds += dt;
+		state.timeSeconds = hudSeconds;
+
 		state.headingDegrees = Hud::HeadingDegrees(controller.Up(), camera.Forward(), state.headingDegrees);
 	}
 
@@ -2536,7 +2624,7 @@ namespace swc {
 		titleTimer = 0.0f;
 
 		const RayTracingParams& rt = renderer.GetRayTracingParams();
-		// 장치가 못 하는 것과 실행 중 R 키로 끈 것을 구분해서 보여준다.
+		// 장치가 못 하는 것과 실행 중 T 키로 끈 것을 구분해서 보여준다(2026-11-27 R → T — kRayTracingToggleKey).
 		//  (2026-10-27 렌더 2단계 — 임시 스위치 kEnableRaytracing 이 없어져 «임시끔(래스터만)» 상태도 없앴다)
 		const wchar_t* rtState = !renderer.SupportsRaytracing() ? L"미지원"
 			: (rt.enabled ? L"ON" : L"OFF");

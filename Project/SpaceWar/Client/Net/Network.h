@@ -26,6 +26,7 @@ namespace Shared {
 	struct GroundWeaponSpawnPacket;
 	struct GroundWeaponRemovePacket;
 	struct NpcHitPacket;
+	struct WeaponAmmoPacket;
 }
 
 // ============================================================
@@ -138,6 +139,13 @@ namespace swc {
 		// 서버가 알려준 든 총(빈손 = None). 나 = MyWeapon, 남 = WeaponOf(번호).
 		Shared::WeaponType MyWeapon() const { return myWeapon; }
 		Shared::WeaponType WeaponOf(uint32_t playerId) const;
+
+		// ── 탄 · 장전 (2026-11-27) ── 탄을 빼고 장전 시간을 재는 것은 서버다(명세 18절 원칙 4). 요청만 보낸다.
+		void SendReload();
+		// 서버가 알려준 내 든 총의 탄 상태(Shared::Weapon — 종류 · 현재 탄수 · 장전 남은 시간. 예비탄은 없다 — 2026-11-27).
+		//  장전 남은 시간은 받은 뒤 흐른 만큼 줄여 준다 — 끝(채운 탄)은 서버의 다음 알림이 와야 바뀌므로 그때까지 «장전 중» 으로 둔다.
+		//  아직 그 총의 탄 알림을 못 받았으면(든 총과 종류가 다르면) 그 총을 가득 든 것으로 본다.
+		Shared::Weapon MyWeaponState() const;
 		// 쌓인 바닥 총 소식을 꺼낸다(받은 순서). 꺼내면 지워진다.
 		void TakeGroundEvents(std::vector<GroundWeaponEvent>& out);
 
@@ -215,6 +223,7 @@ namespace swc {
 		void OnGroundWeaponSpawn(const Shared::GroundWeaponSpawnPacket*);
 		void OnGroundWeaponRemove(const Shared::GroundWeaponRemovePacket*);
 		void OnNpcHit(const Shared::NpcHitPacket*);   // 2026-11-16 — 내 발의 NPC 명중
+		void OnWeaponAmmo(const Shared::WeaponAmmoPacket*);   // 2026-11-27 — 내 든 총의 탄 상태
 		void TrySendJoinWorld();      // 못 보낸 JoinWorld 를 다시 보낸다(송신 버퍼가 찼을 때)
 		void ClearWorldState();        // 원격 · NPC 목록 · 받아 둔 판정 · 리스폰을 비운다(맵을 바꿀 때)
 
@@ -258,6 +267,8 @@ namespace swc {
 
 		// ── 총 (2026-11-15) ──
 		Shared::WeaponType myWeapon = Shared::WeaponType::None;     // 서버가 알려준 내 총 — 맵을 바꿔도 들고 간다
+		Shared::Weapon     myAmmo;                                  // 2026-11-27 — 서버가 마지막으로 알려준 내 총의 탄 상태(받은 순간 값)
+		double             myAmmoTime = 0.0;                        // 〃 받은 시각(장전 남은 시간을 줄이는 기준)
 		std::unordered_map<uint32_t, Shared::WeaponType> equips;    // 같은 맵 남이 든 총
 		std::vector<GroundWeaponEvent> groundEvents;                // Engine 이 꺼내 갈 바닥 총 소식
 

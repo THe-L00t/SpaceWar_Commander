@@ -176,6 +176,45 @@ namespace swc {
 		SendRaw(&pkt, (int)sizeof(pkt));
 	}
 
+	// ── 탄 · 장전 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») ──
+	//  ★ 장전은 요청만 보낸다. 되는지 · 언제 끝나는지는 서버가 정해 WeaponAmmo 로 알린다.
+	void Network::SendReload()
+	{
+		if (!connected) return;
+		Shared::WeaponReloadPacket pkt = {};
+		pkt.header.size = (uint16_t)sizeof(pkt);
+		pkt.header.type = Shared::PacketType::WeaponReload;
+		SendRaw(&pkt, (int)sizeof(pkt));
+	}
+
+	// 서버가 판정한 내 총의 탄 상태. 받은 순간 값과 시각만 남긴다(맵을 바꿔도 들고 간다 — 든 총과 같다).
+	void Network::OnWeaponAmmo(const Shared::WeaponAmmoPacket* p)
+	{
+		const Shared::WeaponType type = Shared::IsWeaponType(Shared::WeaponType(p->weaponType))
+			? Shared::WeaponType(p->weaponType) : Shared::WeaponType::None;
+		myAmmo = Shared::Weapon{};
+		myAmmo.type = type;
+		myAmmo.magazine = p->magazine;
+		myAmmo.reloadLeft = (p->reloadLeft > 0.0f && p->reloadLeft < 60.0f) ? p->reloadLeft : 0.0f;   // 이상한 값은 «장전 중 아님»
+		myAmmoTime = NowSeconds();
+	}
+
+	Shared::Weapon Network::MyWeaponState() const
+	{
+		if (!Shared::IsWeaponType(myWeapon)) return Shared::Weapon{};
+		if (myAmmo.type != myWeapon) return Shared::Weapon(myWeapon);   // 그 총의 탄 알림이 아직 — 가득 든 것으로
+
+		Shared::Weapon out = myAmmo;
+		if (out.Reloading())
+		{
+			// 받은 뒤 흐른 만큼 줄인다. 0 이 되어도 서버가 «다 됐다» 고 알리기 전까지는 장전 중(진행률 100 %)으로 둔다.
+			constexpr float kWaitingForServer = 1.0e-4f;
+			const float left = out.reloadLeft - float(NowSeconds() - myAmmoTime);
+			out.reloadLeft = left > kWaitingForServer ? left : kWaitingForServer;
+		}
+		return out;
+	}
+
 	// 서버가 판정한 체력. 클라는 규칙을 모르고 받은 값만 들고 있는다.
 	void Network::OnPlayerHealth(const Shared::PlayerHealthPacket* p)
 	{
@@ -446,6 +485,12 @@ namespace swc {
 					OnNpcHit((const Shared::NpcHitPacket*)pHead);
 				break;
 
+			// 2026-11-27 탄 · 장전 — 맵에 매이지 않는다(내 총의 상태라 맵을 바꾸는 중에도 받는다, worldScoped 아님)
+			case Shared::PacketType::WeaponAmmo:
+				if (nSize == (int)sizeof(Shared::WeaponAmmoPacket))
+					OnWeaponAmmo((const Shared::WeaponAmmoPacket*)pHead);
+				break;
+
 			default:
 				break;		// 모르는 종류는 크기만큼 건너뛴다
 			}
@@ -521,6 +566,8 @@ namespace swc {
 		nStates = 0;
 		remotes.clear();
 		npcs.clear();
+		myAmmo = Shared::Weapon{};   // 2026-11-27 — 서버가 접속 직후(SendWeaponSnapshot) 다시 알려 준다
+		myAmmoTime = 0.0;
 		// 맵 번호 (2026-11-01) — 서버는 접속한 세션을 게임 맵에 세운다(Server/main.cpp ThreadAcceptLoop).
 		requestedWorld = Shared::kWorldGameMap;
 		joinState = JoinState::Joined;
