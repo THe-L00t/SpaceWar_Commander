@@ -79,9 +79,55 @@ namespace {
 	constexpr float kRuleRight = 396.0f;
 	constexpr float kRuleY = 926.5f;
 
-	// ── 장탄수 — reload.ammoCountLeftCenter. 형식은 시안 «08 / 096» ──
+	// ── 장탄수 — reload.ammoCountLeftCenter ──
+	//  ★ 형식 = «현재 장탄수 / 최대 장탄수»(2026-11-27 사용자 «예비탄없애고 최대 장탄수만 나오게 해 … 현재 장탄수 / 최대 장탄수 이거야») —
+	//    예: 라이플 «08 / 10» · 권총 «12 / 12» · 기관총 «099 / 100». 최대 = 그 총의 탄창(WeaponSpec::magazineSize).
+	//    (그 전 시안 «08 / 096» 의 뒤 숫자는 예비탄이었다 — 예비탄은 Shared::Weapon 에서도 뺐다. 권총 무한 «∞» 도 함께 뺐다.)
 	constexpr float kAmmoLeft = 143.0f;
 	constexpr float kAmmoCenterY = 960.0f;
+	//  ★ 숫자 고정 폭(2026-11-27 사용자 «남은 장탄수에 따라 텍스트 위치가 조금씩 바뀌는데 보정해줄 수 있어? 각 숫자들 따로 그리면서») —
+	//    Rajdhani 숫자는 글자마다 폭이 달라(Medium 30 px 에서 1 = 9.7 · 7 = 11.9 · 0 = 15.6 · 4 · 8 = 15.8 px — hmtx 실측)
+	//    통째로 그리면 탄이 줄 때 « / » 와 뒤 숫자가 흔들렸다.
+	//    숫자(0 ~ 9)를 한 글자씩 따로, 같은 폭 칸(0 ~ 9 중 가장 넓은 폭 — Hud::ammoDigitWidth) 가운데에 그린다(AppendFixedDigits).
+	//    자릿수도 고정 — 현재 · 최대 모두 탄창 크기의 자릿수(최소 2, 시안 «08»).
+	//    그래서 기관총(탄창 100)은 «100» 다음이 «099» 다(«99» 로 줄면 « / » 가 한 칸 당겨진다).
+	constexpr int kAmmoMinDigits = 2;
+
+	int DigitCount(uint32_t value)
+	{
+		int count = 1;
+		while (value >= 10) { value /= 10; ++count; }
+		return count;
+	}
+
+	// ── 재장전 표시 (2026-11-27, 사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») ──
+	//  자리 · 크기 = hud-theme.json reload(…LeftCenter 의 x = 왼쪽 끝 · …RightCenter 의 x = 오른쪽 끝, y = 세로 가운데 — 위 체력 줄과 같은 읽기).
+	//  색 · 글자 크기 = 00_게임용_UI_안내.html — .reload(문구 #dcb36b · 19 px) · .key(테두리 1 px #dcb36b · Rajdhani 23 px · 좌우 8 px) ·
+	//   진행률 카드(«재장전 중» #ecf3f6, 퍼센트 .reload 색, 막대 높이 7 px · 빈 칸 #8799a6 × 0.32 · 채움 #dcb36b).
+	//  상태 · 계산 = 02_동적_상태와_계산식.md «재장전 표시: 상태 우선순위»(ExtractAmmo).
+	//   ★ 예비탄이 없어(2026-11-27 사용자 «몇 번이고 장전가능하게 할거야») 명세의 «탄약 없음» · «예비 탄약 없음»(예비탄 0 일 때)은 나올 일이 없어 뺐다.
+	//  글꼴 굵기는 위 네 요소처럼 Medium(2026-11-26 시안 비교 — 안내 HTML 은 Regular).
+	constexpr float kPromptLeft = 333.0f;          // reload.promptLeftCenter
+	constexpr float kPromptCenterY = 960.0f;
+	constexpr float kKeycapHeight = 30.0f;         // reload.keycapHeight
+	constexpr float kKeycapMinWidth = 27.0f;       // reload.keycapMinWidth
+	constexpr float kKeycapMaxWidth = 100.0f;      // reload.keycapMaxWidth
+	constexpr float kKeycapPaddingX = 8.0f;        // reload.keycapPaddingX
+	constexpr float kKeyLabelGap = 10.0f;          // reload.keyLabelGap
+	constexpr float kProgressLeft = 333.0f;        // reload.progressBarLeftCenter
+	constexpr float kProgressCenterY = 988.0f;
+	constexpr float kProgressWidth = 220.0f;       // reload.progressWidth
+	constexpr float kPercentRight = 553.0f;        // reload.percentRightCenter
+	constexpr float kPercentCenterY = 960.0f;
+	constexpr float kLowAmmoPercent = 30.0f;       // reload.lowAmmoPercent — 탄창의 이만큼 이하면 «[R] 재장전»
+	constexpr float kPulseFrequency = 1.5f;        // reload.pulseFrequency (Hz)
+	constexpr float kPulseMinOpacity = 0.72f;      // reload.pulseMinOpacity
+	constexpr float kEmptyTrackOpacity = 0.32f;    // geometry.emptyTrackOpacity — 진행률 빈 칸
+	constexpr float kReloadTextSize = 19.0f;       // 안내 HTML .reload font-size — 문구 · 퍼센트
+	constexpr float kReloadKeySize = 23.0f;        // 안내 HTML .key font-size — 키 이름
+	constexpr const wchar_t* kReloadPrompt = L"재장전";            // reload.prompt
+	constexpr const wchar_t* kReloadingLabel = L"재장전 중";       // reload.progressLabel
+	constexpr const wchar_t* kReloadChars = L"재장전 중";          // 위 두 문구의 글자(띄어쓰기 포함 — 없으면 «재장전중» 으로 붙는다)
 
 	// ── 나침반 (compass) ──
 	constexpr float kCompassCenterX = 960.0f;
@@ -234,6 +280,10 @@ namespace swc {
 		numberStyle = font.AddStyle(assetPath(kDigitFont), kNumberSize * scale, digitChars);
 		compassStyle = font.AddStyle(assetPath(kDigitFont), kCompassSize * scale, digitChars);
 		cardinalStyle = font.AddStyle(assetPath(kDigitFont), kCardinalSize * scale, digitChars);
+		// 2026-11-27 재장전 표시(권총 무한 «∞» 모양은 같은 날 예비탄과 함께 뺐다)
+		reloadLabelStyle = font.AddStyle(assetPath(kLabelFont), kReloadTextSize * scale, kReloadChars);
+		reloadKeyStyle = font.AddStyle(assetPath(kDigitFont), kReloadKeySize * scale, AsciiChars());
+		reloadNumberStyle = font.AddStyle(assetPath(kDigitFont), kReloadTextSize * scale, digitChars);
 
 		TextureData atlas;
 		std::wstring missing;
@@ -248,6 +298,11 @@ namespace swc {
 		font.SetTexture(atlasTexture);
 		if (!missing.empty())
 			warning += L"글꼴에 없는 글자(그리지 않음): " + missing + L" ";
+
+		// 장탄수 숫자 칸 폭 = 0 ~ 9 중 가장 넓은 글자 폭(2026-11-27 숫자 고정 폭 — 글자 폭은 Bake 뒤에 안다)
+		ammoDigitWidth = 0.0f;
+		for (wchar_t digit = L'0'; digit <= L'9'; ++digit)
+			ammoDigitWidth = (std::max)(ammoDigitWidth, font.Measure(numberStyle, std::wstring(1, digit)));
 
 		// ② 사각형 · 선 — 흰 텍스처 × tint
 		TextureData whiteImage;
@@ -316,6 +371,102 @@ namespace swc {
 		out.push_back(sprite);
 	}
 
+	// 사각형 테두리 — 위 · 아래 변은 전체 폭, 왼쪽 · 오른쪽 변은 그 사이만(모서리가 겹쳐 반투명일 때 진해지지 않게).
+	void Hud::PushFrame(std::vector<UISprite>& out, float left, float top, float width, float height, float thickness,
+		const XMFLOAT4& color) const
+	{
+		if (width <= 0.0f || height <= 0.0f || thickness <= 0.0f) return;
+		PushRect(out, left, top, width, thickness, color);
+		PushRect(out, left, top + height - thickness, width, thickness, color);
+		PushRect(out, left, top + thickness, thickness, height - 2.0f * thickness, color);
+		PushRect(out, left + width - thickness, top + thickness, thickness, height - 2.0f * thickness, color);
+	}
+
+	// 글자 줄을 한 글자씩 따로 그린다(2026-11-27 숫자 고정 폭) — 숫자(0 ~ 9)는 digitWidth 칸 가운데, 나머지 글자(띄어쓰기 · /)는 제 폭.
+	//  left = 줄 왼쪽 끝(px). 돌려주는 값 = 줄 오른쪽 끝(px) — 다음 글자를 이어 그릴 자리.
+	float Hud::AppendFixedDigits(std::vector<UISprite>& out, FontAtlas::StyleId style, const std::wstring& text,
+		float left, float centerY, float digitWidth, const XMFLOAT4& color) const
+	{
+		float x = left;
+		for (const wchar_t ch : text)
+		{
+			const std::wstring one(1, ch);
+			if (ch >= L'0' && ch <= L'9')
+			{
+				font.AppendText(out, style, one, x + digitWidth * 0.5f, centerY, FontAtlas::Align::Center, color);
+				x += digitWidth;
+			}
+			else
+			{
+				font.AppendText(out, style, one, x, centerY, FontAtlas::Align::Left, color);
+				x += font.Measure(style, one);
+			}
+		}
+		return x;
+	}
+
+	// 장탄수 · 재장전 표시 (2026-11-27) — 팀원 명세 02_동적_상태와_계산식.md «재장전 표시: 상태 우선순위»에서 예비탄 상태를 뺀 것:
+	//  1. 장전 중 = «재장전 중» + 진행률 막대 + 퍼센트(키 안내 숨김)
+	//  (명세 2 «탄약 없음» · 3 «예비 탄약 없음» 은 예비탄 0 일 때라 뺐다 — 같은 날 사용자 «예비탄없애고 … 몇 번이고 장전가능하게 할거야»)
+	//  2. 탄 부족 · 장전 가능 = [키] «재장전» (깜빡임 promptAlpha) — 탄창 0 도 여기
+	//  3. 나머지 = 숨김. 장탄수 숫자는 늘 보인다(명세 «선택적으로 유지»).
+	//  capacity = max(1, 탄창) · threshold = floor(capacity × 30 / 100) · lowAmmo = ammo < capacity 이고 ammo ≤ threshold ·
+	//  canReload = 장전 중 아님 · ammo < capacity(예비탄 조건은 뺐다) · progress = clamp(elapsed / duration, 0, 1) · percent = floor(progress × 100).
+	//  ★ UI 는 탄을 바꾸지 않는다(명세) — 값은 Engine 이 내 든 총(Shared::Weapon)에서 채운다.
+	void Hud::ExtractAmmo(std::vector<UISprite>& out) const
+	{
+		if (!state.hasWeapon || scale <= 0.0f) return;
+
+		const float s = scale;
+		auto X = [this, s](float x) { return offsetX + x * s; };
+		auto Y = [this, s](float y) { return offsetY + y * s; };
+		const float line = (std::max)(1.0f, kLineWidth * s);
+		const XMFLOAT4 foreground = Color(kForeground);
+		const XMFLOAT4 warningColor = Color(kWarning);
+
+		// 장탄수 «현재 / 최대» — 예: «08 / 10». 숫자는 한 글자씩 같은 폭 칸에(AppendFixedDigits), 자릿수 고정(kAmmoMinDigits 위 설명).
+		wchar_t text[32];
+		const int ammoDigits = (std::max)(kAmmoMinDigits, DigitCount((std::max)(state.magazineSize, state.ammo)));
+		swprintf_s(text, L"%0*u / %0*u", ammoDigits, unsigned(state.ammo), ammoDigits, unsigned(state.magazineSize));
+		AppendFixedDigits(out, numberStyle, text, X(kAmmoLeft), Y(kAmmoCenterY), ammoDigitWidth, foreground);
+
+		const uint32_t capacity = (std::max)(1u, state.magazineSize);
+		const uint32_t threshold = uint32_t(std::floor(float(capacity) * std::clamp(kLowAmmoPercent, 0.0f, 100.0f) / 100.0f));
+		const bool lowAmmo = state.ammo < capacity && state.ammo <= threshold;
+		const bool canReload = !state.reloading && state.ammo < capacity;
+
+		// 1. 장전 중
+		if (state.reloading)
+		{
+			const float progress = state.reloadDuration > 0.0f
+				? std::clamp(state.reloadElapsed / state.reloadDuration, 0.0f, 1.0f) : 1.0f;
+			font.AppendText(out, reloadLabelStyle, kReloadingLabel, X(kPromptLeft), Y(kPromptCenterY), FontAtlas::Align::Left, foreground);
+			swprintf_s(text, L"%d%%", int(std::floor(progress * 100.0f + 0.0000001f)));
+			font.AppendText(out, reloadNumberStyle, text, X(kPercentRight), Y(kPercentCenterY), FontAtlas::Align::Right, warningColor);
+			const float barHalf = kBarHeight * 0.5f;
+			PushRect(out, X(kProgressLeft), Y(kProgressCenterY - barHalf), kProgressWidth * s, kBarHeight * s,
+				Color(kMuted, kEmptyTrackOpacity));
+			PushRect(out, X(kProgressLeft), Y(kProgressCenterY - barHalf), kProgressWidth * s * progress, kBarHeight * s, warningColor);
+			return;
+		}
+
+		// 2. [키] 재장전 — promptAlpha = 0.72 + 0.28 × (0.5 + 0.5 × cos(t × 2π × 1.5))
+		if (lowAmmo && canReload)
+		{
+			constexpr float kTwoPi = 6.28318530717958647692f;
+			const float pulse = kPulseMinOpacity + (1.0f - kPulseMinOpacity) *
+				(0.5f + 0.5f * std::cos(state.timeSeconds * kTwoPi * kPulseFrequency));
+			const XMFLOAT4 promptColor = Color(kWarning, pulse);
+			const float keyWidth = std::clamp(font.Measure(reloadKeyStyle, state.reloadKey) / s + 2.0f * kKeycapPaddingX,
+				kKeycapMinWidth, kKeycapMaxWidth);
+			PushFrame(out, X(kPromptLeft), Y(kPromptCenterY - kKeycapHeight * 0.5f), keyWidth * s, kKeycapHeight * s, line, promptColor);
+			font.AppendText(out, reloadKeyStyle, state.reloadKey, X(kPromptLeft + keyWidth * 0.5f), Y(kPromptCenterY),
+				FontAtlas::Align::Center, promptColor);
+			font.AppendText(out, reloadLabelStyle, kReloadPrompt, X(kPromptLeft + keyWidth + kKeyLabelGap), Y(kPromptCenterY),
+				FontAtlas::Align::Left, promptColor);
+		}
+	}
+
 	void Hud::PushIcon(std::vector<UISprite>& out, TextureHandle icon, float aspect,
 		float boxLeft, float boxTop, float boxWidth, float boxHeight) const
 	{
@@ -379,12 +530,8 @@ namespace swc {
 		font.AppendText(out, numberStyle, valueText(state.health, state.maxHealth), X(kValueRight), Y(kHealthRow.centerY),
 			FontAtlas::Align::Right, foreground);
 
-		// 장탄수 «08 / 096»
-		{
-			wchar_t text[32];
-			swprintf_s(text, L"%02u / %03u", unsigned(state.ammo), unsigned(state.reserve));
-			font.AppendText(out, numberStyle, text, X(kAmmoLeft), Y(kAmmoCenterY), FontAtlas::Align::Left, foreground);
-		}
+		// 장탄수 «현재 / 최대» + 재장전 표시 (2026-11-27 — 내 든 총의 실제 값, 빈손이면 그리지 않는다)
+		ExtractAmmo(out);
 
 		// ── 나침반 (팀원 계산식: delta = normalize360(tick − yaw + 180) − 180, tickX = centerX + delta × pixelsPerDegree) ──
 		{

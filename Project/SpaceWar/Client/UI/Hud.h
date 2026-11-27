@@ -11,7 +11,11 @@
 //  Client/UI/Hud.h — 게임 화면 기본 HUD (2026-11-26)
 //
 //  범위(2026-11-26 사용자 «HP, 장탄수, 방탄, 화면 상단의 방위»): 체력 · 방탄판 · 장탄수 · 나침반.
-//  재장전 표시 · 데미지 숫자 · 시안의 나머지(분대 · 성장 · 스킬 · 목표 · 함선)는 이번에 넣지 않았다.
+//  ★ 2026-11-27 재장전 표시를 더했다(사용자 «무기에 현재 탄수를 추가해서 장전과 UI 연결을 구현해줘») — 팀원 명세 02_동적_상태와_계산식.md
+//    «재장전 표시: 상태 우선순위»: 장전 중(문구 · 진행률 · 퍼센트) → [키] 재장전(깜빡임) → 숨김.
+//    (명세의 «탄약 없음» · «예비 탄약 없음» 은 예비탄 0 일 때라 같은 날 예비탄과 함께 뺐다 — 사용자 «예비탄없애고 … 몇 번이고 장전가능하게 할거야».)
+//    자리 · 크기 = hud-theme.json reload, 색 · 글자 크기 = 00_게임용_UI_안내.html(.reload · .key · .progress).
+//  데미지 숫자 · 시안의 나머지(분대 · 성장 · 스킬 · 목표 · 함선)는 넣지 않았다.
 //
 //  ★ 근거 = 팀원 HUD 패키지(resource 1a567b7, docs/UI 아이콘/게임용_기본HUD)
 //    배치 · 색 · 크기 = 03_동적_UI_구현명세/hud-theme.json, 계산 = 02_동적_상태와_계산식.md,
@@ -22,7 +26,10 @@
 //    글자 크기 · 선 굵기도 같은 배율. 창 크기는 Initialize 때 한 번 받는다(지금 창은 크기가 바뀌지 않는다).
 //  ★ 실행 위치 — 상태는 메인(Engine 이 State 를 채운다), 그리기는 렌더 추출 ④ 때 UISprite 로 복사(Extract).
 //    명세 5절 «UI 도 Scene 에 귀속» — 게임 씬은 아직 Engine 이 직접 돌아서(SceneManager.h) 크로스헤어처럼 Engine 이 든다.
-//  ★ «값은 임시»(2026-11-26 사용자) — 방탄판 · 장탄수는 게임에 아직 값이 없어 HudState 기본값(팀원 runtime-state 예시)을 보인다.
+//  ★ «값은 임시»(2026-11-26 사용자) — 방탄판은 게임에 아직 값이 없어 HudState 기본값(팀원 runtime-state 예시)을 보인다.
+//    장탄수 · 장전은 2026-11-27 부터 내 든 총(Engine::localPlayer.weapon — Shared::Weapon)의 실제 값이다.
+//    장탄수 = «현재 장탄수 / 최대 장탄수»(예 «08 / 10» — 2026-11-27 사용자, 시안 «08 / 096» 의 뒤 숫자였던 예비탄은 뺐다).
+//    장탄수 숫자는 한 글자씩 같은 폭 칸에 그린다(2026-11-27 — 탄이 줄 때 « / » · 뒤 숫자가 흔들리지 않게, AppendFixedDigits).
 //    체력 · 최대 체력은 내 Player(Shared::DynamicObject health · maxHealth — Engine::localPlayer)를 쓴다(2026-11-26).
 //    health = 서버가 판정한 값(모르면 최대값), maxHealth = Shared::Player 기본값 100(서버 Shared::kMaxHealth 와 같은 한 값 — 서버가 따로 보내지 않는다).
 // ============================================================
@@ -40,9 +47,17 @@ namespace swc {
 		float    maxHealth = 100.0f;          // 2026-11-26 — Engine 이 매 프레임 내 Player 의 maxHealth 로 덮는다(이 기본값은 덮기 전 값)
 		float    armor = 64.0f;           // ★ 임시 — 게임에 방탄판이 없다
 		float    maxArmor = 100.0f;
-		uint32_t ammo = 8;                // ★ 임시 — 탄창 · 예비탄을 아직 쓰지 않는다(탄 무한, Shared/GameObject/Weapon.h)
-		uint32_t reserve = 96;
 		float    headingDegrees = 0.0f;   // 나침반 — 북 0 · 동 90 · 남 180 · 서 270 (HeadingDegrees)
+
+		// ── 장탄수 · 재장전 (2026-11-27) — Engine 이 매 프레임 내 든 총(Shared::Weapon)에서 채운다. 팀원 runtime-state «weapon» 과 같은 칸 ──
+		bool         hasWeapon = false;       // 빈손이면 장탄수 · 재장전 표시를 그리지 않는다
+		uint32_t     ammo = 0;                // 현재 탄수(탄창에 남은 탄)
+		uint32_t     magazineSize = 0;        // 탄창 크기(capacity) = 최대 장탄수 — «현재 / 최대» 의 뒤 숫자(예비탄 칸은 2026-11-27 뺐다)
+		bool         reloading = false;       // isReloading
+		float        reloadElapsed = 0.0f;    // reloadElapsedSeconds
+		float        reloadDuration = 0.0f;   // reloadDurationSeconds
+		std::wstring reloadKey = L"R";        // 장전 키 이름 — 실제 입력 키(Engine kReloadKey)
+		float        timeSeconds = 0.0f;      // 안내 깜빡임 시계
 	};
 
 	class Hud
@@ -76,6 +91,12 @@ namespace swc {
 			const DirectX::XMFLOAT4& color) const;
 		void PushIcon(std::vector<UISprite>& out, TextureHandle icon, float aspect,
 			float boxLeft, float boxTop, float boxWidth, float boxHeight) const;
+		void PushFrame(std::vector<UISprite>& out, float left, float top, float width, float height, float thickness,
+			const DirectX::XMFLOAT4& color) const;        // 사각형 테두리(키캡)
+		void ExtractAmmo(std::vector<UISprite>& out) const;   // 장탄수 · 재장전 표시(2026-11-27)
+		// 한 글자씩 따로 그린다 — 숫자는 digitWidth 칸 가운데, 나머지는 제 폭. 돌려주는 값 = 줄 오른쪽 끝(2026-11-27 숫자 고정 폭)
+		float AppendFixedDigits(std::vector<UISprite>& out, FontAtlas::StyleId style, const std::wstring& text,
+			float left, float centerY, float digitWidth, const DirectX::XMFLOAT4& color) const;
 
 		HudState      state;
 		FontAtlas     font;
@@ -83,6 +104,10 @@ namespace swc {
 		FontAtlas::StyleId numberStyle = 0;     // 체력 · 방탄판 수치, 장탄수
 		FontAtlas::StyleId compassStyle = 0;    // 나침반 숫자 · 현재 각도
 		FontAtlas::StyleId cardinalStyle = 0;   // 나침반 방위 N · NE …
+		FontAtlas::StyleId reloadLabelStyle = 0;    // 재장전 · 재장전 중(2026-11-27)
+		FontAtlas::StyleId reloadKeyStyle = 0;      // 키캡 안 키 이름(2026-11-27)
+		FontAtlas::StyleId reloadNumberStyle = 0;   // 진행 퍼센트(2026-11-27)
+		float              ammoDigitWidth = 0.0f;   // 장탄수 숫자 칸 폭(px) = numberStyle 의 0 ~ 9 중 가장 넓은 폭 — Initialize 가 Bake 뒤에 잰다(2026-11-27)
 
 		TextureHandle white = kInvalidTexture;        // 사각형 · 선 (흰 텍스처 × tint)
 		TextureHandle healthIcon = kInvalidTexture;   // 체력 십자 (hp-base.png 기호 영역만)
