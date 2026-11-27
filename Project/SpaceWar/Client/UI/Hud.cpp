@@ -81,7 +81,7 @@ namespace {
 
 	// ── 장탄수 — reload.ammoCountLeftCenter ──
 	//  ★ 형식 = «현재 장탄수 / 최대 장탄수»(2026-11-27 사용자 «예비탄없애고 최대 장탄수만 나오게 해 … 현재 장탄수 / 최대 장탄수 이거야») —
-	//    예: 라이플 «08 / 10» · 권총 «12 / 12» · 기관총 «099 / 100». 최대 = 그 총의 탄창(WeaponSpec::magazineSize).
+	//    예: 라이플 «08 / 35» · 권총 «12 / 12» · 기관총 «099 / 100». 최대 = 그 총의 탄창(WeaponSpec::magazineSize).
 	//    (그 전 시안 «08 / 096» 의 뒤 숫자는 예비탄이었다 — 예비탄은 Shared::Weapon 에서도 뺐다. 권총 무한 «∞» 도 함께 뺐다.)
 	constexpr float kAmmoLeft = 143.0f;
 	constexpr float kAmmoCenterY = 960.0f;
@@ -424,7 +424,7 @@ namespace swc {
 		const XMFLOAT4 foreground = Color(kForeground);
 		const XMFLOAT4 warningColor = Color(kWarning);
 
-		// 장탄수 «현재 / 최대» — 예: «08 / 10». 숫자는 한 글자씩 같은 폭 칸에(AppendFixedDigits), 자릿수 고정(kAmmoMinDigits 위 설명).
+		// 장탄수 «현재 / 최대» — 예: «08 / 35». 숫자는 한 글자씩 같은 폭 칸에(AppendFixedDigits), 자릿수 고정(kAmmoMinDigits 위 설명).
 		wchar_t text[32];
 		const int ammoDigits = (std::max)(kAmmoMinDigits, DigitCount((std::max)(state.magazineSize, state.ammo)));
 		swprintf_s(text, L"%0*u / %0*u", ammoDigits, unsigned(state.ammo), ammoDigits, unsigned(state.magazineSize));

@@ -65,6 +65,8 @@ namespace Shared {
 		//    몬스터(200)는 라이플 14발 · 기관총 20발, 플레이어(100)는 라이플 7발 · 기관총 10발. 권총 25 는 그대로(몬스터 8발 · 플레이어 4발).
 		//  예광 = 라이플만 매 발(1), 권총 · 기관총은 0 = 예광탄 없음(2026-11-20 사용자 «일단 라이플 제외 예광탄 메쉬 없애줘»
 		//    — 교수님 11-17 ToDo «총알에는 빔이 보이지 않게 수정». 그 전 11-15 «예광탄 우선 매 발» 로 세 총 모두 1 이었다).
+		//  ★ 2026-11-27 탄창(최대 장탄수) = 라이플 10 → 35(사용자 «35발로 해줘» — 10 은 11-14 제안값). 권총 12 · 기관총 100 은 그대로.
+		//    초당 9발이라 35발은 약 3.8 s 에 비운다. 몬스터(200)는 14발이라 한 탄창으로 2마리 반, 플레이어(100)는 7발이라 5명.
 		//  ★ 줄 순서 = WeaponType 순서.
 		constexpr WeaponSpec kSpecs[kWeaponTypeCount] =
 		{
@@ -72,7 +74,7 @@ namespace Shared {
 			//  예비탄 열은 2026-11-27 뺐다(사용자 «예비탄없애고 … 몇 번이고 장전가능하게 할거야» — 그 전 권총 무한 · 라이플 40 · 기관총 200).
 			// 이름          1인칭 glb                                      3인칭 glb                                      모드              탄               간격    피해   사거리  탄창  장전   예광  눕힌 높이  총구 (x, y, z)                충돌 상자
 			{ "Pistol",     L"model\\weapon\\Pistol\\Pistol_FP.glb",         L"model\\weapon\\Pistol\\Pistol_TP.glb",         FireMode::Single, AmmoKind::Bullet, 0.20f, 25.0f, 130.0f,  12, 1.5f, 0, 0.0162f, { 0.0f, 0.0349f, 0.1590f }, kPistolBoxes,     BoxCount(kPistolBoxes) },
-			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 15.0f, 130.0f,  10, 2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
+			{ "LaserRifle", L"model\\weapon\\LaserRifle\\LaserRifle_FP.glb", L"model\\weapon\\LaserRifle\\LaserRifle_TP.glb", FireMode::Auto,   AmmoKind::Laser,  1.0f / 9.0f, 15.0f, 130.0f,  35, 2.5f, 1, 0.0374f, { 0.0f, 0.0676f, 0.5627f }, kLaserRifleBoxes, BoxCount(kLaserRifleBoxes) },
 			{ "MachineGun", L"model\\weapon\\MachineGun\\MachineGun_FP.glb", L"model\\weapon\\MachineGun\\MachineGun_TP.glb", FireMode::Auto,   AmmoKind::Bullet, 1.0f / 11.0f, 10.5f, 130.0f, 100, 4.5f, 0, 0.0909f, { 0.0f, 0.0660f, 0.7964f }, kMachineGunBoxes, BoxCount(kMachineGunBoxes) },
 		};
 

@@ -28,7 +28,7 @@
 //    명세 5절 «UI 도 Scene 에 귀속» — 게임 씬은 아직 Engine 이 직접 돌아서(SceneManager.h) 크로스헤어처럼 Engine 이 든다.
 //  ★ «값은 임시»(2026-11-26 사용자) — 방탄판은 게임에 아직 값이 없어 HudState 기본값(팀원 runtime-state 예시)을 보인다.
 //    장탄수 · 장전은 2026-11-27 부터 내 든 총(Engine::localPlayer.weapon — Shared::Weapon)의 실제 값이다.
-//    장탄수 = «현재 장탄수 / 최대 장탄수»(예 «08 / 10» — 2026-11-27 사용자, 시안 «08 / 096» 의 뒤 숫자였던 예비탄은 뺐다).
+//    장탄수 = «현재 장탄수 / 최대 장탄수»(예 «08 / 35» — 2026-11-27 사용자, 시안 «08 / 096» 의 뒤 숫자였던 예비탄은 뺐다).
 //    장탄수 숫자는 한 글자씩 같은 폭 칸에 그린다(2026-11-27 — 탄이 줄 때 « / » · 뒤 숫자가 흔들리지 않게, AppendFixedDigits).
 //    체력 · 최대 체력은 내 Player(Shared::DynamicObject health · maxHealth — Engine::localPlayer)를 쓴다(2026-11-26).
 //    health = 서버가 판정한 값(모르면 최대값), maxHealth = Shared::Player 기본값 100(서버 Shared::kMaxHealth 와 같은 한 값 — 서버가 따로 보내지 않는다).
